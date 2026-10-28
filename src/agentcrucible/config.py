@@ -187,6 +187,8 @@ def load_config(path: Path | None = None) -> ProjectConfig:
         cfg.llm.upstream_base_url = cfg.simulator.base_url = cfg.judge.base_url = url
     if key := os.environ.get("CRUCIBLE_LLM_API_KEY"):
         cfg.llm.api_key = cfg.simulator.api_key = cfg.judge.api_key = key
+    if model := os.environ.get("CRUCIBLE_MODEL"):
+        cfg.model = model
     if helper := os.environ.get("CRUCIBLE_HELPER_MODEL"):
         cfg.simulator.model = cfg.judge.model = helper
     return cfg

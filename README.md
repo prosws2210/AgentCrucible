@@ -96,6 +96,27 @@ crucible run --label candidate -k 5 -e AGENT_PROMPT=prompts/v2_fast.md --compare
 crucible open latest      # HTML report with trajectory viewer
 ```
 
+## Full stack with Docker Compose
+
+Frontend, backend, database and model server as separate services:
+
+| Service | What it runs | Port |
+|---|---|---|
+| `frontend` | nginx serving the Next.js site + **dashboard**, proxies `/api` to the backend | http://localhost:8080 |
+| `backend` | `crucible serve`: FastAPI to start runs and audits, run history, HTML reports | http://localhost:8000 |
+| `db` | Postgres 16: run and audit history | internal |
+| `models` | Ollama: the agent's model, the user simulator and the judge | http://localhost:11435 |
+| `models-init` | one-shot: pulls `CRUCIBLE_MODEL` if it is missing | |
+
+```bash
+cp .env.example .env          # optional: OLLAMA_MODELS_DIR reuses models you already downloaded
+docker compose up --build                                            # CPU
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build   # NVIDIA GPU
+# open http://localhost:8080/dashboard/
+```
+
+From the dashboard you can start runs (suite, runs per scenario, model, agent env such as `AGENT_PROMPT=prompts/v2_fast.md`, baseline to compare against), watch live progress, open the HTML report for any run, and audit the project's MCP servers. The API only audits servers declared in `crucible.yaml`; it never runs arbitrary commands.
+
 ## Adopting it for your agent
 
 ```bash
@@ -216,6 +237,7 @@ The chart runs the suite as an **Indexed Job** (one shard per pod via `JOB_COMPL
 | `crucible compare A B` | Statistical comparison of two runs |
 | `crucible merge` | Merge shard runs |
 | `crucible show` / `open` | Terminal summary / HTML report |
+| `crucible serve` | HTTP API for the dashboard (`DATABASE_URL` for Postgres, SQLite by default) |
 | `crucible mcp-audit` | Audit an MCP server |
 | `crucible label` / `calibrate` | Human labels → judge agreement (κ) |
 
@@ -240,8 +262,11 @@ src/agentcrucible/
   audit.py        MCP server audit
   report.py       Markdown + self-contained HTML report
   cli.py          Typer CLI
+  server.py       FastAPI backend for the dashboard
+  db.py           run/audit history (Postgres or SQLite)
 examples/support-agent/   agent, 2 MCP servers with planted bugs, 10 scenarios, 2 prompts
 deploy/                   Helm chart, kind config
+docker-compose.yml        frontend + backend + Postgres + Ollama
 action.yml                GitHub Action
 website/                  Next.js landing page (static export, GitHub Pages)
 docs/                     architecture, UX and roadmap

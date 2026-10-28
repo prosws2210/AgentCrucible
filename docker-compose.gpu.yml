@@ -1,0 +1,11 @@
+# Give the model server an NVIDIA GPU (Docker Desktop on WSL2, or Linux with nvidia-container-toolkit):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+services:
+  models:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

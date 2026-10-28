@@ -320,6 +320,19 @@ def calibrate(
 
 
 @app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    config: Path = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Start the HTTP API used by the dashboard (DATABASE_URL selects Postgres; default SQLite)."""
+    import uvicorn
+
+    from .server import create_app
+    uvicorn.run(create_app(config), host=host, port=port, log_level="info")
+
+
+@app.command()
 def merge(
     shards: list[Path] = typer.Argument(..., help="Shard run directories (or run.json files)"),
     label: str = typer.Option("", "--label", "-l"),

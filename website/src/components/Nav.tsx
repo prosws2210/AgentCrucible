@@ -1,27 +1,28 @@
+import Link from "next/link";
 import { GITHUB } from "@/lib/site";
 import { Logo } from "./Logo";
 
 const links = [
-  ["How it works", "#how"],
-  ["Results", "#results"],
-  ["Trajectories", "#trajectory"],
-  ["MCP audit", "#audit"],
-  ["CI & Kubernetes", "#ship"],
-  ["Quick start", "#start"],
+  ["How it works", "/#how"],
+  ["Results", "/#results"],
+  ["Trajectories", "/#trajectory"],
+  ["MCP audit", "/#audit"],
+  ["Quick start", "/#start"],
+  ["Dashboard", "/dashboard/"],
 ];
 
 export function Nav() {
   return (
     <header className="sticky top-0 z-50 border-b border-line/70 bg-ink/75 backdrop-blur-xl">
       <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-        <a href="#top" aria-label="AgentCrucible home">
+        <Link href="/" aria-label="AgentCrucible home">
           <Logo />
-        </a>
+        </Link>
         <div className="hidden items-center gap-7 text-[13.5px] text-mute lg:flex">
           {links.map(([label, href]) => (
-            <a key={href} href={href} className="transition-colors hover:text-fg">
+            <Link key={href} href={href} className="transition-colors hover:text-fg">
               {label}
-            </a>
+            </Link>
           ))}
         </div>
         <a

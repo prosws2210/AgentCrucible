@@ -1,5 +1,8 @@
-# AgentCrucible runner image. Companies extend it with their own agent + scenarios:
-#   FROM ghcr.io/<you>/agentcrucible:0.1.0
+# AgentCrucible backend / runner image.
+#   docker compose: runs `crucible serve` (API) against Postgres and the Ollama service
+#   standalone:     docker run agentcrucible:0.1.0 run --suite core
+# Companies extend it with their own agent + scenarios:
+#   FROM agentcrucible:0.1.0
 #   COPY . /workspace/project
 #   WORKDIR /workspace/project
 FROM python:3.12-slim
@@ -14,9 +17,15 @@ RUN uv pip install --system ".[examples]"
 
 # Bundled example project (support agent + 2 MCP servers + 10 scenarios)
 COPY examples /workspace/examples
-RUN useradd --create-home --uid 10001 runner && chown -R runner /workspace
+RUN useradd --create-home --uid 10001 runner \
+ && mkdir -p /workspace/examples/support-agent/.crucible \
+ && chown -R runner /workspace
 USER 10001
 WORKDIR /workspace/examples/support-agent
+
+EXPOSE 8000
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)" || exit 1
 
 ENTRYPOINT ["crucible"]
 CMD ["--help"]

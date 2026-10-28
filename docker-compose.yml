@@ -1,0 +1,92 @@
+# AgentCrucible full stack
+#
+#   frontend  nginx serving the Next.js site + dashboard, proxies /api → backend   http://localhost:8080
+#   backend   `crucible serve`: runs, audits, reports (FastAPI)                     http://localhost:8000
+#   db        Postgres 16: run and audit history
+#   models    Ollama model server (agent, user simulator and judge)                 http://localhost:11435
+#   models-init  one-shot: pulls CRUCIBLE_MODEL into the models service if it is missing
+#
+#   docker compose up --build                                   # CPU
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build   # NVIDIA GPU
+#
+# Settings come from .env (see .env.example).
+
+name: agentcrucible
+
+x-db-env: &db-env
+  POSTGRES_USER: ${POSTGRES_USER:-crucible}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crucible}
+  POSTGRES_DB: ${POSTGRES_DB:-crucible}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment: *db-env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  models:
+    image: ollama/ollama:${OLLAMA_VERSION:-0.17.1}
+    # Point OLLAMA_MODELS_DIR at an existing Ollama models folder to reuse downloaded models.
+    volumes:
+      - ${OLLAMA_MODELS_DIR:-ollama-models}:/root/.ollama/models
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+      OLLAMA_NUM_PARALLEL: "2"
+    ports:
+      - "11435:11434"   # 11435 on the host so it doesn't clash with a local Ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  models-init:
+    image: ollama/ollama:${OLLAMA_VERSION:-0.17.1}
+    depends_on:
+      models: { condition: service_healthy }
+    environment:
+      OLLAMA_HOST: http://models:11434
+      CRUCIBLE_MODEL: ${CRUCIBLE_MODEL:-qwen2.5:7b}
+    # instant when the model is already in OLLAMA_MODELS_DIR
+    entrypoint: ["/bin/sh", "-c", "ollama pull $${CRUCIBLE_MODEL}"]
+    restart: "no"
+
+  backend:
+    build: .
+    image: agentcrucible:0.1.0
+    command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-crucible}:${POSTGRES_PASSWORD:-crucible}@db:5432/${POSTGRES_DB:-crucible}
+      CRUCIBLE_LLM_URL: http://models:11434/v1
+      CRUCIBLE_MODEL: ${CRUCIBLE_MODEL:-qwen2.5:7b}
+      CRUCIBLE_HELPER_MODEL: ${CRUCIBLE_MODEL:-qwen2.5:7b}
+    volumes:
+      - results:/workspace/examples/support-agent/.crucible
+    ports:
+      - "8000:8000"
+    depends_on:
+      db: { condition: service_healthy }
+      models-init: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  frontend:
+    build: ./website
+    image: agentcrucible-web:0.1.0
+    ports:
+      - "8080:80"
+    depends_on:
+      backend: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  results:
+  ollama-models:

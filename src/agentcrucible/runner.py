@@ -96,7 +96,9 @@ class Runner:
     async def run(self, scenarios: list[tuple[Scenario, int]], suite: str | None = None) -> dict[str, Any]:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         server = uvicorn.Server(uvicorn.Config(self.gateway, host="127.0.0.1", port=self.gateway.port,
-                                               log_level="warning", lifespan="on"))
+                                               lifespan="on", access_log=False,
+                                               # don't reconfigure the host process's logging (e.g. `crucible serve`)
+                                               log_config=None, log_level=None))
         server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
         server_task = asyncio.create_task(server.serve())
         while not server.started:
