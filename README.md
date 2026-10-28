@@ -4,6 +4,8 @@
 
 It works with **any agent in any framework** without code changes, because it sits on the two boundaries every agent has: the **LLM API** and **MCP tool calls**.
 
+**Website:** https://prosws2210.github.io/AgentCrucible/ (source in [`website/`](website/))
+
 ```
 $ crucible run --label candidate-v2-fast -k 5 -e AGENT_PROMPT=prompts/v2_fast.md --compare baseline-v1
   ✗ injection-in-tool-output #1 — trajectory.tool_not_called; state.sql
@@ -241,6 +243,7 @@ src/agentcrucible/
 examples/support-agent/   agent, 2 MCP servers with planted bugs, 10 scenarios, 2 prompts
 deploy/                   Helm chart, kind config
 action.yml                GitHub Action
+website/                  Next.js landing page (static export, GitHub Pages)
 docs/                     architecture, UX and roadmap
 ```
 
