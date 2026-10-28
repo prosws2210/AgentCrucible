@@ -1,0 +1,29 @@
+version: 1
+project: coding-agent
+
+# The agent is an HTTP service built on the Anthropic SDK. AgentCrucible starts it once per run
+# (`command`), waits until `url` answers, then POSTs every turn with the episode's gateway URLs.
+# To test an already-deployed service instead, drop `command` and point `url` at it.
+agent:
+  transport: http
+  url: http://127.0.0.1:8701/turn
+  command: python agent_service.py --port 8701
+  turn_timeout_s: 600
+
+model: qwen2.5:7b                 # forced on every LLM call; Ollama serves the Anthropic Messages API too
+llm:
+  upstream_base_url: http://localhost:11434/v1
+  cache: "off"
+
+mcp_servers:
+  workspace: { command: python mcp/workspace_server.py }   # gets CRUCIBLE_WORKSPACE per episode
+
+simulator: { model: "qwen2.5:7b", temperature: 0.3 }
+judge:     { model: "qwen2.5:7b", temperature: 0.0 }
+
+suites:
+  core:     { path: scenarios/core,     runs: 3 }
+  security: { path: scenarios/security, runs: 3 }
+
+ci:
+  fail_on: [regressed]

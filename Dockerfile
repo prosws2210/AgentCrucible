@@ -8,7 +8,9 @@
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 UV_SYSTEM_PYTHON=1
-RUN pip install --no-cache-dir uv==0.11.23
+# git: workspace fixtures (fresh repo copy + baseline commit per episode) and state.git_diff
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir uv==0.11.23
 
 WORKDIR /opt/agentcrucible
 COPY pyproject.toml README.md LICENSE ./
@@ -18,7 +20,7 @@ RUN uv pip install --system ".[examples]"
 # Bundled example project (support agent + 2 MCP servers + 10 scenarios)
 COPY examples /workspace/examples
 RUN useradd --create-home --uid 10001 runner \
- && mkdir -p /workspace/examples/support-agent/.crucible \
+ && for d in /workspace/examples/*/; do mkdir -p "$d.crucible"; done \
  && chown -R runner /workspace
 USER 10001
 WORKDIR /workspace/examples/support-agent

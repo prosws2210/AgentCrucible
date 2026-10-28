@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import fnmatch
 import json
+import os
 import re
 import sqlite3
+import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -33,6 +38,7 @@ class GradeContext:
     judge: HelperModel
     http: httpx.AsyncClient
     judge_status: dict[str, dict[str, Any]] = field(default_factory=dict)  # criteria_id -> calibration
+    workspace: Path | None = None  # the episode's repo copy (environment.workspace)
 
 
 Grader = Callable[[Check, Recorder, GradeContext], Awaitable[tuple[bool, str, float | None]]]
@@ -96,6 +102,114 @@ async def _state_sql(c: Check, rec: Recorder, ctx: GradeContext):
     got = rows[0][0] if rows and rows[0] else None
     ok = _norm(got) == _norm(p["expect"])
     return ok, f"got {got!r}, expected {p['expect']!r}", None
+
+
+# ------------------------------------------------------------------ workspace (coding agents)
+
+
+def _workspace(ctx: GradeContext) -> Path:
+    if ctx.workspace is None:
+        raise ValueError("this check needs `environment.workspace` in the scenario")
+    return ctx.workspace
+
+
+def _in_workspace(ws: Path, rel: str) -> Path:
+    p = (ws / rel).resolve()
+    if p != ws.resolve() and ws.resolve() not in p.parents:
+        raise ValueError(f"path {rel!r} is outside the workspace")
+    return p
+
+
+def _run_shell(cmd: str, cwd: Path, timeout: float) -> tuple[int, str]:
+    # a leading `python` means the interpreter running AgentCrucible (has the project's deps)
+    for prefix in ("python ", "python3 "):
+        if cmd.startswith(prefix):
+            cmd = f'"{sys.executable}" ' + cmd[len(prefix):]
+            break
+    try:
+        r = subprocess.run(cmd, cwd=cwd, shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True, timeout=timeout,
+                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+        return r.returncode, r.stdout
+    except subprocess.TimeoutExpired:
+        return -1, f"timed out after {timeout}s"
+
+
+@grader("state.command")
+async def _state_command(c: Check, rec: Recorder, ctx: GradeContext):
+    """Run a command in the workspace (e.g. the test suite) and check its exit code / output."""
+    p = c.params if isinstance(c.params, dict) else {"run": c.params}
+    ws = _workspace(ctx)
+    code, out = await asyncio.to_thread(_run_shell, p["run"], ws, float(p.get("timeout_s", 120)))
+    want = int(p.get("expect_exit", 0))
+    problems = []
+    if code != want:
+        problems.append(f"exit {code} (expected {want})")
+    for needle in _as_list(p.get("contains", [])):
+        if str(needle) not in out:
+            problems.append(f"output missing {needle!r}")
+    for needle in _as_list(p.get("not_contains", [])):
+        if str(needle) in out:
+            problems.append(f"output contains {needle!r}")
+    tail = " | ".join(out.strip().splitlines()[-3:])[:240]
+    if problems:
+        return False, "; ".join(problems) + (f" — {tail}" if tail else ""), None
+    return True, f"`{p['run']}` exit {code}" + (f" — {tail}" if tail else ""), None
+
+
+def _changed_files(ws: Path) -> dict[str, int]:
+    """Files changed since the baseline commit (incl. new and deleted) -> lines added + removed."""
+    subprocess.run(["git", "add", "-A"], cwd=ws, capture_output=True, check=True)
+    out = subprocess.run(["git", "diff", "--cached", "--numstat", "HEAD"], cwd=ws, capture_output=True,
+                         text=True, check=True).stdout
+    files: dict[str, int] = {}
+    for line in out.splitlines():
+        added, removed, path = line.split("\t", 2)
+        files[path] = (int(added) if added.isdigit() else 0) + (int(removed) if removed.isdigit() else 0)
+    return files
+
+
+def _glob_match(path: str, pattern: str) -> bool:
+    return fnmatch.fnmatch(path, pattern.replace("**/", "*").replace("**", "*"))
+
+
+@grader("state.git_diff")
+async def _state_git_diff(c: Check, rec: Recorder, ctx: GradeContext):
+    """Assert which files the agent changed: `changed`, `not_changed` (globs), `max_files`, `max_lines`."""
+    p = c.params or {}
+    files = await asyncio.to_thread(_changed_files, _workspace(ctx))
+    problems = []
+    for pat in _as_list(p.get("changed", [])):
+        if not any(_glob_match(f, pat) for f in files):
+            problems.append(f"expected a change matching {pat!r}")
+    for pat in _as_list(p.get("not_changed", [])):
+        hit = [f for f in files if _glob_match(f, pat)]
+        if hit:
+            problems.append(f"must not change {pat!r} but changed {hit}")
+    if "max_files" in p and len(files) > int(p["max_files"]):
+        problems.append(f"{len(files)} files changed (max {p['max_files']})")
+    lines = sum(files.values())
+    if "max_lines" in p and lines > int(p["max_lines"]):
+        problems.append(f"{lines} lines changed (max {p['max_lines']})")
+    summary = f"changed {sorted(files) or 'nothing'} ({lines} lines)"
+    return not problems, ("; ".join(problems) + " — " if problems else "") + summary, None
+
+
+@grader("state.file")
+async def _state_file(c: Check, rec: Recorder, ctx: GradeContext):
+    """Assert a workspace file exists / is absent / contains text / matches a regex."""
+    p = c.params
+    f = _in_workspace(_workspace(ctx), p["path"])
+    if not p.get("exists", True):
+        return not f.exists(), f"{p['path']} {'exists' if f.exists() else 'is absent'}", None
+    if not f.is_file():
+        return False, f"{p['path']} does not exist", None
+    text = f.read_text(encoding="utf-8", errors="replace")
+    problems = [f"missing {s!r}" for s in _as_list(p.get("contains", [])) if str(s) not in text]
+    problems += [f"contains {s!r}" for s in _as_list(p.get("not_contains", [])) if str(s) in text]
+    if p.get("regex") and not re.search(p["regex"], text, re.M):
+        problems.append(f"no match for /{p['regex']}/")
+    return not problems, "; ".join(problems) or f"{p['path']} ok", None
 
 
 # ------------------------------------------------------------------ trajectory

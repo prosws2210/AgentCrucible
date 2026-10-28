@@ -137,7 +137,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
 
     @app.get("/api/runs")
     async def list_runs() -> list[dict[str, Any]]:
-        rows = await asyncio.to_thread(store.list_runs)
+        rows = await asyncio.to_thread(store.list_runs, cfg.project)  # one DB can serve several projects
         for r in rows:
             if r["id"] in progress:
                 r["progress"] = progress[r["id"]]
@@ -240,7 +240,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
 
     @app.get("/api/audits")
     async def list_audits() -> list[dict[str, Any]]:
-        return await asyncio.to_thread(store.list_audits)
+        return await asyncio.to_thread(store.list_audits, list(cfg.mcp_servers))  # this project's servers only
 
     @app.get("/api/audits/{audit_id}")
     async def get_audit(audit_id: int) -> dict[str, Any]:

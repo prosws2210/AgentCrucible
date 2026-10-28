@@ -6,7 +6,8 @@ gateway, and every model call and tool call is recorded (and can be cached, repl
 mocked, blocked or injected) without touching the agent's code.
 
 Routes (one HTTP server per run, episodes are isolated by path):
-    /ep/{episode_id}/v1/chat/completions      OpenAI-compatible LLM proxy
+    /ep/{episode_id}/v1/chat/completions      OpenAI Chat Completions proxy (streaming supported)
+    /ep/{episode_id}/v1/messages              Anthropic Messages proxy (streaming supported)
     /ep/{episode_id}/v1/models
     /ep/{episode_id}/mcp/{server}             MCP Streamable HTTP proxy -> per-episode stdio server
 """
@@ -35,6 +36,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from .config import Environment, LLMSettings, McpServerSpec
+from .llm import Api, accumulator, as_sse, summarize
 from .trajectory import Recorder, clip
 
 
@@ -138,6 +140,8 @@ class McpProxy:
 class EpisodeRoutes:
     rec: Recorder
     proxies: dict[str, McpProxy] = field(default_factory=dict)
+    llm_n: int = 0  # LLM calls made so far in this episode
+    llm_seq: list[dict[str, str]] = field(default_factory=list)  # cache keys in call order (read_write)
 
 
 class Gateway:
@@ -176,7 +180,9 @@ class Gateway:
             req = Request(scope, receive)
             tail = "/".join(parts[3:])
             if tail == "chat/completions" and req.method == "POST":
-                resp = await self._chat(ep, await req.json())
+                resp = await self._llm(ep, "openai", await req.json(), req.headers)
+            elif tail == "messages" and req.method == "POST":
+                resp = await self._llm(ep, "anthropic", await req.json(), req.headers)
             elif tail == "models":
                 resp = JSONResponse({"object": "list", "data": [{"id": self.force_model or "model", "object": "model"}]})
             else:
@@ -184,77 +190,127 @@ class Gateway:
             return await resp(scope, receive, send)
         return await JSONResponse({"error": "not found"}, 404)(scope, receive, send)
 
-    # chat completions --------------------------------------------------
-    async def _chat(self, ep: EpisodeRoutes, body: dict[str, Any]) -> Response:
+    # LLM proxy (OpenAI Chat Completions + Anthropic Messages) ------------
+    def _upstream(self, api: Api, headers: Any) -> tuple[str, dict[str, str]]:
+        if api == "anthropic":
+            base = (self.llm.anthropic_base_url or self.llm.upstream_base_url.rstrip("/").removesuffix("/v1")).rstrip("/")
+            h = {"x-api-key": self.llm.anthropic_api_key or self.llm.api_key,
+                 "anthropic-version": headers.get("anthropic-version", "2023-06-01")}
+            if headers.get("anthropic-beta"):
+                h["anthropic-beta"] = headers["anthropic-beta"]
+            return base + "/v1/messages", h
+        return self.llm.upstream_base_url.rstrip("/") + "/chat/completions", {"Authorization": f"Bearer {self.llm.api_key}"}
+
+    async def _llm(self, ep: EpisodeRoutes, api: Api, body: dict[str, Any], headers: Any) -> Response:
         rec = ep.rec
-        stream = bool(body.pop("stream", False))
-        body.pop("stream_options", None)
+        stream = bool(body.get("stream"))
         if self.force_model:
             body["model"] = self.force_model
+        if api == "openai" and stream:
+            body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
+        # streamed and non-streamed calls with the same content share a cache entry
+        key_body = {k: v for k, v in body.items() if k not in ("stream", "stream_options")}
         key = hashlib.sha256(json.dumps(
-            {"scenario": rec.scenario_id, "attempt": rec.attempt, "body": body}, sort_keys=True, default=str
-        ).encode()).hexdigest()
+            {"api": api, "scenario": rec.scenario_id, "attempt": rec.attempt, "body": key_body},
+            sort_keys=True, default=str).encode()).hexdigest()
         cache_file = self.cache_dir / f"{key}.json"
         start = time.monotonic()
-        cache_state = "off"
-        data: dict[str, Any] | None = None
-        if self.llm.cache in ("read_write", "replay") and cache_file.exists():
-            data = json.loads(cache_file.read_text(encoding="utf-8"))
-            cache_state = "hit"
-        elif self.llm.cache == "replay":
-            rec.add("llm_call", model=body.get("model"), error="replay cache miss")
-            return JSONResponse({"error": {"message": "agentcrucible replay: no cached response"}}, 409)
-        if data is None:
-            try:
-                r = await self.client.post(
-                    self.llm.upstream_base_url.rstrip("/") + "/chat/completions", json=body,
-                    headers={"Authorization": f"Bearer {self.llm.api_key}"},
-                )
-            except httpx.HTTPError as e:
-                rec.add("llm_call", model=body.get("model"), error=f"upstream unreachable: {e}")
-                return JSONResponse({"error": {"message": str(e)}}, 502)
-            if r.status_code != 200:
-                rec.add("llm_call", model=body.get("model"), error=f"upstream {r.status_code}: {clip(r.text, 300)}")
-                return Response(r.content, r.status_code, media_type="application/json")
-            data = r.json()
-            if self.llm.cache == "read_write":
-                cache_file.parent.mkdir(parents=True, exist_ok=True)
-                cache_file.write_text(json.dumps(data), encoding="utf-8")
-                cache_state = "miss"
-        self._record(rec, body, data, start, cache_state)
-        if stream:
-            return StreamingResponse(_as_sse(data), media_type="text/event-stream")
-        return JSONResponse(data)
 
-    def _record(self, rec: Recorder, body: dict, data: dict, start: float, cache_state: str) -> None:
-        usage = data.get("usage") or {}
-        tin, tout = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
-        choice = (data.get("choices") or [{}])[0]
-        msg = choice.get("message") or {}
+        n = ep.llm_n
+        ep.llm_n += 1
+        seq_file = self.cache_dir / "seq" / f"{rec.scenario_id}--{rec.attempt}.json"
+        hit = "hit" if self.llm.cache in ("read_write", "replay") and cache_file.exists() else None
+        if hit is None and self.llm.cache == "replay" and seq_file.exists():
+            # Exact match missed (tool output with timestamps, ids, durations...): fall back to the
+            # response recorded at the same position in this episode, like a cassette.
+            seq = json.loads(seq_file.read_text(encoding="utf-8"))
+            if n < len(seq) and seq[n]["api"] == api and (self.cache_dir / f"{seq[n]['key']}.json").exists():
+                cache_file, hit = self.cache_dir / f"{seq[n]['key']}.json", "hit-seq"
+        if hit:
+            data = json.loads(cache_file.read_text(encoding="utf-8"))
+            if self.llm.cache == "read_write":
+                self._remember(ep, seq_file, api, key)
+            self._record(rec, api, body, data, start, hit, stream)
+            if stream:
+                return StreamingResponse(as_sse(api, data), media_type="text/event-stream")
+            return JSONResponse(data)
+        if self.llm.cache == "replay":
+            rec.add("llm_call", api=api, model=body.get("model"), error="replay cache miss")
+            return JSONResponse({"error": {"message": "agentcrucible replay: no cached response"}}, 409)
+
+        url, up_headers = self._upstream(api, headers)
+        cache_state = "miss" if self.llm.cache == "read_write" else "off"
+        try:
+            upstream = await self.client.send(self.client.build_request("POST", url, json=body, headers=up_headers),
+                                              stream=stream)
+        except httpx.HTTPError as e:
+            rec.add("llm_call", api=api, model=body.get("model"), error=f"upstream unreachable: {e}")
+            return JSONResponse({"error": {"message": str(e)}}, 502)
+        if upstream.status_code != 200:
+            content = await upstream.aread()
+            await upstream.aclose()
+            rec.add("llm_call", api=api, model=body.get("model"),
+                    error=f"upstream {upstream.status_code}: {clip(content.decode(errors='replace'), 300)}")
+            return Response(content, upstream.status_code, media_type="application/json")
+
+        if not stream:
+            data = upstream.json()
+            self._store(cache_file, data)
+            if self.llm.cache == "read_write":
+                self._remember(ep, seq_file, api, key)
+            self._record(rec, api, body, data, start, cache_state, False)
+            return JSONResponse(data)
+
+        # Real streaming: pass bytes through as they arrive, rebuild the full response alongside.
+        acc = accumulator(api)
+
+        async def relay():
+            buf = b""
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
+                    buf += chunk
+                    *lines, buf = buf.split(b"\n")
+                    for line in lines:
+                        acc.feed(line)
+            finally:
+                await upstream.aclose()
+                if buf:
+                    acc.feed(buf)
+                data = acc.result()
+                self._store(cache_file, data)
+                if self.llm.cache == "read_write":
+                    self._remember(ep, seq_file, api, key)
+                self._record(rec, api, body, data, start, cache_state, True)
+
+        return StreamingResponse(relay(), media_type=upstream.headers.get("content-type", "text/event-stream"))
+
+    def _remember(self, ep: EpisodeRoutes, seq_file: Path, api: Api, key: str) -> None:
+        ep.llm_seq.append({"api": api, "key": key})
+        seq_file.parent.mkdir(parents=True, exist_ok=True)
+        seq_file.write_text(json.dumps(ep.llm_seq), encoding="utf-8")
+
+    def _store(self, cache_file: Path, data: dict[str, Any]) -> None:
+        if self.llm.cache == "read_write":
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(data), encoding="utf-8")
+
+    def _record(self, rec: Recorder, api: Api, body: dict, data: dict, start: float, cache_state: str,
+                streamed: bool) -> None:
+        s = summarize(api, data)
         rec.add(
             "llm_call",
-            model=data.get("model") or body.get("model"),
-            tokens_in=tin, tokens_out=tout,
-            cost_usd=round(tin / 1000 * self.llm.price_per_1k_input + tout / 1000 * self.llm.price_per_1k_output, 6),
+            api=api,
+            model=s.model or body.get("model"),
+            tokens_in=s.tokens_in, tokens_out=s.tokens_out,
+            cost_usd=round(s.tokens_in / 1000 * self.llm.price_per_1k_input
+                           + s.tokens_out / 1000 * self.llm.price_per_1k_output, 6),
             latency_ms=round((time.monotonic() - start) * 1000, 1),
             cache=cache_state,
-            finish_reason=choice.get("finish_reason"),
+            stream=streamed,
+            finish_reason=s.stop_reason,
             n_messages=len(body.get("messages", [])),
             n_tools=len(body.get("tools") or []),
-            content=clip(msg.get("content") or ""),
-            tool_calls=[(tc.get("function") or {}).get("name") for tc in msg.get("tool_calls") or []],
+            content=clip(s.content),
+            tool_calls=s.tool_calls,
         )
-
-
-def _as_sse(data: dict[str, Any]):
-    """Turn a complete chat.completion into a minimal valid SSE stream."""
-    choice = (data.get("choices") or [{}])[0]
-    msg = choice.get("message") or {}
-    delta: dict[str, Any] = {"role": "assistant", "content": msg.get("content") or ""}
-    if msg.get("tool_calls"):
-        delta["tool_calls"] = [{**tc, "index": i} for i, tc in enumerate(msg["tool_calls"])]
-    base = {"id": data.get("id", "chatcmpl-crucible"), "object": "chat.completion.chunk",
-            "created": data.get("created", int(time.time())), "model": data.get("model", "")}
-    yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]})}\n\n"
-    yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': choice.get('finish_reason', 'stop')}], 'usage': data.get('usage')})}\n\n"
-    yield "data: [DONE]\n\n"

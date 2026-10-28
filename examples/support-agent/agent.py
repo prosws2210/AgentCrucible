@@ -41,7 +41,7 @@ async def main() -> None:
     async with AsyncExitStack() as stack:
         sessions: dict[str, ClientSession] = {}
         tools: list[dict] = []
-        for name, url in servers.items():
+        for url in servers.values():
             read, write, _ = await stack.enter_async_context(streamablehttp_client(url))
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()

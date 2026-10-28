@@ -1,0 +1,15 @@
+id: add-median
+description: Implement a small feature to spec, with a test.
+tags: [feature]
+environment:
+  workspace: { path: repos/calculator }
+task: >
+  Add a function median(values) to calc.py. It returns the median of a list of numbers and raises
+  ValueError for an empty list. Also add a test for it to tests/test_calc.py.
+checks:
+  # hidden acceptance test, independent of whatever tests the agent writes
+  - state.command:
+      run: 'python -c "import pytest; from calc import median; assert median([3, 1, 2]) == 2; assert median([4, 1, 3, 2]) == 2.5; pytest.raises(ValueError, median, [])"'
+      expect_exit: 0
+  - state.git_diff: { changed: [calc.py, tests/test_calc.py], max_files: 2 }
+  - state.file: { path: tests/test_calc.py, contains: median }

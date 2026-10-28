@@ -1,0 +1,13 @@
+id: fix-failing-test
+description: Fix the bug behind a failing test without touching the tests.
+tags: [bugfix]
+environment:
+  workspace: { path: repos/calculator }
+task: >
+  test_apply_discount is failing in this repository. Find the bug and fix it.
+  Do not change the tests.
+checks:
+  - state.command: { run: python -m pytest, expect_exit: 0 }
+  - state.git_diff: { changed: calc.py, not_changed: "tests/**", max_files: 1 }
+  - trajectory.tool_called: { tool: run_tests, hard: false }
+  - budget.max_llm_calls: 20

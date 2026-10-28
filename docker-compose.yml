@@ -6,6 +6,8 @@
 #   models    Ollama model server (agent, user simulator and judge)                 http://localhost:11435
 #   models-init  one-shot: pulls CRUCIBLE_MODEL into the models service if it is missing
 #
+#   CRUCIBLE_PROJECT=coding-agent docker compose up   serves the coding-agent example instead
+#
 #   docker compose up --build                                   # CPU
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build   # NVIDIA GPU
 #
@@ -63,13 +65,15 @@ services:
     build: .
     image: agentcrucible:0.1.0
     command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
+    # which project the dashboard serves: support-agent (stdio + SQLite) or coding-agent (http + Anthropic + repos)
+    working_dir: /workspace/examples/${CRUCIBLE_PROJECT:-support-agent}
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-crucible}:${POSTGRES_PASSWORD:-crucible}@db:5432/${POSTGRES_DB:-crucible}
       CRUCIBLE_LLM_URL: http://models:11434/v1
       CRUCIBLE_MODEL: ${CRUCIBLE_MODEL:-qwen2.5:7b}
       CRUCIBLE_HELPER_MODEL: ${CRUCIBLE_MODEL:-qwen2.5:7b}
     volumes:
-      - results:/workspace/examples/support-agent/.crucible
+      - results:/workspace/examples/${CRUCIBLE_PROJECT:-support-agent}/.crucible
     ports:
       - "8000:8000"
     depends_on:
@@ -89,4 +93,5 @@ services:
 volumes:
   pgdata:
   results:
+    name: agentcrucible_results_${CRUCIBLE_PROJECT:-support-agent}   # one results volume per project
   ollama-models:

@@ -153,7 +153,7 @@ const ev=T[eid]||[];const icon={user_message:'👤',assistant_message:'🤖',llm
 const body=ev.map(x=>{let main='',bad=false;switch(x.type){
 case 'user_message':main=`<b>User</b> <span class="tag">turn ${x.turn}</span><pre>${esc(x.content)}</pre>`;break;
 case 'assistant_message':main=`<b>Agent</b><pre>${esc(x.content)}</pre>`;break;
-case 'llm_call':main=`LLM <code>${esc(x.model)}</code> ${x.error?'<span class="regressed">'+esc(x.error)+'</span>':`${x.tokens_in}→${x.tokens_out} tok · ${Math.round(x.latency_ms)} ms${x.cache&&x.cache!=='off'?' · cache '+x.cache:''}${x.tool_calls&&x.tool_calls.length?' · wants '+x.tool_calls.map(esc).join(', '):''}`}`;break;
+case 'llm_call':main=`LLM <code>${esc(x.model)}</code>${x.api?`<span class="tag">${esc(x.api)}${x.stream?' · stream':''}${x.cache&&x.cache!=='off'?' · '+esc(x.cache):''}</span>`:''} ${x.error?'<span class="regressed">'+esc(x.error)+'</span>':`${x.tokens_in}→${x.tokens_out} tok · ${Math.round(x.latency_ms)} ms${x.cache&&x.cache!=='off'?' · cache '+x.cache:''}${x.tool_calls&&x.tool_calls.length?' · wants '+x.tool_calls.map(esc).join(', '):''}`}`;break;
 case 'tool_call':bad=failedTools.has(x.tool);main=`<b>${esc(x.server)}.${esc(x.tool)}</b>${x.blocked?'<span class="tag">blocked</span>':''}${x.mocked?'<span class="tag">mocked</span>':''}${x.injected?'<span class="tag">injected</span>':''}<pre>${esc(JSON.stringify(x.args,null,1))}</pre>`;break;
 case 'tool_result':bad=x.is_error;main=`result ${x.is_error?'<span class="regressed">error</span>':''} <span class="muted">${x.latency_ms} ms</span><pre>${esc(x.content)}</pre>`;break;
 case 'error':bad=true;main=`<span class="regressed">${esc(x.message)}</span>`;break;

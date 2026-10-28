@@ -9,13 +9,16 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import subprocess
+import sys
 import tempfile
+import time
 import uuid
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 import httpx
 import uvicorn
@@ -77,6 +80,25 @@ def git_info(root: Path) -> dict[str, str]:
     return {"sha": g("rev-parse", "--short", "HEAD"), "branch": g("rev-parse", "--abbrev-ref", "HEAD")}
 
 
+def git(cwd: Path, *args: str) -> str:
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args[:2])} failed: {r.stderr.strip()[:300]}")
+    return r.stdout
+
+
+def rmtree(path: Path) -> None:
+    """Delete a temp dir, including read-only files (git objects on Windows)."""
+    def _force(func: Any, p: str, _exc: Any) -> None:
+        with contextlib.suppress(Exception):
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_force)
+    else:  # pragma: no cover
+        shutil.rmtree(path, onerror=_force)
+
+
 class Runner:
     def __init__(self, cfg: ProjectConfig, opts: RunOptions, on_episode: Callable[[EpisodeResult], None] | None = None):
         self.cfg, self.opts, self.on_episode = cfg, opts, on_episode
@@ -118,9 +140,12 @@ class Runner:
                 self.on_episode(res)
             return res
 
+        service = None
         try:
+            service = await self._start_service()
             results = await asyncio.gather(*(guarded(sc, a) for sc, a in jobs))
         finally:
+            await self._stop_service(service)
             server.should_exit = True
             await server_task
             await self.http.aclose()
@@ -136,6 +161,7 @@ class Runner:
             "git": git_info(self.cfg.root),
             "model": self.model,
             "agent_env": self.opts.agent_env,
+            "transport": self.cfg.agent.transport,
             "shard": list(self.opts.shard) if self.opts.shard else None,
             "scenarios": [
                 {"id": sc.id, "description": sc.description, "tags": sc.tags, "runs": runs,
@@ -148,6 +174,57 @@ class Runner:
         (self.run_dir / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
         return run
 
+    # ------------------------------------------------------------ http agent service
+
+    async def _start_service(self) -> asyncio.subprocess.Process | None:
+        """For http agents with a `command`: start the service once per run and wait until it answers."""
+        agent = self.cfg.agent
+        if agent.transport != "http":
+            return None
+        if not agent.command:
+            await self._wait_ready(agent.url or "", agent.ready_timeout_s, None)
+            return None
+        log_dir = self.run_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self._service_log = open(log_dir / "agent-service.log", "w", encoding="utf-8")
+        env = {**os.environ, **agent.env, **self.opts.agent_env, "CRUCIBLE_MODEL": self.model,
+               "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+        cwd = str((self.cfg.root / agent.cwd).resolve()) if agent.cwd else str(self.cfg.root)
+        proc = await asyncio.create_subprocess_exec(*split_command(agent.command), cwd=cwd, env=env,
+                                                    stdout=self._service_log, stderr=self._service_log)
+        try:
+            await self._wait_ready(agent.url or "", agent.ready_timeout_s, proc)
+        except Exception:
+            await self._stop_service(proc)
+            raise
+        return proc
+
+    async def _wait_ready(self, url: str, timeout: float, proc: asyncio.subprocess.Process | None) -> None:
+        deadline = time.monotonic() + timeout
+        while True:
+            if proc is not None and proc.returncode is not None:
+                raise RuntimeError(f"agent service exited with code {proc.returncode}; see logs/agent-service.log")
+            try:
+                await self.http.get(url, timeout=2)  # any HTTP response means it is listening
+                return
+            except httpx.TransportError:
+                pass
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"agent service at {url} not reachable after {timeout:.0f}s")
+            await asyncio.sleep(0.3)
+
+    async def _stop_service(self, proc: asyncio.subprocess.Process | None) -> None:
+        if proc is not None and proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), 5)
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
+        log = getattr(self, "_service_log", None)
+        if log is not None:
+            log.close()
+
     # ------------------------------------------------------------ one episode
 
     async def run_episode(self, sc: Scenario, attempt: int) -> EpisodeResult:
@@ -159,39 +236,47 @@ class Runner:
         rec.add("episode_start", scenario=sc.id, attempt=attempt, model=self.model)
         try:
             dbs = self._build_fixtures(sc, tmp)
+            workspace = await asyncio.to_thread(self._build_workspace, sc, tmp)
+            ws_env = {"CRUCIBLE_WORKSPACE": str(workspace)} if workspace else {}
             async with AsyncExitStack() as stack:
                 routes = EpisodeRoutes(rec)
                 for name, spec in self.cfg.mcp_servers.items():
-                    env = {"CRUCIBLE_DB": str(dbs[name])} if name in dbs else {}
+                    env = {**ws_env, **({"CRUCIBLE_DB": str(dbs[name])} if name in dbs else {})}
                     proxy = McpProxy(name, spec, env, rec, sc.environment, self.cfg.root)
                     routes.proxies[name] = await stack.enter_async_context(proxy)
                 self.gateway.episodes[eid] = routes
                 stack.callback(self.gateway.episodes.pop, eid, None)
                 try:
-                    await self._converse(sc, rec, eid, tmp, stack)
+                    await self._converse(sc, rec, eid, workspace, stack)
                 except Exception as e:
                     error = f"{type(e).__name__}: {e}"
                     rec.add("error", message=error)
             rec.add("episode_end", reason="error" if error else "done", turns=rec.turn)
             checks = await grade(sc, rec, GradeContext(dbs=dbs, judge=self.cfg.judge, http=self.http,
-                                                       judge_status=self.judge_status))
+                                                       judge_status=self.judge_status, workspace=workspace))
         except Exception as e:  # infrastructure failure (fixture, MCP server failed to start, ...)
             error = error or f"setup: {type(e).__name__}: {e}"
             rec.add("error", message=error)
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            rmtree(tmp)
 
         traj = f"episodes/{eid}.jsonl"
         rec.save(self.run_dir / traj)
         passed = error is None and all(c.passed for c in checks if c.hard)
         return EpisodeResult(eid, sc.id, attempt, passed, checks, rec.totals(), error, traj)
 
+    def _resolve(self, sc: Scenario, rel: str) -> Path:
+        p = Path(rel)
+        if p.is_absolute():
+            return p
+        if sc.source and (sc.source.parent / rel).exists():
+            return sc.source.parent / rel
+        return self.cfg.resolve(rel)  # type: ignore[return-value]
+
     def _build_fixtures(self, sc: Scenario, tmp: Path) -> dict[str, Path]:
         dbs: dict[str, Path] = {}
         for server, seed in sc.environment.fixtures.items():
-            seed_path = (sc.source.parent / seed) if sc.source and not Path(seed).is_absolute() else Path(seed)
-            if not seed_path.exists():
-                seed_path = self.cfg.resolve(seed)  # type: ignore[assignment]
+            seed_path = self._resolve(sc, seed)
             db = tmp / f"{server}.db"
             conn = sqlite3.connect(db)
             conn.executescript(seed_path.read_text(encoding="utf-8"))
@@ -200,55 +285,48 @@ class Runner:
             dbs[server] = db
         return dbs
 
-    async def _converse(self, sc: Scenario, rec: Recorder, eid: str, tmp: Path, stack: AsyncExitStack) -> None:
-        agent = self.cfg.agent
+    def _build_workspace(self, sc: Scenario, tmp: Path) -> Path | None:
+        """Fresh copy of the scenario's repo with a baseline commit, so graders can diff against it."""
+        ws = sc.environment.workspace
+        if ws is None:
+            return None
+        src = self._resolve(sc, ws.path)
+        if not src.is_dir():
+            raise FileNotFoundError(f"workspace {ws.path!r} not found")
+        dst = tmp / "workspace"
+        if (src / ".git").exists():
+            git(tmp, "clone", "--quiet", "--no-hardlinks", str(src), str(dst))
+            if ws.ref:
+                git(dst, "checkout", "--quiet", ws.ref)
+            git(dst, "config", "core.autocrlf", "false")
+        else:
+            if ws.ref:
+                raise ValueError("workspace.ref needs `path` to be a git repository")
+            shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".crucible", "__pycache__", ".pytest_cache"))
+            git(dst, "init", "--quiet")
+            git(dst, "config", "core.autocrlf", "false")
+            git(dst, "add", "-A")
+            git(dst, "-c", "user.name=crucible", "-c", "user.email=crucible@localhost",
+                "commit", "--quiet", "--allow-empty", "-m", "crucible baseline")
+        return dst
+
+    # ------------------------------------------------------------ conversation
+
+    async def _converse(self, sc: Scenario, rec: Recorder, eid: str, workspace: Path | None,
+                        stack: AsyncExitStack) -> None:
         base = self.gateway.base(eid)
-        env = {
-            **os.environ, **agent.env, **self.opts.agent_env,
-            "OPENAI_BASE_URL": f"{base}/v1", "OPENAI_API_KEY": "agentcrucible",
-            "CRUCIBLE_MODEL": self.model, "CRUCIBLE_EPISODE_ID": eid,
-            "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
-            **{f"CRUCIBLE_MCP_{n.upper()}_URL": f"{base}/mcp/{n}" for n in self.cfg.mcp_servers},
-        }
-        log_path = self.run_dir / "logs" / f"{eid}.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log = stack.enter_context(open(log_path, "w", encoding="utf-8"))
-        cmd = split_command(agent.command or "")
-        cwd = str((self.cfg.root / agent.cwd).resolve()) if agent.cwd else str(self.cfg.root)
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=cwd, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=log,
-            limit=2**22,
-        )
-
-        async def _stop() -> None:
-            if proc.returncode is None:
-                with contextlib.suppress(Exception):
-                    proc.stdin.write(b'{"type": "end"}\n')  # type: ignore[union-attr]
-                    await proc.stdin.drain()  # type: ignore[union-attr]
-                try:
-                    await asyncio.wait_for(proc.wait(), 5)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
-
-        stack.push_async_callback(_stop)
+        mcp_urls = {n: f"{base}/mcp/{n}" for n in self.cfg.mcp_servers}
+        if self.cfg.agent.transport == "http":
+            send = self._http_turns(eid, base, mcp_urls, workspace)
+        else:
+            send = await self._stdio_turns(eid, base, mcp_urls, workspace, stack)
 
         async def say(text: str) -> str:
             rec.turn += 1
             rec.add("user_message", content=text)
-            proc.stdin.write((json.dumps({"type": "user", "content": text}) + "\n").encode())  # type: ignore[union-attr]
-            await proc.stdin.drain()  # type: ignore[union-attr]
-            while True:
-                line = await asyncio.wait_for(proc.stdout.readline(), agent.turn_timeout_s)  # type: ignore[union-attr]
-                if not line:
-                    raise RuntimeError(f"agent exited (code {proc.returncode}); see {log_path.name}")
-                try:
-                    msg = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # stray print() output from the agent
-                if msg.get("type") == "assistant":
-                    rec.add("assistant_message", content=msg.get("content", ""))
-                    return msg.get("content", "")
+            reply = await send(text)
+            rec.add("assistant_message", content=reply)
+            return reply
 
         reply = await say(sc.task)
         if sc.user is None:
@@ -260,6 +338,89 @@ class Runner:
                 break
             reply = await say(nxt)
             history += [("user", nxt), ("agent", reply)]
+
+    async def _stdio_turns(self, eid: str, base: str, mcp_urls: dict[str, str], workspace: Path | None,
+                           stack: AsyncExitStack) -> Callable[[str], Awaitable[str]]:
+        """One agent process per episode; gateway URLs arrive as environment variables."""
+        agent = self.cfg.agent
+        env = {
+            **os.environ, **agent.env, **self.opts.agent_env,
+            "OPENAI_BASE_URL": f"{base}/v1", "OPENAI_API_KEY": "agentcrucible",
+            "ANTHROPIC_BASE_URL": base, "ANTHROPIC_API_KEY": "agentcrucible",
+            "CRUCIBLE_MODEL": self.model, "CRUCIBLE_EPISODE_ID": eid,
+            "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
+            **({"CRUCIBLE_WORKSPACE": str(workspace)} if workspace else {}),
+            **{f"CRUCIBLE_MCP_{n.upper()}_URL": url for n, url in mcp_urls.items()},
+        }
+        log_path = self.run_dir / "logs" / f"{eid}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log = stack.enter_context(open(log_path, "w", encoding="utf-8"))
+        cwd = str((self.cfg.root / agent.cwd).resolve()) if agent.cwd else str(self.cfg.root)
+        proc = await asyncio.create_subprocess_exec(
+            *split_command(agent.command or ""), cwd=cwd, env=env, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=log, limit=2**22,
+        )
+
+        async def _stop() -> None:
+            if proc.returncode is None:
+                with contextlib.suppress(Exception):
+                    proc.stdin.write(b'{"type": "end"}\n')  # type: ignore[union-attr]
+                    await proc.stdin.drain()  # type: ignore[union-attr]
+                try:
+                    await asyncio.wait_for(proc.wait(), 5)
+                except TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+
+        stack.push_async_callback(_stop)
+
+        async def send(text: str) -> str:
+            proc.stdin.write((json.dumps({"type": "user", "content": text}) + "\n").encode())  # type: ignore[union-attr]
+            await proc.stdin.drain()  # type: ignore[union-attr]
+            while True:
+                line = await asyncio.wait_for(proc.stdout.readline(), agent.turn_timeout_s)  # type: ignore[union-attr]
+                if not line:
+                    raise RuntimeError(f"agent exited (code {proc.returncode}); see logs/{log_path.name}")
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # stray print() output from the agent
+                if msg.get("type") == "assistant":
+                    return str(msg.get("content", ""))
+
+        return send
+
+    def _http_turns(self, eid: str, base: str, mcp_urls: dict[str, str],
+                    workspace: Path | None) -> Callable[[str], Awaitable[str]]:
+        """A long-running agent service; gateway URLs travel with every request in `context`."""
+        agent = self.cfg.agent
+        history: list[dict[str, str]] = []
+        context = {
+            "episode_id": eid,
+            "openai_base_url": f"{base}/v1",
+            "anthropic_base_url": base,
+            "api_key": "agentcrucible",
+            "model": self.model,
+            "mcp": mcp_urls,
+            "workspace": str(workspace) if workspace else None,
+            "env": self.opts.agent_env,
+        }
+
+        async def send(text: str) -> str:
+            history.append({"role": "user", "content": text})
+            r = await self.http.post(agent.url or "", json={"episode_id": eid, "messages": history, "context": context},
+                                     headers={"X-Crucible-Episode": eid, **agent.headers},
+                                     timeout=agent.turn_timeout_s)
+            if r.status_code >= 400:
+                raise RuntimeError(f"agent returned HTTP {r.status_code}: {r.text[:300]}")
+            data = r.json()
+            reply = data.get("content") if isinstance(data, dict) else None
+            if not isinstance(reply, str):
+                raise RuntimeError(f"agent response must be JSON with a string `content`, got {str(data)[:200]}")
+            history.append({"role": "assistant", "content": reply})
+            return reply
+
+        return send
 
     async def _simulate_user(self, persona: str, history: list[tuple[str, str]]) -> str | None:
         s = self.cfg.simulator

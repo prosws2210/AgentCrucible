@@ -390,11 +390,12 @@ def init(path: Path = typer.Argument(Path("."))) -> None:
 STARTER_CONFIG = """version: 1
 project: my-agent
 
-# AgentCrucible starts your agent once per episode and injects:
-#   OPENAI_BASE_URL / OPENAI_API_KEY   -> its LLM gateway (records, caches, forces the model)
-#   CRUCIBLE_MCP_<NAME>_URL          -> one MCP proxy per server below
-#   CRUCIBLE_MODEL                   -> the model under test
-# Agent protocol (stdio): read {"type":"user","content":...} lines, write {"type":"assistant","content":...} lines.
+# AgentCrucible connects your agent to its gateways (docs/ADOPTION.md):
+#   stdio: `command` runs once per episode and gets env vars
+#          OPENAI_BASE_URL / ANTHROPIC_BASE_URL, CRUCIBLE_MCP_<NAME>_URL, CRUCIBLE_MODEL, CRUCIBLE_WORKSPACE
+#          protocol: read {"type":"user","content":...} lines, write {"type":"assistant","content":...} lines
+#   http:  every turn is POSTed to `url` with the history and the same addresses in `context`
+#          (set `command` to have AgentCrucible start the service once per run)
 agent:
   transport: stdio
   command: python agent.py

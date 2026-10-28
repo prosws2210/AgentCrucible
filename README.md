@@ -2,7 +2,9 @@
 
 **Regression testing for AI agents and MCP servers.** AgentCrucible runs your agent through scripted scenarios in fresh sandboxes, records every LLM call and tool call, grades the whole trajectory (not just the final answer), and tells you, with statistics, whether a change made your agent better or worse.
 
-It works with **any agent in any framework** without code changes, because it sits on the two boundaries every agent has: the **LLM API** and **MCP tool calls**.
+It works with **any agent in any framework** without code changes, because it sits on the two boundaries every agent has: the **LLM API** (OpenAI Chat Completions and Anthropic Messages, streaming included) and **MCP tool calls**. Agents can be CLI processes or HTTP services, and coding agents get a fresh copy of a Git repo per episode.
+
+**Adopting it for your team:** [docs/ADOPTION.md](docs/ADOPTION.md)
 
 **Website:** https://prosws2210.github.io/AgentCrucible/ (source in [`website/`](website/))
 
@@ -164,6 +166,9 @@ checks:
 
 | Check | Asserts |
 |---|---|
+| `state.command` | Run a command in the episode's repo copy, e.g. the test suite (`expect_exit`, `contains`) |
+| `state.git_diff` | Which files the agent changed: `changed` / `not_changed` globs, `max_files`, `max_lines` |
+| `state.file` | A repo file exists / is absent / contains / matches |
 | `state.sql` | Query the episode's sandbox DB (`expect` value or `expect_rows`) |
 | `trajectory.tool_called` | Tool called (optionally with matching args, `re:` for regex) |
 | `trajectory.tool_not_called` | Forbidden tools never called |
@@ -254,7 +259,8 @@ Project layout:
 ```
 src/agentcrucible/
   config.py       project + scenario schema (Pydantic)
-  gateway.py      LLM gateway (OpenAI-compatible) + MCP gateway (record/mock/block/inject)
+  gateway.py      LLM gateway (OpenAI + Anthropic, streaming) + MCP gateway (record/mock/block/inject)
+  llm.py          API wire formats: summaries, stream accumulators, replayed streams
   runner.py       sandboxes, agent process, user simulator, sharding
   checks.py       graders
   stats.py        pass@k, pass^k, bootstrap, Fisher + Benjamini-Hochberg, gate
@@ -264,7 +270,8 @@ src/agentcrucible/
   cli.py          Typer CLI
   server.py       FastAPI backend for the dashboard
   db.py           run/audit history (Postgres or SQLite)
-examples/support-agent/   agent, 2 MCP servers with planted bugs, 10 scenarios, 2 prompts
+examples/support-agent/   stdio agent (OpenAI API), 2 MCP servers with planted bugs, 10 scenarios
+examples/coding-agent/    HTTP agent service (Anthropic SDK, streaming), workspace MCP server, Git repo fixture
 deploy/                   Helm chart, kind config
 docker-compose.yml        frontend + backend + Postgres + Ollama
 action.yml                GitHub Action

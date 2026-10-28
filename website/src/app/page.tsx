@@ -133,7 +133,7 @@ function Hero() {
 }
 
 function Stack() {
-  const items = ["OpenAI SDK", "LangGraph", "CrewAI", "AutoGen", "Claude Agent SDK", "plain Python", "Ollama", "vLLM", "OpenRouter", "any MCP server"];
+  const items = ["OpenAI SDK", "Anthropic SDK", "LangGraph", "CrewAI", "AutoGen", "CLI or HTTP agents", "Ollama", "vLLM", "OpenRouter", "any MCP server"];
   return (
     <div className="border-y border-line/70 bg-panel/40">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-center gap-x-7 gap-y-3 px-4 py-6 sm:px-6">
@@ -285,8 +285,8 @@ function Features() {
     },
     {
       t: "Fresh sandbox every episode",
-      b: "New MCP server processes, a new SQLite database from your fixture, isolated gateway routes. No test pollutes another, and dozens run in parallel.",
-      k: "fixtures · mocks · deny_tools",
+      b: "New MCP server processes, a new database from your fixture or a fresh copy of your Git repo, isolated gateway routes. Coding agents are judged by running the tests and diffing what they touched.",
+      k: "workspace · state.command · state.git_diff",
     },
     {
       t: "Attacks built in",

@@ -13,14 +13,22 @@ CONFIG_FILENAME = "crucible.yaml"
 
 
 class AgentSpec(BaseModel):
-    """How to start the agent under test."""
+    """How to reach the agent under test.
+
+    stdio: `command` is spawned once per episode; one JSON line in, one JSON line out per turn.
+    http:  each turn is POSTed to `url` with the full history and the episode's gateway URLs in `context`.
+           If `command` is set, AgentCrucible starts the service once per run and waits for it;
+           otherwise the service is expected to be running already (e.g. a staging deployment).
+    """
 
     transport: Literal["stdio", "http"] = "stdio"
-    command: str | None = None  # stdio: spawned once per episode
-    url: str | None = None  # http: long-running agent endpoint
+    command: str | None = None
+    url: str | None = None
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)  # http: e.g. an auth token for a staging service
     turn_timeout_s: float = 180.0
+    ready_timeout_s: float = 60.0
 
     @model_validator(mode="after")
     def _check(self) -> "AgentSpec":
@@ -40,8 +48,11 @@ class McpServerSpec(BaseModel):
 
 
 class LLMSettings(BaseModel):
-    upstream_base_url: str = "http://localhost:11434/v1"
+    upstream_base_url: str = "http://localhost:11434/v1"  # OpenAI-compatible (chat/completions)
     api_key: str = "ollama"
+    # Anthropic Messages upstream; default derives from upstream_base_url (Ollama serves both APIs)
+    anthropic_base_url: str | None = None
+    anthropic_api_key: str | None = None
     # off: always call upstream; read_write: reuse + store; replay: only cached responses
     cache: Literal["off", "read_write", "replay"] = "off"
     price_per_1k_input: float = 0.0
@@ -98,9 +109,18 @@ class UserSimSpec(BaseModel):
     max_turns: int = 4
 
 
+class WorkspaceSpec(BaseModel):
+    """A repository copied fresh for every episode (for coding agents)."""
+
+    path: str  # directory or git repo, relative to the scenario file or project root
+    ref: str | None = None  # git ref to check out when `path` is a git repo
+
+
 class Environment(BaseModel):
     # server name -> SQL seed file; a fresh SQLite DB is built per episode
     fixtures: dict[str, str] = Field(default_factory=dict)
+    # fresh copy of a repo per episode, exposed as CRUCIBLE_WORKSPACE to the agent and MCP servers
+    workspace: WorkspaceSpec | None = None
     # tool name -> result returned instead of calling the real server
     mocks: dict[str, Any] = Field(default_factory=dict)
     # tool name -> text appended to the real tool output (prompt-injection testing)
@@ -182,9 +202,15 @@ def load_config(path: Path | None = None) -> ProjectConfig:
     data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
     cfg = ProjectConfig.model_validate(data)
     cfg.root = f.parent
+    # ${VAR} in agent headers, so tokens for staging services stay out of the file
+    cfg.agent.headers = {k: os.path.expandvars(v) for k, v in cfg.agent.headers.items()}
     # Deployment-time override, e.g. inside Kubernetes where the model server has another address.
     if url := os.environ.get("CRUCIBLE_LLM_URL"):
         cfg.llm.upstream_base_url = cfg.simulator.base_url = cfg.judge.base_url = url
+    if url := os.environ.get("CRUCIBLE_ANTHROPIC_URL"):
+        cfg.llm.anthropic_base_url = url
+    if key := os.environ.get("CRUCIBLE_ANTHROPIC_API_KEY"):
+        cfg.llm.anthropic_api_key = key
     if key := os.environ.get("CRUCIBLE_LLM_API_KEY"):
         cfg.llm.api_key = cfg.simulator.api_key = cfg.judge.api_key = key
     if model := os.environ.get("CRUCIBLE_MODEL"):

@@ -337,7 +337,7 @@ function RunRow({ r, open, toggle }: { r: Run; open: boolean; toggle: () => void
       </tr>
       {open && (
         <tr className="border-b border-line/60 bg-panel/50">
-          <td colSpan={8} className="px-4 py-4">
+          <td colSpan={8} className="whitespace-normal px-4 py-4">
             <RunDetailView id={r.id} error={r.error} />
           </td>
         </tr>

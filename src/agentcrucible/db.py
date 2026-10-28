@@ -97,9 +97,12 @@ class Store:
             r = c.execute(select(runs).where(runs.c.id == run_id)).first()
         return _row(r) if r else None
 
-    def list_runs(self, limit: int = 100) -> list[dict[str, Any]]:
+    def list_runs(self, project: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        q = select(runs).order_by(runs.c.created_at.desc()).limit(limit)
+        if project is not None:
+            q = q.where(runs.c.project == project)
         with self.engine.connect() as c:
-            rows = c.execute(select(runs).order_by(runs.c.created_at.desc()).limit(limit)).all()
+            rows = c.execute(q).all()
         return [_row(r) for r in rows]
 
     def run_ids(self) -> set[str]:
@@ -119,8 +122,11 @@ class Store:
             r = c.execute(select(audits).where(audits.c.id == audit_id)).first()
         return _row(r) if r else None
 
-    def list_audits(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_audits(self, servers: list[str] | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        q = select(audits.c.id, audits.c.server, audits.c.grade, audits.c.overall,
+                   audits.c.created_at).order_by(audits.c.id.desc()).limit(limit)
+        if servers is not None:
+            q = q.where(audits.c.server.in_(servers))
         with self.engine.connect() as c:
-            rows = c.execute(select(audits.c.id, audits.c.server, audits.c.grade, audits.c.overall,
-                                    audits.c.created_at).order_by(audits.c.id.desc()).limit(limit)).all()
+            rows = c.execute(q).all()
         return [_row(r) for r in rows]
