@@ -104,7 +104,7 @@ export function Dots({ passed, n }: { passed: number; n: number }) {
   );
 }
 
-export function Code({ code, title, copy = true, wrap = false }: { code: string; title?: string; copy?: boolean; wrap?: boolean }) {
+export function Code({ code, title, copy = true, small = false }: { code: string; title?: string; copy?: boolean; small?: boolean }) {
   return (
     <div className="overflow-hidden rounded-xl border border-line bg-panel-2/60">
       {(title || copy) && (
@@ -113,9 +113,22 @@ export function Code({ code, title, copy = true, wrap = false }: { code: string;
           {copy && <CopyButton text={code} />}
         </div>
       )}
-      <pre className={`code px-4 py-3.5 text-fg/90 ${wrap ? "whitespace-pre-wrap break-words text-[12px]" : "overflow-x-auto"}`}>{code}</pre>
+      <pre className={`code px-4 py-3.5 text-fg/90 ${small ? "text-[12px]" : ""}`}><CodeLines code={code} /></pre>
     </div>
   );
+}
+
+/** Code lines that wrap instead of scrolling sideways. A wrapped line continues indented under its own start, so it
+ *  can't be mistaken for a new line; copying still gives the original text. */
+export function CodeLines({ code }: { code: string }) {
+  return code.split("\n").map((line, i) => {
+    const lead = line.length - line.trimStart().length;
+    return (
+      <div key={i} className="whitespace-pre-wrap break-words" style={{ paddingLeft: `${lead + 2}ch`, textIndent: "-2ch" }}>
+        {line.trimStart() || " "}
+      </div>
+    );
+  });
 }
 
 export function PassRate({ value }: { value: number | null | undefined }) {

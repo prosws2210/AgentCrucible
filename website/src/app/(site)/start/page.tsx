@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { Nav } from "@/components/Nav";
 import { Wizard } from "@/components/Wizard";
 
 export const metadata: Metadata = {
@@ -9,9 +8,7 @@ export const metadata: Metadata = {
 
 export default function StartPage() {
   return (
-    <>
-      <Nav />
-      <main className="relative flex-1">
+    <div className="relative">
         <div className="grid-bg pointer-events-none absolute inset-x-0 top-0 h-96" />
         <div className="relative mx-auto w-full max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
           <div className="max-w-2xl">
@@ -26,7 +23,6 @@ export default function StartPage() {
           </div>
           <Wizard />
         </div>
-      </main>
-    </>
+    </div>
   );
 }

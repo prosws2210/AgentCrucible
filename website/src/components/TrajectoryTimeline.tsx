@@ -70,7 +70,7 @@ function Event({ e, bad }: { e: TrajectoryEvent; bad: boolean }) {
             {e.mocked && <Tag tone="mute">mocked</Tag>}
             {e.injected && <Tag tone="warn">attack injected into result</Tag>}
           </div>
-          <pre className="code mt-1.5 max-h-56 overflow-auto rounded-lg bg-panel-2 px-3 py-2 text-[12px] text-mute">
+          <pre className="code mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-panel-2 px-3 py-2 text-[12px] text-mute">
             {JSON.stringify(e.args ?? {}, null, 1)}
           </pre>
         </>,

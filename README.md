@@ -88,7 +88,7 @@ Each episode gets `OPENAI_BASE_URL=http://127.0.0.1:<port>/ep/<episode>/v1` and 
 ollama pull qwen2.5:7b
 
 # 2. install
-pip install agentcrucible   # from a clone: pip install -e .  (or uv sync)
+pip install -e .            # from a clone (or uv sync); `pip install agentcrucible` once a release is on PyPI
 
 # 3. run the bundled example: a support agent + 2 MCP servers + 10 scenarios
 cd examples/support-agent

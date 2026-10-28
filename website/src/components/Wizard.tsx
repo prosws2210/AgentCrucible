@@ -6,6 +6,7 @@ import {
   type AgentKind, type Answers, type LlmApi, type Provider, type StateKind,
 } from "@/lib/wizard";
 import { CopyButton } from "./CopyButton";
+import { CodeLines } from "./ui";
 import { IconCheck, IconCode, IconGit, IconPlus, IconServer, IconX } from "./Icons";
 
 export function Wizard() {
@@ -134,16 +135,8 @@ export function Wizard() {
               <CopyButton text={file.code} />
             </div>
           </div>
-          {/* long lines wrap with a hanging indent, so a wrapped line can't be mistaken for a new one; copy/download use the raw text */}
           <pre className="code max-h-[560px] overflow-y-auto bg-panel-2 px-4 pb-4 text-[12.5px] text-fg/90">
-            {file.code.split("\n").map((line, i) => {
-              const lead = line.length - line.trimStart().length;
-              return (
-                <div key={i} className="whitespace-pre-wrap break-words" style={{ paddingLeft: `${lead + 2}ch`, textIndent: "-2ch" }}>
-                  {line.trimStart() || " "}
-                </div>
-              );
-            })}
+            <CodeLines code={file.code} />
           </pre>
         </div>
         <ul className="mt-4 grid gap-2 text-[12.5px] text-mute sm:grid-cols-3">

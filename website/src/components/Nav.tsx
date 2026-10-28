@@ -1,31 +1,51 @@
+"use client";
+
 import Link from "next/link";
-import { GITHUB } from "@/lib/site";
-import { IconMenu } from "./Icons";
+import { usePathname } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { GITHUB, NAV_LINKS } from "@/lib/site";
+import { IconMenu, IconX } from "./Icons";
 import { Logo } from "./Logo";
 
-const links: [string, string, boolean?][] = [
-  ["How it works", "/#how"],
-  ["Use cases", "/#use-cases"],
-  ["Live demo", "/#demo"],
-  ["Docs", `${GITHUB}/blob/main/docs/ADOPTION.md`, true],
-  ["FAQ", "/#faq"],
-];
+const norm = (p: string) => (p.endsWith("/") ? p : `${p}/`);
 
 export function Nav() {
+  const pathname = norm(usePathname() || "/");
+  const [open, setOpen] = useState(false);
+  const menu = useRef<HTMLDivElement>(null);
+
+  // close the phone menu after navigating, on Escape, or on a click outside it
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onClick = (e: MouseEvent) => menu.current && !menu.current.contains(e.target as Node) && setOpen(false);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onClick);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onClick);
+    };
+  }, [open]);
+
+  const isActive = (href: string) => pathname.startsWith(href);
+
   return (
     <header className="sticky top-0 z-50 border-b border-line/70 bg-ink/80 backdrop-blur-xl">
       <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
         <Link href="/" aria-label="AgentCrucible home">
           <Logo />
         </Link>
-        <div className="hidden items-center gap-7 text-[13.5px] text-mute lg:flex">
-          {links.map(([label, href, ext]) =>
-            ext ? (
-              <a key={href} href={href} target="_blank" rel="noreferrer" className="transition-colors hover:text-fg">{label}</a>
-            ) : (
-              <Link key={href} href={href} className="transition-colors hover:text-fg">{label}</Link>
-            ),
-          )}
+        <div className="hidden items-center gap-1 text-[13.5px] lg:flex">
+          {NAV_LINKS.map(([label, href]) => (
+            <Link
+              key={href}
+              href={href}
+              aria-current={isActive(href) ? "page" : undefined}
+              className={`rounded-full px-3 py-1.5 transition-colors ${isActive(href) ? "bg-white/[0.07] text-fg" : "text-mute hover:text-fg"}`}
+            >
+              {label}
+            </Link>
+          ))}
         </div>
         <div className="flex items-center gap-2">
           <a href={GITHUB} className="hidden items-center gap-2 rounded-full px-3 py-1.5 text-[13px] text-mute transition-colors hover:text-fg sm:flex">
@@ -37,20 +57,34 @@ export function Nav() {
           <Link href="/start/" className="rounded-full bg-fg px-3.5 py-1.5 text-[13px] font-semibold text-ink transition-colors hover:bg-white">
             Get started
           </Link>
-          <details className="relative lg:hidden">
-            <summary className="flex cursor-pointer list-none items-center rounded-lg p-1.5 text-mute hover:text-fg [&::-webkit-details-marker]:hidden" aria-label="Menu">
-              <IconMenu className="h-5 w-5" />
-            </summary>
-            <div className="absolute right-0 top-10 w-56 rounded-xl border border-line bg-panel p-2 shadow-2xl shadow-black/60">
-              {links.map(([label, href, ext]) => (
-                <a key={href} href={href} {...(ext ? { target: "_blank", rel: "noreferrer" } : {})} className="block rounded-lg px-3 py-2 text-[14px] text-mute hover:bg-white/5 hover:text-fg">
-                  {label}
-                </a>
-              ))}
-              <Link href="/dashboard/" className="block rounded-lg px-3 py-2 text-[14px] text-mute hover:bg-white/5 hover:text-fg">Dashboard</Link>
-              <a href={GITHUB} className="block rounded-lg px-3 py-2 text-[14px] text-mute hover:bg-white/5 hover:text-fg">GitHub</a>
-            </div>
-          </details>
+          <div ref={menu} className="relative lg:hidden">
+            <button
+              onClick={() => setOpen((o) => !o)}
+              aria-expanded={open}
+              aria-label={open ? "Close menu" : "Menu"}
+              className="flex items-center rounded-lg p-1.5 text-mute hover:text-fg"
+            >
+              {open ? <IconX className="h-5 w-5" /> : <IconMenu className="h-5 w-5" />}
+            </button>
+            {open && (
+              <div className="absolute right-0 top-11 w-60 rounded-xl border border-line bg-panel p-2 shadow-2xl shadow-black/60">
+                {NAV_LINKS.map(([label, href]) => (
+                  <Link
+                    key={href}
+                    href={href}
+                    onClick={() => setOpen(false)}
+                    aria-current={isActive(href) ? "page" : undefined}
+                    className={`block rounded-lg px-3 py-2 text-[14px] hover:bg-white/5 hover:text-fg ${isActive(href) ? "bg-white/[0.06] text-fg" : "text-mute"}`}
+                  >
+                    {label}
+                  </Link>
+                ))}
+                <div className="my-1.5 border-t border-line" />
+                <Link href="/dashboard/" onClick={() => setOpen(false)} className="block rounded-lg px-3 py-2 text-[14px] text-mute hover:bg-white/5 hover:text-fg">Dashboard</Link>
+                <a href={GITHUB} className="block rounded-lg px-3 py-2 text-[14px] text-mute hover:bg-white/5 hover:text-fg">GitHub</a>
+              </div>
+            )}
+          </div>
         </div>
       </nav>
     </header>

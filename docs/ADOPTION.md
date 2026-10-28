@@ -15,8 +15,8 @@ Two complete, runnable references ship in `examples/`:
 ## 1. Install
 
 ```bash
-pip install agentcrucible            # CLI (or: pip install "agentcrucible @ git+https://github.com/prosws2210/AgentCrucible")
-# container: docker pull ghcr.io/prosws2210/agentcrucible:0.2.0, or the full stack: docker compose up
+pip install "agentcrucible @ git+https://github.com/prosws2210/AgentCrucible"   # CLI; `pip install agentcrucible` once released to PyPI
+# container: docker build -t agentcrucible . (tagged releases also publish ghcr.io/prosws2210/agentcrucible), or the full stack: docker compose up
 crucible init my-agent-tests        # scaffolds crucible.yaml and a first scenario
 ```
 
