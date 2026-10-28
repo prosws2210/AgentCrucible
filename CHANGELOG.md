@@ -23,7 +23,8 @@ All notable changes to AgentCrucible. Versions follow [Semantic Versioning](http
   and dashboard; browser login via an HttpOnly session cookie.
 - **Dashboard:** overview with onboarding, runs with live progress and in-app trajectories, scenarios, MCP audits,
   setup with a live connection check, login.
-- **Website:** product landing page and a setup wizard that generates `crucible.yaml`, an agent adapter and a first
+- **Website:** product site (how it works, use cases, features, compare, FAQ, docs), a 2-minute narrated walkthrough
+  built from the real recorded runs, and a setup wizard that generates `crucible.yaml`, an agent adapter and a first
   scenario.
 - **Docker Compose stack:** frontend, API, Postgres and an Ollama model server (GPU optional).
 - **Releases:** tagged versions build wheels, a GitHub Release, Docker images on GHCR and (optionally) PyPI.
