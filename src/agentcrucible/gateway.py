@@ -8,12 +8,16 @@ mocked, blocked or injected) without touching the agent's code.
 Routes (one HTTP server per run, episodes are isolated by path):
     /ep/{episode_id}/v1/chat/completions      OpenAI Chat Completions proxy (streaming supported)
     /ep/{episode_id}/v1/messages              Anthropic Messages proxy (streaming supported)
+    /ep/{episode_id}/v1/responses             OpenAI Responses proxy (streaming supported)
+    /ep/{episode_id}/http/{name}/...          HTTP mock declared in the scenario (requests recorded)
     /ep/{episode_id}/v1/models
     /ep/{episode_id}/mcp/{server}             MCP Streamable HTTP proxy -> per-episode stdio server
 """
 
 from __future__ import annotations
 
+import contextlib
+import fnmatch
 import hashlib
 import json
 import os
@@ -29,13 +33,15 @@ from typing import Any
 import httpx
 import mcp.types as mt
 from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.lowlevel import Server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
-from .config import Environment, LLMSettings, McpServerSpec
+from .config import Environment, LLMSettings, McpServerSpec, MockRoute
 from .llm import Api, accumulator, as_sse, summarize
 from .trajectory import Recorder, clip
 
@@ -64,6 +70,34 @@ def content_text(blocks: list[Any]) -> str:
 # ------------------------------------------------------------------ MCP proxy
 
 
+async def probe_remote(name: str, spec: McpServerSpec, timeout: float = 15) -> None:
+    """Fail fast with a readable error when a remote MCP server is down or rejects our headers.
+
+    The MCP client reports HTTP errors by cancelling its task group, which surfaces as a bare CancelledError.
+    """
+    url = spec.url or ""
+    try:
+        async with httpx.AsyncClient(timeout=timeout, headers=spec.headers) as client:
+            if spec.transport == "sse":
+                async with client.stream("GET", url, headers={"Accept": "text/event-stream"}) as r:
+                    status = r.status_code
+            else:
+                r = await client.post(url, headers={"Accept": "application/json, text/event-stream"}, json={
+                    "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+                        "protocolVersion": mt.LATEST_PROTOCOL_VERSION, "capabilities": {},
+                        "clientInfo": {"name": "agentcrucible-probe", "version": "1"}}})
+                status = r.status_code
+                if sid := r.headers.get("mcp-session-id"):  # don't leave the probe's session open
+                    with contextlib.suppress(httpx.HTTPError):
+                        await client.delete(url, headers={"mcp-session-id": sid})
+    except httpx.HTTPError as e:
+        raise ConnectionError(f"MCP server {name!r} at {url} is unreachable: {type(e).__name__}: {e}") from None
+    if status in (401, 403):
+        raise PermissionError(f"MCP server {name!r} at {url} returned HTTP {status}: check its `headers` in crucible.yaml")
+    if status >= 400:
+        raise ConnectionError(f"MCP server {name!r} at {url} returned HTTP {status}")
+
+
 class McpProxy:
     """Spawns one real MCP server (stdio) for an episode and exposes it over Streamable HTTP."""
 
@@ -75,13 +109,21 @@ class McpProxy:
         self._stack = AsyncExitStack()
 
     async def __aenter__(self) -> "McpProxy":
-        cmd = split_command(self.spec.command)
-        cwd = self.spec.cwd and str((self.root / self.spec.cwd).resolve())
-        params = StdioServerParameters(
-            command=cmd[0], args=cmd[1:], cwd=cwd or str(self.root),
-            env={**os.environ, **self.spec.env, **self.env},
-        )
-        read, write = await self._stack.enter_async_context(stdio_client(params, errlog=open(os.devnull, "w")))
+        if self.spec.url:  # already-running remote server
+            await probe_remote(self.name, self.spec)
+            if self.spec.transport == "sse":
+                read, write = await self._stack.enter_async_context(sse_client(self.spec.url, headers=self.spec.headers))
+            else:
+                read, write, _ = await self._stack.enter_async_context(
+                    streamablehttp_client(self.spec.url, headers=self.spec.headers))
+        else:  # local server, started fresh for this episode
+            cmd = split_command(self.spec.command or "")
+            cwd = self.spec.cwd and str((self.root / self.spec.cwd).resolve())
+            params = StdioServerParameters(
+                command=cmd[0], args=cmd[1:], cwd=cwd or str(self.root),
+                env={**os.environ, **self.spec.env, **self.env},
+            )
+            read, write = await self._stack.enter_async_context(stdio_client(params, errlog=open(os.devnull, "w")))
         self.session = await self._stack.enter_async_context(ClientSession(read, write))
         await self.session.initialize()
         self.tools = (await self.session.list_tools()).tools
@@ -140,6 +182,7 @@ class McpProxy:
 class EpisodeRoutes:
     rec: Recorder
     proxies: dict[str, McpProxy] = field(default_factory=dict)
+    http_mocks: dict[str, list[MockRoute]] = field(default_factory=dict)
     llm_n: int = 0  # LLM calls made so far in this episode
     llm_seq: list[dict[str, str]] = field(default_factory=list)  # cache keys in call order (read_write)
 
@@ -172,6 +215,10 @@ class Gateway:
         if len(parts) < 3 or parts[0] != "ep" or parts[1] not in self.episodes:
             return await JSONResponse({"error": "unknown episode"}, 404)(scope, receive, send)
         ep = self.episodes[parts[1]]
+        if parts[2] == "http" and len(parts) >= 4 and parts[3] in ep.http_mocks:
+            req = Request(scope, receive)
+            resp = await self._http_mock(ep, parts[3], "/" + "/".join(parts[4:]), req)
+            return await resp(scope, receive, send)
         if parts[2] == "mcp" and len(parts) >= 4 and parts[3] in ep.proxies:
             mgr = ep.proxies[parts[3]].manager
             assert mgr is not None
@@ -183,12 +230,27 @@ class Gateway:
                 resp = await self._llm(ep, "openai", await req.json(), req.headers)
             elif tail == "messages" and req.method == "POST":
                 resp = await self._llm(ep, "anthropic", await req.json(), req.headers)
+            elif tail == "responses" and req.method == "POST":
+                resp = await self._llm(ep, "responses", await req.json(), req.headers)
             elif tail == "models":
                 resp = JSONResponse({"object": "list", "data": [{"id": self.force_model or "model", "object": "model"}]})
             else:
                 resp = JSONResponse({"error": f"unsupported endpoint {tail}"}, 404)
             return await resp(scope, receive, send)
         return await JSONResponse({"error": "not found"}, 404)(scope, receive, send)
+
+    # HTTP mocks ----------------------------------------------------------
+    async def _http_mock(self, ep: EpisodeRoutes, name: str, path: str, req: Request) -> Response:
+        body = (await req.body()).decode("utf-8", errors="replace")
+        route = next((r for r in ep.http_mocks[name]
+                      if r.method.upper() in ("*", req.method.upper()) and fnmatch.fnmatchcase(path, r.path)), None)
+        ep.rec.add("http_request", mock=name, method=req.method, path=path, query=str(req.url.query),
+                   body=clip(body, 2000), status=route.status if route else 404, matched=route is not None)
+        if route is None:
+            return JSONResponse({"error": f"no mock for {req.method} {path} on {name!r}"}, 404)
+        if route.json_body is not None:
+            return JSONResponse(route.json_body, route.status, headers=route.headers)
+        return Response(route.body or "", route.status, headers=route.headers)
 
     # LLM proxy (OpenAI Chat Completions + Anthropic Messages) ------------
     def _upstream(self, api: Api, headers: Any) -> tuple[str, dict[str, str]]:
@@ -199,7 +261,8 @@ class Gateway:
             if headers.get("anthropic-beta"):
                 h["anthropic-beta"] = headers["anthropic-beta"]
             return base + "/v1/messages", h
-        return self.llm.upstream_base_url.rstrip("/") + "/chat/completions", {"Authorization": f"Bearer {self.llm.api_key}"}
+        path = "/responses" if api == "responses" else "/chat/completions"
+        return self.llm.upstream_base_url.rstrip("/") + path, {"Authorization": f"Bearer {self.llm.api_key}"}
 
     async def _llm(self, ep: EpisodeRoutes, api: Api, body: dict[str, Any], headers: Any) -> Response:
         rec = ep.rec
@@ -309,7 +372,7 @@ class Gateway:
             cache=cache_state,
             stream=streamed,
             finish_reason=s.stop_reason,
-            n_messages=len(body.get("messages", [])),
+            n_messages=len(body.get("messages") or (body["input"] if isinstance(body.get("input"), list) else [1])),
             n_tools=len(body.get("tools") or []),
             content=clip(s.content),
             tool_calls=s.tool_calls,

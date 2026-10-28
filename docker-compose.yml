@@ -63,7 +63,7 @@ services:
 
   backend:
     build: .
-    image: agentcrucible:0.1.0
+    image: agentcrucible:0.2.0
     command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
     # which project the dashboard serves: support-agent (stdio + SQLite) or coding-agent (http + Anthropic + repos)
     working_dir: /workspace/examples/${CRUCIBLE_PROJECT:-support-agent}
@@ -72,6 +72,11 @@ services:
       CRUCIBLE_LLM_URL: http://models:11434/v1
       CRUCIBLE_MODEL: ${CRUCIBLE_MODEL:-qwen2.5:7b}
       CRUCIBLE_HELPER_MODEL: ${CRUCIBLE_MODEL:-qwen2.5:7b}
+      # Postgres fixtures: a fresh database per episode is created (and dropped) on this server
+      CRUCIBLE_POSTGRES_URL: ${CRUCIBLE_POSTGRES_URL:-postgresql://${POSTGRES_USER:-crucible}:${POSTGRES_PASSWORD:-crucible}@db:5432/${POSTGRES_DB:-crucible}}
+      # Dashboard/API access. Empty = open (fine on your own machine); set before exposing the port.
+      CRUCIBLE_API_TOKEN: ${CRUCIBLE_API_TOKEN:-}
+      CRUCIBLE_VIEWER_TOKEN: ${CRUCIBLE_VIEWER_TOKEN:-}
     volumes:
       - results:/workspace/examples/${CRUCIBLE_PROJECT:-support-agent}/.crucible
     ports:
@@ -83,7 +88,7 @@ services:
 
   frontend:
     build: ./website
-    image: agentcrucible-web:0.1.0
+    image: agentcrucible-web:0.2.0
     ports:
       - "8080:80"
     depends_on:

@@ -195,7 +195,9 @@ def open_cmd(ref: str = typer.Argument("latest"), config: Path = typer.Option(No
 @app.command("mcp-audit")
 def mcp_audit(
     command: Optional[str] = typer.Option(None, "--command", help="Command that starts the server over stdio"),
-    url: Optional[str] = typer.Option(None, "--url", help="Streamable HTTP URL of a running server"),
+    url: Optional[str] = typer.Option(None, "--url", help="URL of a running server (Streamable HTTP)"),
+    header: Optional[list[str]] = typer.Option(None, "--header", "-H", help="Header for --url, e.g. 'Authorization: Bearer x'"),
+    sse: bool = typer.Option(False, "--sse", help="The --url server uses the legacy HTTP+SSE transport"),
     env: Optional[list[str]] = typer.Option(None, "--env", "-e", help="Server env KEY=VALUE"),
     cwd: Optional[Path] = typer.Option(None, "--cwd"),
     fixture: Optional[Path] = typer.Option(None, "--fixture", help="SQL seed; a fresh SQLite DB is passed as CRUCIBLE_DB"),
@@ -211,8 +213,10 @@ def mcp_audit(
     if not command and not url:
         raise typer.BadParameter("give --command or --url")
     console.print(f"[bold]MCP audit[/] · {url or command}")
+    headers = {k.strip(): v.strip() for k, v in (h.split(":", 1) for h in header or [])}
     rep = asyncio.run(run_audit(command, url, dict(e.split("=", 1) for e in env or []),
-                                str(cwd) if cwd else None, fixture, destructive, model, llm_url, llm_key))
+                                str(cwd) if cwd else None, fixture, destructive, model, llm_url, llm_key,
+                                headers, "sse" if sse else "http"))
     t = Table(title=f"{rep.server_name} · grade {rep.grade} ({rep.overall}/100)")
     t.add_column("Suite")
     t.add_column("Score", justify="right")

@@ -40,11 +40,29 @@ class AgentSpec(BaseModel):
 
 
 class McpServerSpec(BaseModel):
-    """An MCP server the agent can use. Spawned fresh (stdio) per episode."""
+    """An MCP server the agent can use.
 
-    command: str
+    command: spawned fresh over stdio for every episode (clean state each time).
+    url:     an already-running remote server (Streamable HTTP, or legacy SSE). Its state is shared
+             across episodes, so reset it yourself or use it for read-only tools.
+    """
+
+    command: str | None = None
+    url: str | None = None
+    transport: Literal["http", "sse"] = "http"  # only for `url`
+    headers: dict[str, str] = Field(default_factory=dict)  # only for `url`; ${ENV_VAR} is expanded
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "McpServerSpec":
+        if bool(self.command) == bool(self.url):
+            raise ValueError("an MCP server needs exactly one of `command` (local, stdio) or `url` (remote)")
+        return self
+
+    @property
+    def target(self) -> str:
+        return self.url or self.command or ""
 
 
 class LLMSettings(BaseModel):
@@ -66,6 +84,12 @@ class HelperModel(BaseModel):
     base_url: str = "http://localhost:11434/v1"
     api_key: str = "ollama"
     temperature: float = 0.3
+
+
+class PostgresSettings(BaseModel):
+    """Server used for `postgres` fixtures: a fresh database is created (and dropped) per episode."""
+
+    admin_url: str | None = None  # e.g. postgresql://user:pass@localhost:5432/postgres; env CRUCIBLE_POSTGRES_URL
 
 
 class SuiteSpec(BaseModel):
@@ -91,6 +115,7 @@ class ProjectConfig(BaseModel):
     judge: HelperModel = Field(default_factory=lambda: HelperModel(temperature=0.0))
     suites: dict[str, SuiteSpec] = Field(default_factory=dict)
     ci: CISettings = Field(default_factory=CISettings)
+    postgres: PostgresSettings = Field(default_factory=PostgresSettings)
 
     root: Path = Field(default=Path("."), exclude=True)
 
@@ -116,9 +141,32 @@ class WorkspaceSpec(BaseModel):
     ref: str | None = None  # git ref to check out when `path` is a git repo
 
 
+class Fixture(BaseModel):
+    """A database built fresh for every episode from a SQL seed file."""
+
+    kind: Literal["sqlite", "postgres"] = "sqlite"
+    seed: str
+
+
+class MockRoute(BaseModel):
+    """One canned HTTP response. `path` may use * wildcards; `method` may be * for any."""
+
+    method: str = "GET"
+    path: str = "/*"
+    status: int = 200
+    json_body: Any = Field(default=None, alias="json")
+    body: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}
+
+
 class Environment(BaseModel):
-    # server name -> SQL seed file; a fresh SQLite DB is built per episode
-    fixtures: dict[str, str] = Field(default_factory=dict)
+    # server name -> database for that MCP server (SQLite file or a fresh Postgres database).
+    # Written as `shop: seed.sql` (SQLite) or `shop: { postgres: seed.sql }`.
+    fixtures: dict[str, Fixture] = Field(default_factory=dict)
+    # name -> canned responses for an HTTP API, served at CRUCIBLE_HTTP_<NAME>_URL; every request is recorded
+    http_mocks: dict[str, list[MockRoute]] = Field(default_factory=dict)
     # fresh copy of a repo per episode, exposed as CRUCIBLE_WORKSPACE to the agent and MCP servers
     workspace: WorkspaceSpec | None = None
     # tool name -> result returned instead of calling the real server
@@ -127,6 +175,20 @@ class Environment(BaseModel):
     inject: dict[str, str] = Field(default_factory=dict)
     # tool names the agent must never call; calls are blocked and recorded
     deny_tools: list[str] = Field(default_factory=list)
+
+    @field_validator("fixtures", mode="before")
+    @classmethod
+    def _fixture_shorthand(cls, raw: Any) -> Any:
+        out = {}
+        for name, v in (raw or {}).items():
+            if isinstance(v, str):
+                out[name] = {"kind": "sqlite", "seed": v}
+            elif isinstance(v, dict) and "seed" not in v and len(v) == 1:
+                kind, seed = next(iter(v.items()))
+                out[name] = {"kind": kind, "seed": seed}
+            else:
+                out[name] = v
+        return out
 
 
 class Check(BaseModel):
@@ -213,6 +275,10 @@ def load_config(path: Path | None = None) -> ProjectConfig:
         cfg.llm.anthropic_api_key = key
     if key := os.environ.get("CRUCIBLE_LLM_API_KEY"):
         cfg.llm.api_key = cfg.simulator.api_key = cfg.judge.api_key = key
+    if pg := os.environ.get("CRUCIBLE_POSTGRES_URL"):
+        cfg.postgres.admin_url = pg
+    for spec in cfg.mcp_servers.values():  # ${VAR} in remote MCP headers, so tokens stay out of the file
+        spec.headers = {k: os.path.expandvars(v) for k, v in spec.headers.items()}
     if model := os.environ.get("CRUCIBLE_MODEL"):
         cfg.model = model
     if helper := os.environ.get("CRUCIBLE_HELPER_MODEL"):

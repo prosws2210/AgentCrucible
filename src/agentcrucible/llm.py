@@ -1,4 +1,4 @@
-"""Wire formats the LLM gateway understands: OpenAI Chat Completions and Anthropic Messages.
+"""Wire formats the LLM gateway understands: OpenAI Chat Completions, OpenAI Responses and Anthropic Messages.
 
 For each API this module knows how to
   * summarize a complete response for the trajectory (tokens, text, tool calls, stop reason)
@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Literal
 
-Api = Literal["openai", "anthropic"]
+Api = Literal["openai", "anthropic", "responses"]
 
 
 @dataclass
@@ -27,6 +27,19 @@ class Summary:
 
 
 def summarize(api: Api, data: dict[str, Any]) -> Summary:
+    if api == "responses":
+        usage = data.get("usage") or {}
+        items = data.get("output") or []
+        text = "".join(c.get("text", "") for it in items if it.get("type") == "message"
+                       for c in it.get("content") or [] if c.get("type") == "output_text")
+        return Summary(
+            model=data.get("model"),
+            tokens_in=int(usage.get("input_tokens") or 0),
+            tokens_out=int(usage.get("output_tokens") or 0),
+            content=text,
+            tool_calls=[it.get("name", "") for it in items if it.get("type") == "function_call"],
+            stop_reason=data.get("status"),
+        )
     if api == "anthropic":
         usage = data.get("usage") or {}
         blocks = data.get("content") or []
@@ -155,7 +168,35 @@ class AnthropicStream:
                 "stop_reason": self.stop_reason, "usage": usage}
 
 
-def accumulator(api: Api) -> OpenAIStream | AnthropicStream:
+@dataclass
+class ResponsesStream:
+    """OpenAI Responses stream: the final `response.completed` event carries the whole response."""
+
+    final: dict[str, Any] | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
+    items: dict[int, dict[str, Any]] = field(default_factory=dict)
+
+    def feed(self, line: bytes) -> None:
+        ev = _sse_json(line)
+        if ev is None:
+            return
+        t = ev.get("type", "")
+        if t in ("response.completed", "response.incomplete", "response.failed"):
+            self.final = ev.get("response")
+        elif t == "response.created":
+            self.meta = dict(ev.get("response") or {})
+        elif t == "response.output_item.done":
+            self.items[ev.get("output_index", len(self.items))] = ev.get("item") or {}
+
+    def result(self) -> dict[str, Any]:
+        if self.final:
+            return self.final
+        return {**self.meta, "status": "incomplete", "output": [self.items[i] for i in sorted(self.items)]}
+
+
+def accumulator(api: Api) -> OpenAIStream | AnthropicStream | ResponsesStream:
+    if api == "responses":
+        return ResponsesStream()
     return AnthropicStream() if api == "anthropic" else OpenAIStream()
 
 
@@ -163,6 +204,9 @@ def accumulator(api: Api) -> OpenAIStream | AnthropicStream:
 
 
 def as_sse(api: Api, data: dict[str, Any]) -> Iterator[str]:
+    if api == "responses":
+        yield from _responses_sse(data)
+        return
     if api == "anthropic":
         yield from _anthropic_sse(data)
     else:
@@ -209,3 +253,40 @@ def _anthropic_sse(data: dict[str, Any]) -> Iterator[str]:
     yield ev("message_delta", {"type": "message_delta", "delta": {"stop_reason": data.get("stop_reason")},
                                "usage": {"output_tokens": usage.get("output_tokens", 0)}})
     yield ev("message_stop", {"type": "message_stop"})
+
+
+def _responses_sse(data: dict[str, Any]) -> Iterator[str]:
+    seq = 0
+
+    def ev(payload: dict[str, Any]) -> str:
+        nonlocal seq
+        payload = {**payload, "sequence_number": seq}
+        seq += 1
+        return f"event: {payload['type']}\ndata: {json.dumps(payload)}\n\n"
+
+    yield ev({"type": "response.created", "response": {**data, "status": "in_progress", "output": []}})
+    yield ev({"type": "response.in_progress", "response": {**data, "status": "in_progress", "output": []}})
+    for i, item in enumerate(data.get("output") or []):
+        iid = item.get("id", f"item_{i}")
+        if item.get("type") == "message":
+            yield ev({"type": "response.output_item.added", "output_index": i, "item": {**item, "content": [], "status": "in_progress"}})
+            for j, part in enumerate(item.get("content") or []):
+                text = part.get("text", "")
+                yield ev({"type": "response.content_part.added", "item_id": iid, "output_index": i, "content_index": j,
+                          "part": {**part, "text": ""}})
+                yield ev({"type": "response.output_text.delta", "item_id": iid, "output_index": i, "content_index": j,
+                          "delta": text, "logprobs": []})
+                yield ev({"type": "response.output_text.done", "item_id": iid, "output_index": i, "content_index": j,
+                          "text": text, "logprobs": []})
+                yield ev({"type": "response.content_part.done", "item_id": iid, "output_index": i, "content_index": j, "part": part})
+        elif item.get("type") == "function_call":
+            yield ev({"type": "response.output_item.added", "output_index": i,
+                      "item": {**item, "arguments": "", "status": "in_progress"}})
+            yield ev({"type": "response.function_call_arguments.delta", "item_id": iid, "output_index": i,
+                      "delta": item.get("arguments", "")})
+            yield ev({"type": "response.function_call_arguments.done", "item_id": iid, "output_index": i,
+                      "arguments": item.get("arguments", "")})
+        else:
+            yield ev({"type": "response.output_item.added", "output_index": i, "item": item})
+        yield ev({"type": "response.output_item.done", "output_index": i, "item": item})
+    yield ev({"type": "response.completed", "response": data})

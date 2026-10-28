@@ -34,7 +34,7 @@ class CheckResult:
 
 @dataclass
 class GradeContext:
-    dbs: dict[str, Path]
+    dbs: dict[str, Path | str]  # SQLite file, or Postgres URL for `postgres` fixtures
     judge: HelperModel
     http: httpx.AsyncClient
     judge_status: dict[str, dict[str, Any]] = field(default_factory=dict)  # criteria_id -> calibration
@@ -91,17 +91,55 @@ async def _state_sql(c: Check, rec: Recorder, ctx: GradeContext):
     db = ctx.dbs.get(p["db"])
     if db is None:
         return False, f"no fixture database named {p['db']!r}", None
-    conn = sqlite3.connect(db)
-    try:
-        rows = conn.execute(p["query"]).fetchall()
-    finally:
-        conn.close()
+    rows = await asyncio.to_thread(_query, db, p["query"])
     if "expect_rows" in p:
         ok = len(rows) == int(p["expect_rows"])
         return ok, f"{len(rows)} rows (expected {p['expect_rows']})", None
     got = rows[0][0] if rows and rows[0] else None
     ok = _norm(got) == _norm(p["expect"])
     return ok, f"got {got!r}, expected {p['expect']!r}", None
+
+
+def _query(db: Path | str, sql: str) -> list[tuple]:
+    if isinstance(db, str) and db.startswith(("postgres://", "postgresql://")):
+        import psycopg
+        with psycopg.connect(db) as conn:
+            return list(conn.execute(sql).fetchall())
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute(sql).fetchall()
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------------------------ http mocks
+
+
+def _requests(rec: Recorder, p: dict[str, Any]) -> list[dict[str, Any]]:
+    method = str(p.get("method", "*")).upper()
+    path = p.get("path", "*")
+    return [e for e in rec.of("http_request")
+            if e["mock"] == p["mock"] and method in ("*", e["method"].upper()) and fnmatch.fnmatchcase(e["path"], path)
+            and all(str(s) in e.get("body", "") for s in _as_list(p.get("body_contains", [])))]
+
+
+@grader("http.called")
+async def _http_called(c: Check, rec: Recorder, ctx: GradeContext):
+    """The agent (or a tool) called a mocked HTTP API: `mock`, optional `method`, `path` glob, `body_contains`, `min`."""
+    p = c.params
+    hits = _requests(rec, p)
+    need = int(p.get("min", 1))
+    desc = f"{p.get('method', '*')} {p['mock']}{p.get('path', '')}"
+    return len(hits) >= need, f"{desc} called {len(hits)}x (need >= {need})", None
+
+
+@grader("http.not_called")
+async def _http_not_called(c: Check, rec: Recorder, ctx: GradeContext):
+    """A mocked HTTP API endpoint was never called."""
+    p = c.params
+    hits = _requests(rec, p)
+    desc = f"{p.get('method', '*')} {p['mock']}{p.get('path', '')}"
+    return not hits, f"{desc} called {len(hits)}x" + (f": {hits[0]['method']} {hits[0]['path']}" if hits else ""), None
 
 
 # ------------------------------------------------------------------ workspace (coding agents)

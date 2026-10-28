@@ -80,6 +80,13 @@ def git_info(root: Path) -> dict[str, str]:
     return {"sha": g("rev-parse", "--short", "HEAD"), "branch": g("rev-parse", "--abbrev-ref", "HEAD")}
 
 
+def with_database(url: str, name: str) -> str:
+    """Same Postgres server and credentials, different database."""
+    from urllib.parse import urlsplit, urlunsplit
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, parts.netloc, "/" + name, parts.query, parts.fragment))
+
+
 def git(cwd: Path, *args: str) -> str:
     r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     if r.returncode != 0:
@@ -231,17 +238,24 @@ class Runner:
         eid = f"{sc.id}--{attempt}--{uuid.uuid4().hex[:6]}"
         rec = Recorder(eid, sc.id, attempt)
         tmp = Path(tempfile.mkdtemp(prefix="crucible-"))
+        pg_created: list[str] = []
         error: str | None = None
         checks: list[CheckResult] = []
         rec.add("episode_start", scenario=sc.id, attempt=attempt, model=self.model)
         try:
-            dbs = self._build_fixtures(sc, tmp)
+            dbs = await asyncio.to_thread(self._build_fixtures, sc, tmp, pg_created)
             workspace = await asyncio.to_thread(self._build_workspace, sc, tmp)
-            ws_env = {"CRUCIBLE_WORKSPACE": str(workspace)} if workspace else {}
+            base = self.gateway.base(eid)
+            shared_env = {
+                **({"CRUCIBLE_WORKSPACE": str(workspace)} if workspace else {}),
+                **{f"CRUCIBLE_HTTP_{n.upper()}_URL": f"{base}/http/{n}" for n in sc.environment.http_mocks},
+            }
             async with AsyncExitStack() as stack:
-                routes = EpisodeRoutes(rec)
+                routes = EpisodeRoutes(rec, http_mocks=sc.environment.http_mocks)
                 for name, spec in self.cfg.mcp_servers.items():
-                    env = {**ws_env, **({"CRUCIBLE_DB": str(dbs[name])} if name in dbs else {})}
+                    env = dict(shared_env)
+                    if name in dbs:  # SQLite path or Postgres URL for this server's fresh database
+                        env["CRUCIBLE_DB" if isinstance(dbs[name], Path) else "CRUCIBLE_DB_URL"] = str(dbs[name])
                     proxy = McpProxy(name, spec, env, rec, sc.environment, self.cfg.root)
                     routes.proxies[name] = await stack.enter_async_context(proxy)
                 self.gateway.episodes[eid] = routes
@@ -259,6 +273,8 @@ class Runner:
             rec.add("error", message=error)
         finally:
             rmtree(tmp)
+            if pg_created:
+                await asyncio.to_thread(self._drop_postgres, pg_created)
 
         traj = f"episodes/{eid}.jsonl"
         rec.save(self.run_dir / traj)
@@ -273,17 +289,41 @@ class Runner:
             return sc.source.parent / rel
         return self.cfg.resolve(rel)  # type: ignore[return-value]
 
-    def _build_fixtures(self, sc: Scenario, tmp: Path) -> dict[str, Path]:
-        dbs: dict[str, Path] = {}
-        for server, seed in sc.environment.fixtures.items():
-            seed_path = self._resolve(sc, seed)
+    def _build_fixtures(self, sc: Scenario, tmp: Path, pg_created: list[str]) -> dict[str, Path | str]:
+        """SQLite file or fresh Postgres database per MCP server, seeded from SQL."""
+        dbs: dict[str, Path | str] = {}
+        for server, fx in sc.environment.fixtures.items():
+            sql = self._resolve(sc, fx.seed).read_text(encoding="utf-8")
+            if fx.kind == "postgres":
+                dbs[server] = self._create_postgres(sql, pg_created)
+                continue
             db = tmp / f"{server}.db"
             conn = sqlite3.connect(db)
-            conn.executescript(seed_path.read_text(encoding="utf-8"))
+            conn.executescript(sql)
             conn.commit()
             conn.close()
             dbs[server] = db
         return dbs
+
+    def _create_postgres(self, sql: str, pg_created: list[str]) -> str:
+        import psycopg
+        admin = self.cfg.postgres.admin_url
+        if not admin:
+            raise RuntimeError("postgres fixtures need `postgres.admin_url` in crucible.yaml or CRUCIBLE_POSTGRES_URL")
+        name = f"crucible_{uuid.uuid4().hex[:12]}"
+        with psycopg.connect(admin, autocommit=True) as conn:
+            conn.execute(f'CREATE DATABASE "{name}"')
+        pg_created.append(name)
+        url = with_database(admin, name)
+        with psycopg.connect(url, autocommit=True) as conn:
+            conn.execute(sql)
+        return url
+
+    def _drop_postgres(self, names: list[str]) -> None:
+        import psycopg
+        with contextlib.suppress(Exception), psycopg.connect(self.cfg.postgres.admin_url or "", autocommit=True) as conn:
+            for name in names:
+                conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
 
     def _build_workspace(self, sc: Scenario, tmp: Path) -> Path | None:
         """Fresh copy of the scenario's repo with a baseline commit, so graders can diff against it."""
@@ -316,10 +356,11 @@ class Runner:
                         stack: AsyncExitStack) -> None:
         base = self.gateway.base(eid)
         mcp_urls = {n: f"{base}/mcp/{n}" for n in self.cfg.mcp_servers}
+        http_urls = {n: f"{base}/http/{n}" for n in sc.environment.http_mocks}
         if self.cfg.agent.transport == "http":
-            send = self._http_turns(eid, base, mcp_urls, workspace)
+            send = self._http_turns(eid, base, mcp_urls, http_urls, workspace)
         else:
-            send = await self._stdio_turns(eid, base, mcp_urls, workspace, stack)
+            send = await self._stdio_turns(eid, base, mcp_urls, http_urls, workspace, stack)
 
         async def say(text: str) -> str:
             rec.turn += 1
@@ -339,8 +380,8 @@ class Runner:
             reply = await say(nxt)
             history += [("user", nxt), ("agent", reply)]
 
-    async def _stdio_turns(self, eid: str, base: str, mcp_urls: dict[str, str], workspace: Path | None,
-                           stack: AsyncExitStack) -> Callable[[str], Awaitable[str]]:
+    async def _stdio_turns(self, eid: str, base: str, mcp_urls: dict[str, str], http_urls: dict[str, str],
+                           workspace: Path | None, stack: AsyncExitStack) -> Callable[[str], Awaitable[str]]:
         """One agent process per episode; gateway URLs arrive as environment variables."""
         agent = self.cfg.agent
         env = {
@@ -350,6 +391,7 @@ class Runner:
             "CRUCIBLE_MODEL": self.model, "CRUCIBLE_EPISODE_ID": eid,
             "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
             **({"CRUCIBLE_WORKSPACE": str(workspace)} if workspace else {}),
+            **{f"CRUCIBLE_HTTP_{n.upper()}_URL": url for n, url in http_urls.items()},
             **{f"CRUCIBLE_MCP_{n.upper()}_URL": url for n, url in mcp_urls.items()},
         }
         log_path = self.run_dir / "logs" / f"{eid}.log"
@@ -390,7 +432,7 @@ class Runner:
 
         return send
 
-    def _http_turns(self, eid: str, base: str, mcp_urls: dict[str, str],
+    def _http_turns(self, eid: str, base: str, mcp_urls: dict[str, str], http_urls: dict[str, str],
                     workspace: Path | None) -> Callable[[str], Awaitable[str]]:
         """A long-running agent service; gateway URLs travel with every request in `context`."""
         agent = self.cfg.agent
@@ -403,6 +445,7 @@ class Runner:
             "model": self.model,
             "mcp": mcp_urls,
             "workspace": str(workspace) if workspace else None,
+            "http": http_urls,
             "env": self.opts.agent_env,
         }
 

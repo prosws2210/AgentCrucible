@@ -1,37 +1,57 @@
 import Link from "next/link";
 import { GITHUB } from "@/lib/site";
+import { IconMenu } from "./Icons";
 import { Logo } from "./Logo";
 
-const links = [
+const links: [string, string, boolean?][] = [
   ["How it works", "/#how"],
-  ["Results", "/#results"],
-  ["Trajectories", "/#trajectory"],
-  ["MCP audit", "/#audit"],
-  ["Quick start", "/#start"],
-  ["Dashboard", "/dashboard/"],
+  ["Use cases", "/#use-cases"],
+  ["Live demo", "/#demo"],
+  ["Docs", `${GITHUB}/blob/main/docs/ADOPTION.md`, true],
+  ["FAQ", "/#faq"],
 ];
 
 export function Nav() {
   return (
-    <header className="sticky top-0 z-50 border-b border-line/70 bg-ink/75 backdrop-blur-xl">
-      <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
+    <header className="sticky top-0 z-50 border-b border-line/70 bg-ink/80 backdrop-blur-xl">
+      <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
         <Link href="/" aria-label="AgentCrucible home">
           <Logo />
         </Link>
         <div className="hidden items-center gap-7 text-[13.5px] text-mute lg:flex">
-          {links.map(([label, href]) => (
-            <Link key={href} href={href} className="transition-colors hover:text-fg">
-              {label}
-            </Link>
-          ))}
+          {links.map(([label, href, ext]) =>
+            ext ? (
+              <a key={href} href={href} target="_blank" rel="noreferrer" className="transition-colors hover:text-fg">{label}</a>
+            ) : (
+              <Link key={href} href={href} className="transition-colors hover:text-fg">{label}</Link>
+            ),
+          )}
         </div>
-        <a
-          href={GITHUB}
-          className="flex items-center gap-2 rounded-full border border-line bg-panel px-3.5 py-1.5 text-[13px] font-medium transition-colors hover:border-ember/60"
-        >
-          <GitHubIcon />
-          GitHub
-        </a>
+        <div className="flex items-center gap-2">
+          <a href={GITHUB} className="hidden items-center gap-2 rounded-full px-3 py-1.5 text-[13px] text-mute transition-colors hover:text-fg sm:flex">
+            <GitHubIcon /> GitHub
+          </a>
+          <Link href="/dashboard/" className="hidden rounded-full border border-line bg-panel px-3.5 py-1.5 text-[13px] font-medium transition-colors hover:border-ember/60 sm:block">
+            Dashboard
+          </Link>
+          <Link href="/start/" className="rounded-full bg-fg px-3.5 py-1.5 text-[13px] font-semibold text-ink transition-colors hover:bg-white">
+            Get started
+          </Link>
+          <details className="relative lg:hidden">
+            <summary className="flex cursor-pointer list-none items-center rounded-lg p-1.5 text-mute hover:text-fg [&::-webkit-details-marker]:hidden" aria-label="Menu">
+              <IconMenu className="h-5 w-5" />
+            </summary>
+            <div className="absolute right-0 top-10 w-56 rounded-xl border border-line bg-panel p-2 shadow-2xl shadow-black/60">
+              {links.map(([label, href, ext]) => (
+                <a key={href} href={href} {...(ext ? { target: "_blank", rel: "noreferrer" } : {})} className="block rounded-lg px-3 py-2 text-[14px] text-mute hover:bg-white/5 hover:text-fg">
+                  {label}
+                </a>
+              ))}
+              <Link href="/dashboard/" className="block rounded-lg px-3 py-2 text-[14px] text-mute hover:bg-white/5 hover:text-fg">Dashboard</Link>
+              <a href={GITHUB} className="block rounded-lg px-3 py-2 text-[14px] text-mute hover:bg-white/5 hover:text-fg">GitHub</a>
+            </div>
+          </details>
+        </div>
       </nav>
     </header>
   );

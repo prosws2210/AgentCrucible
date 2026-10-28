@@ -1,8 +1,8 @@
 # AgentCrucible backend / runner image.
 #   docker compose: runs `crucible serve` (API) against Postgres and the Ollama service
-#   standalone:     docker run agentcrucible:0.1.0 run --suite core
+#   standalone:     docker run agentcrucible:0.2.0 run --suite core
 # Companies extend it with their own agent + scenarios:
-#   FROM agentcrucible:0.1.0
+#   FROM agentcrucible:0.2.0
 #   COPY . /workspace/project
 #   WORKDIR /workspace/project
 FROM python:3.12-slim

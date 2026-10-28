@@ -75,6 +75,8 @@ def _row(r: Any) -> dict[str, Any]:
     d = dict(r._mapping)
     for k, v in d.items():
         if isinstance(v, dt.datetime):
+            if v.tzinfo is None:  # SQLite drops the zone; everything is stored in UTC
+                v = v.replace(tzinfo=dt.timezone.utc)
             d[k] = v.isoformat()
     return d
 

@@ -24,11 +24,14 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from . import __version__
+from .auth import COOKIE, Tokens
+from .auth import middleware as auth_middleware
 from .config import load_config, load_scenarios
 from .db import Store, make_engine, now
 from .report import markdown_summary, write_html
@@ -45,6 +48,10 @@ class RunRequest(BaseModel):
     compare: str | None = None  # run id
     agent_env: dict[str, str] = Field(default_factory=dict)
     parallel: int = Field(2, ge=1, le=8)
+
+
+class Login(BaseModel):
+    token: str
 
 
 class AuditRequest(BaseModel):
@@ -67,9 +74,36 @@ def create_app(config_path: Path | None = None) -> FastAPI:
         await asyncio.to_thread(import_existing)  # defined below; runs at startup
         yield
 
-    app = FastAPI(title="AgentCrucible API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="AgentCrucible API", version=__version__, lifespan=lifespan)
+    tokens = Tokens.from_env()
+    app.middleware("http")(auth_middleware(tokens))
+    # added last, so it runs first: CORS preflights never hit the auth check
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-                       allow_methods=["*"], allow_headers=["*"])
+                       allow_methods=["*"], allow_headers=["*"], allow_credentials=True)
+
+    # ---------------------------------------------------------------- auth
+
+    @app.get("/api/auth/status")
+    async def auth_status(request: Request) -> dict[str, Any]:
+        role = tokens.role_for_request(request)
+        return {"required": tokens.required, "authenticated": role is not None, "role": role}
+
+    @app.post("/api/auth/login")
+    async def login(body: Login, request: Request) -> JSONResponse:
+        role = tokens.role_for_token(body.token.strip())
+        if role is None:
+            await asyncio.sleep(0.5)  # slow down guessing
+            raise HTTPException(401, "invalid token")
+        resp = JSONResponse({"role": role})
+        resp.set_cookie(COOKIE, tokens.session_for(role), httponly=True, samesite="lax", max_age=30 * 86400,
+                        secure=request.url.scheme == "https", path="/")
+        return resp
+
+    @app.post("/api/auth/logout")
+    async def logout() -> JSONResponse:
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie(COOKIE, path="/")
+        return resp
 
     def run_file(run_id: str) -> Path:
         return runs_dir / run_id / "run.json"
@@ -133,6 +167,115 @@ def create_app(config_path: Path | None = None) -> FastAPI:
             except Exception as e:
                 return {"ok": False, "models": [], "error": str(e)}
 
+    # ---------------------------------------------------------------- setup
+
+    @app.get("/api/config")
+    async def config_summary() -> dict[str, Any]:
+        """What this project is connected to (no secrets)."""
+        a = cfg.agent
+        anthropic = cfg.llm.anthropic_base_url or cfg.llm.upstream_base_url.rstrip("/").removesuffix("/v1")
+        return {
+            "project": cfg.project,
+            "agent": {"transport": a.transport, "command": a.command, "url": a.url,
+                      "turn_timeout_s": a.turn_timeout_s},
+            "model": cfg.model,
+            "llm": {"openai_base_url": cfg.llm.upstream_base_url, "anthropic_base_url": anthropic,
+                    "cache": cfg.llm.cache},
+            "mcp_servers": [{"name": n, "command": s.command, "url": s.url, "remote": bool(s.url)}
+                            for n, s in cfg.mcp_servers.items()],
+            "suites": {n: {"path": s.path, "runs": s.runs} for n, s in cfg.suites.items()},
+            "simulator_model": cfg.simulator.model,
+            "judge_model": cfg.judge.model,
+            "gate": {"fail_on": cfg.ci.fail_on, "alpha": cfg.ci.alpha},
+        }
+
+    @app.get("/api/doctor")
+    async def doctor() -> dict[str, Any]:
+        """Live checks that everything a run needs is reachable."""
+        from .audit import Target
+        checks: list[dict[str, Any]] = []
+        n_sc = len(load_scenarios(cfg))
+        checks.append({"id": "config", "label": "Project configuration", "ok": n_sc > 0,
+                       "detail": f"crucible.yaml loaded · {n_sc} scenarios in {len(cfg.suites)} suites"})
+
+        m = await models()
+        names = set(m["models"])
+        has_model = cfg.model in names or f"{cfg.model}:latest" in names
+        checks.append({
+            "id": "model", "label": "Model server", "ok": bool(m["ok"]) and has_model,
+            "detail": (f"{cfg.llm.upstream_base_url} · {cfg.model} available" if has_model
+                       else f"{cfg.llm.upstream_base_url} · " + (f"{cfg.model} not found ({len(names)} models)" if m["ok"]
+                                                               else f"unreachable: {m.get('error', '')[:120]}")),
+        })
+
+        for name, spec in cfg.mcp_servers.items():
+            cwd = str((root / spec.cwd).resolve()) if spec.cwd else str(root)
+            t = Target(spec.command, spec.url, spec.env, cwd, spec.headers, spec.transport)
+            try:
+                await asyncio.wait_for(t.connect(), 30)
+                tools = (await t.session.list_tools()).tools  # type: ignore[union-attr]
+                how = f"reachable at {spec.url}" if spec.url else "started"
+                checks.append({"id": f"mcp:{name}", "label": f"MCP server · {name}", "ok": True,
+                               "detail": f"{how} · {len(tools)} tools: " + ", ".join(x.name for x in tools[:8])})
+            except Exception as e:
+                what = (str(e)[:200] if isinstance(e, (PermissionError, ConnectionError)) and spec.url
+                        else f"{spec.url} is not reachable: {type(e).__name__}: {str(e)[:160]}" if spec.url
+                        else f"`{spec.command}` failed to start: {type(e).__name__}: {str(e)[:160]}")
+                checks.append({"id": f"mcp:{name}", "label": f"MCP server · {name}", "ok": False, "detail": what})
+            finally:
+                await t.close()
+
+        a = cfg.agent
+        if a.transport == "http" and not a.command:
+            try:
+                async with httpx.AsyncClient(timeout=5) as http:
+                    await http.get(a.url or "")
+                ok, detail = True, f"{a.url} is reachable"
+            except httpx.HTTPError as e:
+                ok, detail = False, f"{a.url} not reachable: {type(e).__name__}"
+        else:
+            parts = (a.command or "").split()
+            script = next((p for p in parts[1:] if p.endswith((".py", ".js", ".ts", ".mjs"))), None)
+            cwd = (root / a.cwd) if a.cwd else root
+            ok = script is None or (cwd / script).exists()
+            how = "started once per run" if a.transport == "http" else "started once per episode"
+            detail = f"`{a.command}` ({a.transport}, {how})" + ("" if ok else f" · {script} not found")
+        checks.append({"id": "agent", "label": "Agent", "ok": ok, "detail": detail})
+        return {"ok": all(c["ok"] for c in checks), "checks": checks}
+
+    @app.get("/api/scenarios")
+    async def scenarios() -> list[dict[str, Any]]:
+        """Every scenario with its checks and its result in the latest finished run that included it."""
+        done = [r for r in await asyncio.to_thread(store.list_runs, cfg.project) if r["status"] == "done"]
+        latest: dict[str, dict[str, Any]] = {}
+        for r in done:  # newest first
+            if not run_file(r["id"]).exists():
+                continue
+            s = load_run_json(r["id"])["summary"]["scenarios"]
+            for sid, v in s.items():
+                latest.setdefault(sid, {"run_id": r["id"], "run_label": r["label"], "passed": v["passed"], "n": v["n"]})
+        out = []
+        for suite in cfg.suites:
+            for sc, runs in load_scenarios(cfg, suite):
+                out.append({"id": sc.id, "suite": suite, "description": sc.description, "tags": sc.tags,
+                            "runs": runs, "multi_turn": sc.user is not None,
+                            "environment": [k for k in ("fixtures", "workspace", "http_mocks", "mocks", "inject", "deny_tools")
+                                            if getattr(sc.environment, k)]
+                            + (["postgres"] if any(f.kind == "postgres" for f in sc.environment.fixtures.values()) else []),
+                            "checks": [{"label": c.label, "hard": c.hard} for c in sc.checks],
+                            "task": sc.task, "latest": latest.get(sc.id)})
+        return out
+
+    @app.get("/api/runs/{run_id}/episodes/{episode_id}")
+    async def episode(run_id: str, episode_id: str) -> dict[str, Any]:
+        from .trajectory import load_events
+        r = load_run_json(run_id)
+        ep = next((e for e in r["episodes"] if e["episode_id"] == episode_id), None)
+        if ep is None:
+            raise HTTPException(404, "episode not found")
+        f = runs_dir / run_id / ep["trajectory"]
+        return {**ep, "events": load_events(f) if f.exists() else []}
+
     # ---------------------------------------------------------------- runs
 
     @app.get("/api/runs")
@@ -152,6 +295,11 @@ def create_app(config_path: Path | None = None) -> FastAPI:
         if run_file(run_id).exists():
             r = load_run_json(run_id)
             detail["scenarios"] = [{"id": sid, **v} for sid, v in r["summary"]["scenarios"].items()]
+            detail["summary"] = r["summary"]
+            detail["episodes"] = [{k: e[k] for k in ("episode_id", "scenario_id", "attempt", "passed", "error",
+                                                     "checks", "totals")} for e in r["episodes"]]
+            detail["scenario_meta"] = {sc["id"]: {"description": sc["description"], "tags": sc["tags"]}
+                                       for sc in r["scenarios"]}
             detail["failures"] = [
                 {"scenario_id": e["scenario_id"], "attempt": e["attempt"], "error": e.get("error"),
                  "failed_checks": [f"{c['label']}: {c['detail']}" for c in e["checks"] if c["hard"] and not c["passed"]]}
@@ -262,8 +410,8 @@ def create_app(config_path: Path | None = None) -> FastAPI:
             if root.resolve() not in fixture.parents or not fixture.is_file():
                 raise HTTPException(400, "fixture must be a file inside the project")
         cwd = str((root / spec.cwd).resolve()) if spec.cwd else str(root)
-        rep = await run_audit(spec.command, None, spec.env, cwd, fixture, False, req.behavioral_model,
-                              cfg.llm.upstream_base_url, cfg.llm.api_key)
+        rep = await run_audit(spec.command, spec.url, spec.env, cwd, fixture, False, req.behavioral_model,
+                              cfg.llm.upstream_base_url, cfg.llm.api_key, spec.headers, spec.transport)
         return await asyncio.to_thread(store.add_audit, req.server, rep.to_dict())
 
     return app

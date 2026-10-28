@@ -15,8 +15,8 @@ Two complete, runnable references ship in `examples/`:
 ## 1. Install
 
 ```bash
-pip install "agentcrucible[examples] @ git+https://github.com/prosws2210/AgentCrucible"   # CLI
-# or the container: docker build -t agentcrucible . (see Dockerfile), or the full stack: docker compose up
+pip install agentcrucible            # CLI (or: pip install "agentcrucible @ git+https://github.com/prosws2210/AgentCrucible")
+# container: docker pull ghcr.io/prosws2210/agentcrucible:0.2.0, or the full stack: docker compose up
 crucible init my-agent-tests        # scaffolds crucible.yaml and a first scenario
 ```
 
@@ -104,7 +104,8 @@ official Anthropic SDK with streaming, no AgentCrucible imports.
 |---|---|---|
 | OpenAI Chat Completions (`/v1/chat/completions`) | ✓ streaming and non-streaming | OpenAI, Azure-compatible proxies, OpenRouter, Groq, vLLM, Ollama |
 | Anthropic Messages (`/v1/messages`) | ✓ streaming and non-streaming, `tool_use` | Anthropic API, Ollama ≥ 0.14 |
-| OpenAI Responses API, Gemini native, Bedrock native | ✗ not yet | Use an OpenAI-compatible endpoint, or open an issue |
+| OpenAI Responses API (`/v1/responses`) | ✓ streaming and non-streaming, function calls | OpenAI, Ollama (tested on 0.17). Send the full `input` each call: with `previous_response_id` the history lives at the provider, so cached replays can't tell turns apart |
+| Gemini native, Bedrock native | ✗ not yet | Use their OpenAI-compatible endpoints, or open an issue |
 
 Point the gateway at the real provider:
 
@@ -124,14 +125,21 @@ Keys come from the environment, never from the YAML file: `CRUCIBLE_LLM_API_KEY`
 mcp_servers:
   shop:      { command: python mcp/shop_server.py }
   workspace: { command: npx -y @your-org/mcp-repo-tools, env: { LOG_LEVEL: warn } }
+  search:                                   # an already-running remote server
+    url: https://mcp.example.com/mcp
+    transport: http                         # Streamable HTTP (default) or sse
+    headers: { Authorization: "Bearer ${SEARCH_MCP_TOKEN}" }   # ${VAR} is read from the environment
 ```
 
-Each server is started fresh per episode (stdio) and exposed to the agent through the MCP gateway, which
-records every call and can mock, block or poison results (`environment.mocks`, `deny_tools`, `inject`).
-Servers receive `CRUCIBLE_DB` (SQLite fixture) and `CRUCIBLE_WORKSPACE` (repo copy) when the scenario has them.
+Every server is exposed to the agent through the MCP gateway, which records every call and can mock, block or
+poison results (`environment.mocks`, `deny_tools`, `inject`).
 
-> Not yet supported: connecting to an already-running remote MCP server over HTTP. Wrap it with a stdio
-> launcher for now.
+- **Local servers** (`command`) start fresh per episode and receive `CRUCIBLE_DB` (SQLite path) or
+  `CRUCIBLE_DB_URL` (Postgres URL), `CRUCIBLE_WORKSPACE` and `CRUCIBLE_HTTP_<NAME>_URL` when the scenario has them.
+- **Remote servers** (`url`) are shared by every episode, so their state is not reset between tests: prefer
+  read-only tools, a staging deployment, or `mocks` for tools with side effects. A wrong URL or token fails the
+  episode at setup with the HTTP status (e.g. `HTTP 401: check its headers`); the dashboard's connection check
+  shows the same.
 
 ---
 
@@ -140,6 +148,9 @@ Servers receive `CRUCIBLE_DB` (SQLite fixture) and `CRUCIBLE_WORKSPACE` (repo co
 | Need | Scenario field | Per episode |
 |---|---|---|
 | A database | `fixtures: { shop: fixtures/shop.sql }` | New SQLite file from the seed, path in `CRUCIBLE_DB` |
+| A Postgres database | `fixtures: { shop: { postgres: fixtures/shop.sql } }` | `CREATE DATABASE` on `CRUCIBLE_POSTGRES_URL` (or `postgres.admin_url`), seeded, URL in `CRUCIBLE_DB_URL`, dropped afterwards |
+| A third-party HTTP API | `http_mocks: { payments: [{ method: POST, path: /v1/charges, json: {…} }] }` | Canned responses at `CRUCIBLE_HTTP_PAYMENTS_URL` (agent and MCP servers); every request is recorded, unmatched ones get 404 |
+| Files on disk | `workspace: { path: fixtures/inbox }` | Any directory works, not just code: a fresh copy per episode, checked with `state.file` |
 | A repository | `workspace: { path: repos/service, ref: v1.4.0 }` | Fresh copy (or `git clone` + checkout of `ref`) with a baseline commit, path in `CRUCIBLE_WORKSPACE` |
 | Fake a tool | `mocks: { send_email: { status: sent } }` | Tool returns this instead of running |
 | Forbid a tool | `deny_tools: [drop_table]` | Call is blocked and recorded |
@@ -171,7 +182,8 @@ checks:
 | `state.command` | A command run in the workspace (`run`, `expect_exit`, `contains`, `not_contains`, `timeout_s`); a leading `python` uses the runner's interpreter |
 | `state.git_diff` | Files changed since the baseline: `changed` / `not_changed` globs, `max_files`, `max_lines` |
 | `state.file` | A workspace file `exists` / is absent, `contains`, `not_contains`, `regex` |
-| `state.sql` | Query the episode's SQLite fixture (`expect` value or `expect_rows`) |
+| `state.sql` | Query the episode's SQLite or Postgres fixture (`expect` value or `expect_rows`) |
+| `http.called` / `http.not_called` | Requests to a mocked HTTP API: `mock`, `method`, `path` glob, `body_contains`, `min` |
 | `trajectory.tool_called` / `tool_not_called` / `call_order` / `not_before_turn` / `max_tool_calls` / `no_tool_errors` / `no_blocked_calls` | What the agent did, in which order and in which turn |
 | `output.contains` / `not_contains` / `regex` | What the agent said |
 | `budget.max_llm_calls` / `max_tokens` / `max_duration_s` / `max_cost_usd` | Cost and latency ceilings |
@@ -221,7 +233,8 @@ On `main` it stores the baseline; on pull requests it compares, comments once an
 |---|---|
 | History, reports, start runs from a browser | `docker compose up` → dashboard at `http://localhost:8080/dashboard/` (frontend, API, Postgres, Ollama) |
 | Large suites, nightly runs | Helm chart: sharded Indexed Job + merge/gate Job (`deploy/helm/agentcrucible`) |
-| Audit your MCP servers before shipping them | `crucible mcp-audit --command "…"` (conformance, tool quality, fuzzing, security, behavior, latency) |
+| Audit your MCP servers before shipping them | `crucible mcp-audit --command "…"` or `--url https://… -H "Authorization: Bearer …"` (conformance, tool quality, fuzzing, security, behavior, latency) |
+| Control who can use the dashboard | `CRUCIBLE_API_TOKEN` (full access) and `CRUCIBLE_VIEWER_TOKEN` (read-only) |
 | Trust your LLM judges | `crucible label` → `crucible calibrate` (Cohen's κ against your own labels) |
 
 ---
@@ -233,7 +246,11 @@ On `main` it stores the baseline; on pull requests it compares, comments once an
   NetworkPolicy limiting egress to DNS and the model API).
 - The API behind the dashboard only audits MCP servers declared in `crucible.yaml` and only reads fixtures
   inside the project; it never runs commands supplied in a request.
-- The dashboard has **no authentication yet**. Keep it on a private network or behind your SSO proxy.
+- The API and dashboard are **open unless a token is set**. With `CRUCIBLE_API_TOKEN` (and optionally a read-only
+  `CRUCIBLE_VIEWER_TOKEN`), every `/api` call needs `Authorization: Bearer <token>` or the session cookie from the
+  sign-in screen (HttpOnly, an HMAC of the role, never the token). There are no user accounts; for per-person
+  access put your SSO proxy in front and keep the token on the proxy.
+- Remote MCP header values (tokens) are never returned by the API.
 - Model keys are read from environment variables, never stored in run artifacts.
 
 ---
@@ -252,8 +269,7 @@ On `main` it stores the baseline; on pull requests it compares, comments once an
 
 | Not yet | Workaround |
 |---|---|
-| Remote MCP servers over HTTP | stdio launcher that proxies to the remote server |
-| Postgres / MySQL fixtures | SQLite fixture, or a `state.command` check against your own test database |
-| Dashboard authentication | Private network or an auth proxy in front of `frontend` |
-| OpenAI Responses API | Chat Completions endpoint of the same provider |
-| PyPI package | Install from Git or use the container image |
+| MySQL fixtures | SQLite or Postgres fixture, or a `state.command` check against your own test database |
+| Resetting a remote MCP server's state between episodes | Point it at staging, mock side-effecting tools, or run it locally with `command` |
+| User accounts / SSO in the dashboard | Shared tokens, or an SSO proxy in front of `frontend` |
+| Gemini / Bedrock native APIs | Their OpenAI-compatible endpoints |

@@ -1,11 +1,25 @@
 [project]
 name = "agentcrucible"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Regression testing for AI agents and MCP servers: sandboxed episodes, trajectory checks, calibrated judges and statistically sound comparisons."
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "Shakti Swaroop Sahu" }]
 requires-python = ">=3.11"
+keywords = ["ai-agents", "llm", "evaluation", "regression-testing", "mcp", "model-context-protocol", "llmops"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = [
     "typer>=0.12",
     "rich>=13",
@@ -22,6 +36,13 @@ dependencies = [
     "psycopg[binary]>=3.1",
 ]
 
+[project.urls]
+Homepage = "https://prosws2210.github.io/AgentCrucible/"
+Repository = "https://github.com/prosws2210/AgentCrucible"
+Documentation = "https://github.com/prosws2210/AgentCrucible/blob/main/docs/ADOPTION.md"
+Changelog = "https://github.com/prosws2210/AgentCrucible/blob/main/CHANGELOG.md"
+Issues = "https://github.com/prosws2210/AgentCrucible/issues"
+
 [project.optional-dependencies]
 examples = ["openai>=1.40", "anthropic>=0.40", "pytest>=8"]
 
@@ -35,8 +56,14 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5", "openai>=1.40", "anthro
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "src/agentcrucible/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentcrucible"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/agentcrucible", "README.md", "LICENSE", "CHANGELOG.md", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

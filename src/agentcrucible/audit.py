@@ -29,10 +29,12 @@ import jsonschema
 import mcp.types as mt
 import numpy as np
 from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 
-from .gateway import content_text, split_command
+from .config import McpServerSpec
+from .gateway import content_text, probe_remote, split_command
 
 SEVERITY_PENALTY = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
 SUITES = ["conformance", "tool_quality", "robustness", "security", "behavioral", "performance"]
@@ -93,8 +95,10 @@ def letter(score: int) -> str:
 class Target:
     """A connection to the server under audit. Restartable, so a crash doesn't end the audit."""
 
-    def __init__(self, command: str | None, url: str | None, env: dict[str, str], cwd: str | None):
+    def __init__(self, command: str | None, url: str | None, env: dict[str, str], cwd: str | None,
+                 headers: dict[str, str] | None = None, transport: str = "http"):
         self.command, self.url, self.env, self.cwd = command, url, env, cwd
+        self.headers, self.transport = headers or {}, transport
         self.stack: AsyncExitStack | None = None
         self.session: ClientSession | None = None
         self.init: mt.InitializeResult | None = None
@@ -102,7 +106,11 @@ class Target:
     async def connect(self) -> None:
         self.stack = AsyncExitStack()
         if self.url:
-            read, write, _ = await self.stack.enter_async_context(streamablehttp_client(self.url))
+            await probe_remote("target", McpServerSpec(url=self.url, headers=self.headers, transport=self.transport))
+        if self.url and self.transport == "sse":
+            read, write = await self.stack.enter_async_context(sse_client(self.url, headers=self.headers))
+        elif self.url:
+            read, write, _ = await self.stack.enter_async_context(streamablehttp_client(self.url, headers=self.headers))
         else:
             cmd = split_command(self.command or "")
             params = StdioServerParameters(command=cmd[0], args=cmd[1:], env={**os.environ, **self.env}, cwd=self.cwd)
@@ -431,7 +439,8 @@ async def suite_performance(t: Target, rep: AuditReport, tools: list[mt.Tool], n
 
 async def run_audit(command: str | None, url: str | None, env: dict[str, str], cwd: str | None,
                     fixture: Path | None, destructive_ok: bool, behavioral_model: str | None,
-                    llm_base_url: str, llm_api_key: str) -> AuditReport:
+                    llm_base_url: str, llm_api_key: str, headers: dict[str, str] | None = None,
+                    transport: str = "http") -> AuditReport:
     started = time.monotonic()
     tmp = None
     if fixture:
@@ -442,7 +451,7 @@ async def run_audit(command: str | None, url: str | None, env: dict[str, str], c
         conn.close()
         env = {**env, "CRUCIBLE_DB": str(db)}
     rep = AuditReport(target=url or command or "")
-    t = Target(command, url, env, cwd)
+    t = Target(command, url, env, cwd, headers, transport)
     await t.connect()
     try:
         tools = (await t.session.list_tools()).tools  # type: ignore[union-attr]

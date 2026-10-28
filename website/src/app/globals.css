@@ -53,40 +53,46 @@ body {
 }
 
 /* grid items default to min-width:auto, which lets wide <pre> blocks push past the viewport */
-main .grid > * {
-  min-width: 0;
+@layer base {
+  main .grid > * {
+    min-width: 0;
+  }
 }
 
 ::selection {
   background: color-mix(in srgb, var(--color-ember) 35%, transparent);
 }
 
-/* faint grid that fades out toward the bottom of a section */
-.grid-bg {
-  background-image:
-    linear-gradient(to right, rgb(255 255 255 / 0.035) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(255 255 255 / 0.035) 1px, transparent 1px);
-  background-size: 44px 44px;
-  mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, black 40%, transparent 100%);
-}
+/* in a layer so Tailwind utilities (e.g. border-bad/40 on a .card) can override them;
+   unlayered rules beat every utility in Tailwind v4 */
+@layer components {
+  /* faint grid that fades out toward the bottom of a section */
+  .grid-bg {
+    background-image:
+      linear-gradient(to right, rgb(255 255 255 / 0.035) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(255 255 255 / 0.035) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, black 40%, transparent 100%);
+  }
 
-.ember-text {
-  background: linear-gradient(100deg, var(--color-amber) 0%, var(--color-ember) 55%, #ff3d2e 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
+  .ember-text {
+    background: linear-gradient(100deg, var(--color-amber) 0%, var(--color-ember) 55%, #ff3d2e 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
 
-.card {
-  border: 1px solid var(--color-line);
-  background: linear-gradient(180deg, rgb(255 255 255 / 0.025), rgb(255 255 255 / 0.01));
-  border-radius: 1rem;
-}
+  .card {
+    border: 1px solid var(--color-line);
+    background: linear-gradient(180deg, rgb(255 255 255 / 0.025), rgb(255 255 255 / 0.01));
+    border-radius: 1rem;
+  }
 
-.code {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.65;
+  .code {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.65;
+  }
 }
 
 /* section anchor offset under the sticky nav */
