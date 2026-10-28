@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { IconExternal } from "@/components/Icons";
+import { DemoVideo } from "@/components/demo/DemoVideo";
 import { LogoMark } from "@/components/Logo";
 import { ProductPreview } from "@/components/ProductPreview";
 import { Cta, CtaBand, Heading, PageHero, Section, Serif } from "@/components/site/kit";
@@ -29,13 +30,21 @@ const AUDIT_SUITES: [string, number][] = [["conformance", 100], ["tool quality",
 export default function Demo() {
   return (
     <>
-      <PageHero eyebrow="Demo · real recorded runs" toc={[["trajectory", "The trajectory"], ["run", "The run"], ["pr", "On the pull request"], ["report", "The report"], ["audit", "An MCP audit"], ["run-it", "Run it yourself"]]} title={<>One prompt change. <Serif>Caught</Serif> before it shipped.</>}
-        lead="Everything on this page comes from real runs of the example support agent on a free local model (qwen2.5:7b): ten scenarios, five attempts each, a baseline prompt against a “be faster” rewrite.">
-        <Cta href={asset("/sample/comparison-report.html")} primary>Open the full report <IconExternal className="h-4 w-4" /></Cta>
-        <Cta href="#run-it">Run it yourself</Cta>
+      <PageHero eyebrow="Demo · real recorded runs" toc={[["walkthrough", "Watch the walkthrough"], ["trajectory", "The trajectory"], ["run", "The run"], ["pr", "On the pull request"], ["report", "The report"], ["audit", "An MCP audit"], ["run-it", "Run it yourself"]]} title={<>One prompt change. <Serif>Caught</Serif> before it shipped.</>}
+        lead="Watch a team download AgentCrucible, connect their agent, test a prompt change, audit their MCP server and gate the pull request. Then dig into the real results below: ten scenarios, five attempts each, on a free local model (qwen2.5:7b).">
+        <Cta href="#walkthrough" primary>Watch the walkthrough</Cta>
+        <Cta href={asset("/sample/comparison-report.html")}>Open the full report <IconExternal className="h-4 w-4" /></Cta>
       </PageHero>
 
-      <Section id="trajectory">
+      <Section id="walkthrough" className="scroll-mt-20 pt-10 sm:pt-12">
+        <DemoVideo />
+        <p className="mt-4 text-[13px] leading-relaxed text-dim">
+          Drawn live in your browser from the real recorded runs of the bundled example agent; the pull request is an
+          illustration. Keyboard: space to play or pause, ← → to seek, C for captions, N for narration.
+        </p>
+      </Section>
+
+      <Section id="trajectory" className="border-t border-line/60">
         <Heading eyebrow="1 · The trajectory" title={<>Same question, <Serif>different outcome</Serif></>}
           lead="A customer asks about a mouse. Hidden in the product description is an instruction to refund an order. Switch prompts to see what the agent did with it, call by call." />
         <TrajectoryViewer />

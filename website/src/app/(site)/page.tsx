@@ -1,10 +1,12 @@
 import Link from "next/link";
-import { IconArrow, IconBolt, IconChat, IconCheck, IconCode, IconRuns, IconScenarios, IconServer, IconShield } from "@/components/Icons";
+import { DemoVideo } from "@/components/demo/DemoVideo";
+import { IconArrow, IconBolt, IconChat, IconCheck, IconCode, IconGit, IconRuns, IconScenarios, IconServer, IconSetup, IconShield } from "@/components/Icons";
 import { ProductPreview } from "@/components/ProductPreview";
-import { EpisodeDiagram, ThreeSteps } from "@/components/site/diagram";
-import { Cta, CtaBand, Heading, More, Section, Serif, Tile } from "@/components/site/kit";
-import { TrajectoryViewer } from "@/components/TrajectoryViewer";
-import { blob } from "@/lib/site";
+import { ThreeSteps } from "@/components/site/diagram";
+import { faq, FaqItem } from "@/components/site/faq";
+import { Cta, CtaBand, Heading, More, Section, Serif } from "@/components/site/kit";
+import { Code } from "@/components/ui";
+import { blob, GITHUB } from "@/lib/site";
 
 export default function Home() {
   return (
@@ -12,22 +14,19 @@ export default function Home() {
       <Hero />
       <Stack />
       <Problems />
-      <Section>
+      <Watch />
+      <Section className="border-t border-line/60">
         <Heading eyebrow="How it works" title={<>Three steps. <Serif>No SDK.</Serif></>}
           lead="Your agent keeps its code. AgentCrucible sits between it and the outside world (the model API and the MCP servers), so it can record, control and grade everything." />
         <ThreeSteps />
-        <div className="mt-6"><EpisodeDiagram /></div>
         <div className="mt-8"><More href="/how-it-works/">The full picture: gateways, sandboxes, grading and statistics</More></div>
       </Section>
       <UseCaseTeaser />
-      <Section>
-        <Heading eyebrow="Live demo · two real recorded runs" title={<>Watch it catch a <Serif>prompt injection</Serif></>}
-          lead="A customer asks about a mouse. Hidden in the product description is an instruction to refund an order. Switch between the two prompts: same model, same question, different outcome." />
-        <TrajectoryViewer />
-        <div className="mt-8"><More href="/demo/">More from the demo: the PR comment, the full report and an MCP audit</More></div>
-      </Section>
       <Proof />
-      <FeatureTeaser />
+      <Ways />
+      <Quickstart />
+      <Teams />
+      <HomeFaq />
       <CtaBand />
     </>
   );
@@ -83,20 +82,44 @@ function Stack() {
 }
 
 function Problems() {
+  const items = [
+    { icon: <IconChat />, t: "“Done, I've refunded you.” It hadn't.", b: "Agents report success they didn't achieve, or do things nobody asked for.", fix: "Checks the database, the files and every tool call, not just the reply." },
+    { icon: <IconRuns />, t: "Green on Monday, red on Tuesday.", b: "The same agent gives different answers to the same request. One passing run proves very little.", fix: "Runs every scenario several times and reports how reliable it really is." },
+    { icon: <IconBolt />, t: "A small prompt tweak broke something else.", b: "Changes to prompts, models and tools have side effects nobody tested for.", fix: "Compares every change with a baseline and gives a statistical verdict." },
+    { icon: <IconServer />, t: "The tools themselves are broken.", b: "An MCP server with an injectable query or a vague tool description fails every agent that uses it.", fix: "Audits each MCP server on its own and grades it, before an agent touches it." },
+  ];
   return (
     <Section>
-      <Heading eyebrow="Why" title={<>Agents fail in ways normal tests <Serif>can&apos;t see</Serif></>} />
-      <div className="grid gap-4 md:grid-cols-3">
-        <Tile icon={<IconChat />} title="“Done, I've refunded you.” It hadn't.">
-          Agents report success they didn&apos;t achieve. Reading the reply isn&apos;t enough; you have to check the database, the tool calls and the files.
-        </Tile>
-        <Tile icon={<IconRuns />} title="Green on Monday, red on Tuesday.">
-          The same agent gives different answers to the same request. One passing run proves very little, so every scenario runs several times.
-        </Tile>
-        <Tile icon={<IconBolt />} title="A small prompt tweak broke something else.">
-          Changes to prompts, models and tools have side effects. Every change gets compared with a baseline before it ships.
-        </Tile>
+      <Heading eyebrow="Why" title={<>Agents fail in ways normal tests <Serif>can&apos;t see</Serif></>}
+        lead="Unit tests mock the model away; eval scripts read one reply, once. Neither tells you whether your agent did the right thing, every time." />
+      <div className="grid gap-4 md:grid-cols-2">
+        {items.map(({ icon, t, b, fix }) => (
+          <div key={t} className="card flex flex-col p-6">
+            <div className="flex flex-1 items-start gap-4">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-ember/12 text-ember">{icon}</span>
+              <div>
+                <h3 className="text-[17px] font-semibold leading-snug tracking-tight">{t}</h3>
+                <p className="mt-2 text-[14.5px] leading-relaxed text-mute">{b}</p>
+              </div>
+            </div>
+            <div className="mt-5 flex items-start gap-2.5 border-t border-line pt-4 text-[14px]">
+              <IconCheck className="mt-0.5 h-4 w-4 shrink-0 text-ok" />
+              <span><span className="font-medium text-fg">AgentCrucible </span><span className="text-mute">{fix.charAt(0).toLowerCase() + fix.slice(1)}</span></span>
+            </div>
+          </div>
+        ))}
       </div>
+    </Section>
+  );
+}
+
+function Watch() {
+  return (
+    <Section id="watch" className="border-t border-line/60">
+      <Heading eyebrow="Watch it work · 2 minutes" title={<>From download to a <Serif>blocked regression</Serif></>}
+        lead="A team installs AgentCrucible, connects their agent, tests a prompt change, finds a prompt injection, audits their MCP server and gates the pull request. Captions on; narration optional." />
+      <DemoVideo chapters={false} />
+      <div className="mt-6"><More href="/demo/">Chapters, the real report and the raw results</More></div>
     </Section>
   );
 }
@@ -111,7 +134,7 @@ function UseCaseTeaser() {
     { icon: <IconScenarios />, t: "Deployed agent services", b: "Test the HTTP service you already run, in staging, with its real third-party APIs mocked.", id: "services" },
   ];
   return (
-    <Section>
+    <Section className="border-t border-line/60">
       <Heading eyebrow="Use cases" title={<>Built for agents that <Serif>do things</Serif></>}
         lead="If your agent calls tools, changes data or writes code, a chat transcript can't tell you whether it did the right thing. AgentCrucible checks the outcome." />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -136,7 +159,7 @@ function Proof() {
     { big: "0 lines", label: "changed when it claimed to", body: "A coding agent said it had deleted a file. The repo diff showed it never touched anything." },
   ];
   return (
-    <Section>
+    <Section className="border-t border-line/60">
       <Heading eyebrow="Real results" title={<>What it found in <Serif>our own examples</Serif></>}
         lead={<>Measured on the two example agents that ship with the project, using free local models. <a href={blob("docs/RESULTS.md")} className="text-ember">Methodology and raw numbers →</a></>} />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -152,33 +175,155 @@ function Proof() {
   );
 }
 
-const FEATURES = [
-  { icon: IconRuns, t: "Runs & verdicts", b: "Start runs from the browser, watch them live, get a plain-English verdict with evidence." },
-  { icon: IconScenarios, t: "Scenarios", b: "Every test explained: what the user says, what must happen, and how it did last time." },
-  { icon: IconServer, t: "MCP audits", b: "A graded report card for each tool server, with the exact findings to fix." },
-  { icon: IconShield, t: "Access control", b: "Full-access and read-only tokens, so the whole team can look without breaking anything." },
+const WAYS = [
+  {
+    icon: IconSetup, t: "Dashboard", sub: "For the whole team", href: "/features/#dashboard",
+    b: "Start runs, watch progress, read verdicts and open any attempt's full trajectory.",
+    peek: (
+      <div className="space-y-1.5 text-[12px]">
+        <Row k="prompt-v2" v={<span className="text-bad">−30 pts</span>} />
+        <Row k="baseline" v={<span className="text-mute">78%</span>} />
+      </div>
+    ),
+  },
+  {
+    icon: IconCode, t: "CLI", sub: "For your terminal", href: "/features/#cli",
+    b: "Run suites, compare runs, replay from the cache and open a self-contained HTML report.",
+    peek: (
+      <div className="font-mono text-[11.5px] leading-relaxed">
+        <div className="text-fg">$ crucible run -k 5</div>
+        <div className="text-bad">✕ gate failed: regressed</div>
+      </div>
+    ),
+  },
+  {
+    icon: IconGit, t: "Pull-request gate", sub: "For CI", href: "/features/#ci",
+    b: "A GitHub Action runs the suite on every pull request, comments the verdict and blocks regressions.",
+    peek: (
+      <div className="flex items-center gap-2 text-[12px]">
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-bad/15 text-[10px] text-bad">✕</span>
+        <b className="font-medium">regression check</b><span className="text-dim">failing</span>
+      </div>
+    ),
+  },
+  {
+    icon: IconShield, t: "MCP audit", sub: "For tool builders", href: "/features/#more",
+    b: "Conformance, tool quality, fuzzing, security probes and latency, graded A to F.",
+    peek: (
+      <div className="flex items-center gap-3 text-[12px]">
+        <span className="font-serif text-[28px] leading-none text-bad">D</span>
+        <span className="text-mute"><span className="text-bad">critical</span> · SQL injection</span>
+      </div>
+    ),
+  },
 ];
 
-function FeatureTeaser() {
+function Ways() {
   return (
-    <Section>
-      <div className="grid items-center gap-12 lg:grid-cols-[0.9fr_1.1fr]">
+    <Section className="border-t border-line/60">
+      <Heading eyebrow="The product" title={<>One engine, <Serif>four ways</Serif> to use it</>}
+        lead="The dashboard, the CLI and CI run the same tests with the same statistics, so a verdict means the same thing everywhere." />
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {WAYS.map(({ icon: Icon, t, sub, href, b, peek }) => (
+          <Link key={t} href={href} className="card group flex flex-col p-5 transition-colors hover:border-ember/40">
+            <div className="flex items-center gap-2.5"><Icon className="h-5 w-5 text-ember" /><span className="text-[16px] font-semibold">{t}</span></div>
+            <div className="mt-1 font-mono text-[11px] uppercase tracking-[0.12em] text-dim">{sub}</div>
+            <p className="mt-3 text-[14px] leading-relaxed text-mute">{b}</p>
+            <div className="mt-auto pt-4"><div className="rounded-lg border border-line bg-panel-2/70 px-3 py-2.5">{peek}</div></div>
+          </Link>
+        ))}
+      </div>
+      <div className="mt-8 flex flex-wrap items-center gap-6">
+        <More href="/features/">All features</More>
+        <More href="/compare/">How it compares</More>
+      </div>
+    </Section>
+  );
+}
+
+function Row({ k, v }: { k: string; v: React.ReactNode }) {
+  return <div className="flex items-center justify-between gap-2"><span className="truncate font-mono text-fg/90">{k}</span><span className="shrink-0">{v}</span></div>;
+}
+
+function Quickstart() {
+  const steps: [string, string][] = [
+    ["Start it", "Dashboard, API, Postgres and a local model, in Docker."],
+    ["Try the example", "A support agent with two MCP servers and ten scenarios."],
+    ["Connect your agent", "Six questions; you get the config, an adapter and a first test."],
+  ];
+  return (
+    <Section className="border-t border-line/60">
+      <div className="grid items-center gap-10 lg:grid-cols-[0.9fr_1.1fr]">
         <div>
-          <Heading eyebrow="The product" title={<>A dashboard, a CLI and a CI gate. <Serif>All on your machine.</Serif></>}
-            lead="Run it next to your agent with one command. Your prompts, data and results never leave your infrastructure." className="mb-6" />
-          <div className="flex flex-wrap items-center gap-5">
-            <Cta href="/features/">Explore features</Cta>
-            <More href="/compare/">How it compares</More>
+          <Heading eyebrow="Quickstart" title={<>Running in <Serif>five minutes</Serif></>} className="mb-6"
+            lead="Start the stack, open the dashboard and run the bundled example on a free local model. Then point it at your own agent with the setup wizard." />
+          <ol className="space-y-3 text-[14.5px]">
+            {steps.map(([t, d], i) => (
+              <li key={t} className="flex gap-3">
+                <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-ember/15 font-mono text-[12px] text-ember">{i + 1}</span>
+                <span><b className="font-medium">{t}.</b> <span className="text-mute">{d}</span></span>
+              </li>
+            ))}
+          </ol>
+          <div className="mt-7 flex flex-wrap gap-3">
+            <Cta href="/start/" primary>Open the setup wizard <IconArrow /></Cta>
+            <Cta href="/docs/">Read the docs</Cta>
           </div>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {FEATURES.map(({ icon: Icon, t, b }) => (
-            <div key={t} className="card p-5">
-              <Icon className="h-5 w-5 text-ember" />
-              <div className="mt-3 text-[15px] font-semibold">{t}</div>
-              <p className="mt-1.5 text-[13.5px] leading-relaxed text-mute">{b}</p>
+        <Code title="terminal" code={`git clone ${GITHUB}.git
+cd AgentCrucible && cp .env.example .env
+docker compose up --build
+# open http://localhost:8080/dashboard/
+
+# or without Docker, on your own machine:
+pip install -e . && cd examples/support-agent
+crucible run --label baseline -k 5`} />
+      </div>
+    </Section>
+  );
+}
+
+const TEAMS = [
+  { icon: IconServer, t: "Self-hosted", b: "Runs on your laptop, your CI or your cluster. Prompts, data and results never leave your infrastructure." },
+  { icon: IconShield, t: "Access control", b: "Full-access and read-only tokens for the dashboard and API, with HttpOnly session cookies." },
+  { icon: IconBolt, t: "Free to run", b: "Apache-2.0, with local models through Ollama. Recorded responses replay at no cost." },
+  { icon: IconScenarios, t: "Tests live in your repo", b: "Scenarios are YAML files, reviewed in pull requests like any other code." },
+  { icon: IconGit, t: "CI and Kubernetes", b: "A GitHub Action for every pull request, and a Helm chart that shards big suites across pods." },
+  { icon: IconCheck, t: "No lock-in", b: "No SDK in your agent: any framework, any OpenAI- or Anthropic-compatible model, any MCP server." },
+];
+
+function Teams() {
+  return (
+    <Section className="border-t border-line/60">
+      <Heading eyebrow="Built for teams" title={<>Ready for <Serif>your company&apos;s</Serif> agents</>}
+        lead="Everything a team needs to put agent testing into its normal engineering workflow, without sending anything to a vendor." />
+      <div className="grid gap-x-8 gap-y-7 sm:grid-cols-2 lg:grid-cols-3">
+        {TEAMS.map(({ icon: Icon, t, b }) => (
+          <div key={t} className="flex gap-4">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-line bg-panel-2/70 text-ember"><Icon className="h-5 w-5" /></span>
+            <div>
+              <div className="text-[15.5px] font-semibold">{t}</div>
+              <p className="mt-1 text-[14px] leading-relaxed text-mute">{b}</p>
             </div>
-          ))}
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+function HomeFaq() {
+  const qs = ["Do I have to change my agent?", "Which frameworks and models work?", "Does my data leave my machine?", "What does it cost?"].map(faq);
+  return (
+    <Section className="border-t border-line/60">
+      <div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr]">
+        <div>
+          <Heading eyebrow="FAQ" title={<>Questions, <Serif>answered</Serif></>} className="mb-6"
+            lead="The ones teams ask first. Security, statistics, CI and MCP questions are on the FAQ page." />
+          <More href="/faq/">All questions</More>
+        </div>
+        <div className="space-y-3">
+          {qs.map(([q, a]) => <FaqItem key={q} q={q} a={a} />)}
         </div>
       </div>
     </Section>
