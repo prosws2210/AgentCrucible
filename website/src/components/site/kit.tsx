@@ -1,7 +1,7 @@
 // Building blocks shared by the marketing pages (home, how it works, use cases, demo, features, docs, faq).
 import Link from "next/link";
-import { asset, blob, GITHUB, NAV_LINKS, tree } from "@/lib/site";
-import { IconArrow, IconGit } from "../Icons";
+import { GITHUB } from "@/lib/site";
+import { IconArrow } from "../Icons";
 import { LogoMark } from "../Logo";
 import { GitHubIcon } from "../Nav";
 
@@ -111,42 +111,5 @@ export function CtaBand({ title = <>Know your agent works <Serif>before</Serif> 
         </div>
       </div>
     </section>
-  );
-}
-
-export function Footer() {
-  const cols: [string, [string, string][]][] = [
-    ["Product", [...NAV_LINKS.filter(([, h]) => h !== "/docs/"), ["Compare", "/compare/"], ["Dashboard", "/dashboard/"], ["Get started", "/start/"]]],
-    ["Resources", [["Documentation", "/docs/"], ["Adoption guide", blob("docs/ADOPTION.md")], ["Results & methodology", blob("docs/RESULTS.md")], ["Architecture", blob("docs/ARCHITECTURE.md")], ["Sample report", asset("/sample/comparison-report.html")], ["Changelog", blob("CHANGELOG.md")]]],
-    ["Examples", [["Support agent", tree("examples/support-agent")], ["Coding agent", tree("examples/coding-agent")], ["GitHub Action", blob("action.yml")], ["Helm chart", tree("deploy/helm/agentcrucible")]]],
-  ];
-  return (
-    <footer className="border-t border-line">
-      <div className="mx-auto flex max-w-6xl flex-col gap-10 px-4 py-12 sm:px-6 lg:flex-row lg:justify-between">
-        <div className="max-w-xs">
-          <div className="flex items-center gap-2.5">
-            <LogoMark className="h-6 w-6" />
-            <span className="font-semibold">AgentCrucible</span>
-          </div>
-          <p className="mt-3 text-[13px] leading-relaxed text-mute">Regression testing for AI agents and MCP servers. Built by Shakti Swaroop Sahu.</p>
-          <div className="mt-4 flex items-center gap-2 text-[12.5px] text-dim"><IconGit className="h-4 w-4" /> Apache-2.0 · open source</div>
-        </div>
-        <div className="grid grid-cols-2 gap-10 sm:grid-cols-3">
-          {cols.map(([h, links]) => (
-            <div key={h}>
-              <div className="mb-3 font-mono text-[11px] uppercase tracking-[0.14em] text-dim">{h}</div>
-              <ul className="space-y-2 text-[13.5px]">
-                {links.map(([l, href]) => (
-                  <li key={l}>
-                    {/^https?:|\.html$/.test(href) ? <a href={href} className="text-mute transition-colors hover:text-fg">{l}</a>
-                      : <Link href={href} className="text-mute transition-colors hover:text-fg">{l}</Link>}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      </div>
-    </footer>
   );
 }

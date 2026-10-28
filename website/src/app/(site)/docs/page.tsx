@@ -15,7 +15,7 @@ const TOC: [string, [string, string][]][] = [
   ["Connect", [["agent", "Your agent"], ["models", "Model APIs"], ["mcp", "MCP servers"]]],
   ["Write tests", [["environment", "Clean environments"], ["scenarios", "Scenarios"], ["checks", "Checks reference"]]],
   ["Run", [["compare", "Run and compare"], ["ci", "CI gate"], ["dashboard", "Dashboard and access"], ["kubernetes", "Kubernetes"]]],
-  ["Reference", [["cli", "CLI"], ["env", "Environment variables"], ["limits", "Limitations"]]],
+  ["Reference", [["cli", "CLI"], ["env", "Environment variables"], ["limits", "Limitations"], ["roadmap", "Roadmap"]]],
 ];
 
 export default function Docs() {
@@ -220,6 +220,17 @@ CRUCIBLE_VIEWER_TOKEN=<another one>         # optional: read-only`} />
             <li>No per-person accounts; use shared tokens or an SSO proxy.</li>
             <li>Gemini and Bedrock native APIs: use their OpenAI-compatible endpoints.</li>
           </ul>
+
+          <H2 id="roadmap">Roadmap: import a whole codebase</H2>
+          <P>Next up: point AgentCrucible at a repository and it finds every agent, tool, MCP server, skill and prompt, drafts
+            the config, adapters and scenarios, and shows them to you for review. Nothing is written or run until you approve;
+            then a smoke run checks that what it found matches what your agents actually do.</P>
+          <ul className="mt-4 list-disc space-y-2 pl-5 text-[15px] leading-relaxed text-mute">
+            <li>Reads the code without running it; secrets are skipped and the analysis uses your local model by default.</li>
+            <li>Detectors for LangGraph, LangChain, OpenAI Agents SDK, CrewAI, PydanticAI, LlamaIndex, MCP, the Vercel AI SDK and plain SDK calls, with a fallback for any other framework.</li>
+            <li>Every finding links to the file and line it came from; anything it can&apos;t prove becomes a question.</li>
+          </ul>
+          <P>Read the full plan: <a href={blob("docs/CODEBASE-IMPORT.md")} className="text-ember">docs/CODEBASE-IMPORT.md</a>.</P>
 
           <div className="mt-14 rounded-xl border border-line bg-panel-2/40 p-5 text-[14.5px] text-mute">
             Something missing or wrong? <a href={`${GITHUB}/issues`} className="text-ember">Open an issue</a> or read the full <a href={blob("docs/ADOPTION.md")} className="text-ember">adoption guide</a>.

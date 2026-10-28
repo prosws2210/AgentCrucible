@@ -1,5 +1,5 @@
 import { Nav } from "@/components/Nav";
-import { Footer } from "@/components/site/kit";
+import { Footer } from "@/components/site/Footer";
 
 /** Marketing pages: shared nav and footer. The dashboard has its own shell. */
 export default function SiteLayout({ children }: { children: React.ReactNode }) {

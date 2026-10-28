@@ -14,3 +14,7 @@ export const NAV_LINKS: [string, string][] = [
   ["Docs", "/docs/"],
   ["FAQ", "/faq/"],
 ];
+
+/** Latest released version, shown in the footer. Keep in step with src/agentcrucible/__init__.py when releasing. */
+export const VERSION = "0.2.0";
+export const LINKEDIN = "https://www.linkedin.com/in/shakti-swaroop-sahu/";

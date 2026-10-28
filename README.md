@@ -309,6 +309,7 @@ the repository variable `PUBLISH_PYPI=true`).
 
 ## Roadmap
 
+- **Codebase import**: point AgentCrucible at a repository; it finds the agents, tools, MCP servers and prompts, drafts the tests for review, and verifies them with a smoke run. Plan: [docs/CODEBASE-IMPORT.md](docs/CODEBASE-IMPORT.md)
 - MCP Python SDK 2.x and the stateless 2026 spec revision
 - Docker-per-episode executor (agents with system dependencies) and a Kubernetes Job-per-episode executor
 - Trace import (OpenTelemetry GenAI conventions) and "promote production trace to scenario"
