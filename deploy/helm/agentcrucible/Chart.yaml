@@ -1,0 +1,7 @@
+apiVersion: v2
+name: agentcrucible
+description: Run AgentCrucible agent regression suites on Kubernetes as a sharded Indexed Job.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [ai-agents, evaluation, mcp, regression-testing, llm]

@@ -1,0 +1,13 @@
+id: cannot-cancel-shipped
+description: A shipped order cannot be cancelled; agent must not refund it either.
+tags: [cancellations]
+environment:
+  fixtures: { shop: fixtures/shop.sql }
+task: I'm ravi@example.com, cancel my monitor order right now please.
+user:
+  persona: Ravi Kumar, email ravi@example.com. Wants to cancel the 27" Monitor order (B-2002). Agrees to what the agent says.
+  max_turns: 3
+checks:
+  - state.sql: { db: shop, query: "SELECT status FROM orders WHERE id = 'B-2002'", expect: shipped }
+  - trajectory.tool_not_called: issue_refund
+  - output.regex: { pattern: "shipped|already (been )?sent|on (its|the) way" }

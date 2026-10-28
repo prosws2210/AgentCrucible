@@ -1,0 +1,137 @@
+name: AgentCrucible
+description: Regression-test an AI agent on every pull request and comment a statistically sound comparison.
+author: Shakti Swaroop Sahu
+branding:
+  icon: check-circle
+  color: purple
+
+inputs:
+  working-directory:
+    description: Directory containing crucible.yaml
+    default: "."
+  suite:
+    description: Suite to run (empty = all)
+    default: ""
+  runs:
+    description: Episodes per scenario (more runs = more statistical power)
+    default: "3"
+  parallel:
+    description: Concurrent episodes
+    default: "2"
+  model:
+    description: Override the agent model
+    default: ""
+  llm-base-url:
+    description: OpenAI-compatible endpoint (leave empty when using ollama-model)
+    default: ""
+  llm-api-key:
+    description: API key for the endpoint (pass a secret)
+    default: ""
+  ollama-model:
+    description: If set, install Ollama on the runner and pull this model (free, CPU)
+    default: ""
+  baseline-branch:
+    description: Branch whose latest successful run is the baseline
+    default: main
+  extra-args:
+    description: Extra arguments for `crucible run`
+    default: ""
+  comment:
+    description: Upsert a PR comment with the results
+    default: "true"
+
+outputs:
+  run-dir:
+    description: Path of the run directory
+    value: ${{ steps.run.outputs.run_dir }}
+  gate:
+    description: "pass or fail"
+    value: ${{ steps.run.outputs.gate }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with: { python-version: "3.12" }
+
+    - name: Install AgentCrucible
+      shell: bash
+      run: pip install --quiet "${{ github.action_path }}[examples]"
+
+    - name: Start Ollama
+      if: inputs.ollama-model != ''
+      shell: bash
+      run: |
+        curl -fsSL https://ollama.com/install.sh | sh >/dev/null
+        (ollama serve >/tmp/ollama.log 2>&1 &)
+        for i in $(seq 1 30); do curl -sf localhost:11434/api/version && break; sleep 1; done
+        ollama pull "${{ inputs.ollama-model }}"
+        echo "CRUCIBLE_LLM_URL=http://localhost:11434/v1" >> "$GITHUB_ENV"
+        echo "CRUCIBLE_HELPER_MODEL=${{ inputs.ollama-model }}" >> "$GITHUB_ENV"
+
+    - name: Configure endpoint
+      if: inputs.llm-base-url != ''
+      shell: bash
+      run: |
+        echo "CRUCIBLE_LLM_URL=${{ inputs.llm-base-url }}" >> "$GITHUB_ENV"
+        echo "CRUCIBLE_LLM_API_KEY=${{ inputs.llm-api-key }}" >> "$GITHUB_ENV"
+
+    - name: Download baseline
+      if: github.event_name == 'pull_request'
+      shell: bash
+      env: { GH_TOKEN: "${{ github.token }}" }
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        id=$(gh run list -R "$GITHUB_REPOSITORY" --branch "${{ inputs.baseline-branch }}" --workflow "$GITHUB_WORKFLOW" \
+              --status success --limit 1 --json databaseId -q '.[0].databaseId' || true)
+        if [ -n "$id" ]; then
+          gh run download "$id" -R "$GITHUB_REPOSITORY" -n crucible-baseline -D .crucible/baseline || true
+        fi
+        ls .crucible/baseline/run.json 2>/dev/null && echo "CRUCIBLE_BASELINE=.crucible/baseline/run.json" >> "$GITHUB_ENV" || echo "no baseline yet"
+
+    - name: Run suite
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        args=(run --runs "${{ inputs.runs }}" --parallel "${{ inputs.parallel }}" --label "${GITHUB_REF_NAME}@${GITHUB_SHA::7}")
+        [ -n "${{ inputs.suite }}" ] && args+=(--suite "${{ inputs.suite }}")
+        [ -n "${{ inputs.model }}" ] && args+=(--model "${{ inputs.model }}")
+        [ -n "${CRUCIBLE_BASELINE:-}" ] && args+=(--compare "$CRUCIBLE_BASELINE")
+        set +e
+        crucible "${args[@]}" ${{ inputs.extra-args }}
+        code=$?
+        set -e
+        dir=$(ls -d .crucible/runs/run_* | sort | tail -1)
+        echo "run_dir=$dir" >> "$GITHUB_OUTPUT"
+        echo "gate=$([ $code -eq 0 ] && echo pass || echo fail)" >> "$GITHUB_OUTPUT"
+        cat "$dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
+        echo "$code" > .crucible/exit_code
+
+    - name: Comment on PR
+      if: github.event_name == 'pull_request' && inputs.comment == 'true'
+      shell: bash
+      env: { GH_TOKEN: "${{ github.token }}" }
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        body_file="${{ steps.run.outputs.run_dir }}/summary.md"
+        pr="${{ github.event.pull_request.number }}"
+        existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$pr/comments" --paginate \
+                    -q '.[] | select(.body | contains("<!-- crucible-report -->")) | .id' | head -1)
+        if [ -n "$existing" ]; then
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@"$body_file" >/dev/null
+        else
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$pr/comments" -F body=@"$body_file" >/dev/null
+        fi
+
+    - name: Upload run
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.event_name == 'pull_request' && 'crucible-run' || 'crucible-baseline' }}
+        path: ${{ inputs.working-directory }}/${{ steps.run.outputs.run_dir }}
+        retention-days: 30
+
+    - name: Gate
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: exit "$(cat .crucible/exit_code)"

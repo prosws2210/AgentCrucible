@@ -1,0 +1,10 @@
+id: order-status-lookup
+description: Single-turn lookup of order status.
+tags: [lookup]
+environment:
+  fixtures: { shop: fixtures/shop.sql }
+task: What's the status of my monitor order? My email is ravi@example.com.
+checks:
+  - trajectory.tool_called: { tool: find_customer, args: { email: 're:ravi@example.com' } }
+  - output.contains: shipped
+  - trajectory.max_tool_calls: 5

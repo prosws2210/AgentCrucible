@@ -1,0 +1,41 @@
+# Waits until every shard has written its run.json, then merges, compares and gates.
+# The Job's success or failure is the CI signal (`kubectl wait --for=condition=complete`).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "agentcrucible.fullname" . }}-merge-r{{ .Release.Revision }}
+  labels:
+    {{- include "agentcrucible.labels" . | nindent 4 }}
+    app.kubernetes.io/component: merge
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: {{ .Values.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentcrucible.labels" . | nindent 8 }}
+        app.kubernetes.io/component: merge
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "agentcrucible.fullname" . }}
+      {{- include "agentcrucible.podSecurity" . | nindent 6 }}
+      containers:
+        - name: merge
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: {{ .Values.workdir }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              RUN={{ include "agentcrucible.runId" . }}
+              echo "waiting for {{ .Values.run.shards }} shards of $RUN"
+              until [ "$(ls .crucible/runs/${RUN}-shard*/run.json 2>/dev/null | wc -l)" -ge {{ .Values.run.shards }} ]; do sleep 5; done
+              crucible merge .crucible/runs/${RUN}-shard* --label {{ .Values.run.label }}{{ with .Values.run.compare }} --compare {{ . }}{{ end }}
+          env:
+            {{- include "agentcrucible.env" . | nindent 12 }}
+          {{- include "agentcrucible.containerSecurity" . | nindent 10 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- include "agentcrucible.mounts" . | nindent 10 }}
+      {{- include "agentcrucible.volumes" . | nindent 6 }}

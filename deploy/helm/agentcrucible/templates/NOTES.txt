@@ -1,0 +1,5 @@
+AgentCrucible run {{ include "agentcrucible.runId" . }}: {{ .Values.run.shards }} shards x {{ .Values.run.runs }} runs per scenario.
+
+Watch:     kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }} -w
+Gate (CI): kubectl wait --for=condition=complete job/{{ include "agentcrucible.fullname" . }}-merge-r{{ .Release.Revision }} --timeout=60m
+Results:   kubectl logs job/{{ include "agentcrucible.fullname" . }}-merge-r{{ .Release.Revision }}

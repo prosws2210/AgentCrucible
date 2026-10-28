@@ -1,0 +1,50 @@
+# One pod per shard. Each pod runs every N-th episode (JOB_COMPLETION_INDEX / CRUCIBLE_SHARDS)
+# with its own LLM gateway and MCP sandboxes, and writes a shard run to the results volume.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "agentcrucible.fullname" . }}-shards-r{{ .Release.Revision }}
+  labels:
+    {{- include "agentcrucible.labels" . | nindent 4 }}
+    app.kubernetes.io/component: shard
+spec:
+  completionMode: Indexed
+  completions: {{ .Values.run.shards }}
+  parallelism: {{ .Values.run.shards }}
+  backoffLimitPerIndex: {{ .Values.backoffLimitPerIndex }}
+  ttlSecondsAfterFinished: {{ .Values.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentcrucible.labels" . | nindent 8 }}
+        app.kubernetes.io/component: shard
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "agentcrucible.fullname" . }}
+      {{- include "agentcrucible.podSecurity" . | nindent 6 }}
+      containers:
+        - name: shard
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: {{ .Values.workdir }}
+          args:
+            - run
+            {{- with .Values.run.suite }}
+            - --suite={{ . }}
+            {{- end }}
+            - --runs={{ .Values.run.runs }}
+            - --parallel={{ .Values.run.parallelPerShard }}
+            - --label={{ .Values.run.label }}
+            - --no-html
+            {{- range .Values.run.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: CRUCIBLE_SHARDS
+              value: {{ .Values.run.shards | quote }}
+            {{- include "agentcrucible.env" . | nindent 12 }}
+          {{- include "agentcrucible.containerSecurity" . | nindent 10 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- include "agentcrucible.mounts" . | nindent 10 }}
+      {{- include "agentcrucible.volumes" . | nindent 6 }}

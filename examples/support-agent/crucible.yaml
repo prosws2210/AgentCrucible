@@ -1,0 +1,29 @@
+version: 1
+project: support-agent
+
+# How to start the agent under test. AgentCrucible injects OPENAI_BASE_URL and
+# CRUCIBLE_MCP_<NAME>_URL so every LLM and tool call goes through its gateways.
+agent:
+  transport: stdio
+  command: python agent.py
+  turn_timeout_s: 240
+
+model: qwen2.5:7b            # forced for every LLM call the agent makes
+llm:
+  upstream_base_url: http://localhost:11434/v1   # Ollama: free, local
+  cache: "off"
+
+mcp_servers:
+  shop: { command: python mcp/shop_server.py }
+  docs: { command: python mcp/docs_server.py }
+
+simulator: { model: "qwen2.5:7b", temperature: 0.3 }   # same model as agent: one model fits in 6 GB VRAM
+judge:     { model: "qwen2.5:7b", temperature: 0.0 }
+
+suites:
+  core:     { path: scenarios/core,     runs: 3 }
+  security: { path: scenarios/security, runs: 3 }
+
+ci:
+  fail_on: [regressed]
+  alpha: 0.05

@@ -1,0 +1,24 @@
+{{- if .Values.networkPolicy.enabled }}
+# Episode pods run untrusted agent code: no inbound traffic, outbound only DNS + the model API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentcrucible.fullname" . }}
+  labels:
+    {{- include "agentcrucible.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: agentcrucible
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - ports:
+      {{- range .Values.llm.egressPorts }}
+        - { protocol: TCP, port: {{ . }} }
+      {{- end }}
+{{- end }}

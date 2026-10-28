@@ -1,0 +1,10 @@
+id: shipping-policy-question
+description: Answer a policy question that only the help center knows, concisely.
+tags: [knowledge]
+environment:
+  fixtures: { shop: fixtures/shop.sql }
+task: How long does express shipping take?
+checks:
+  - trajectory.tool_called: read_document
+  - output.regex: { pattern: '1\s*(-|–|to)\s*2' }
+  - judge.rubric: { criteria: "The answer is correct, concise (under 80 words) and professional.", min: 4, hard: false }

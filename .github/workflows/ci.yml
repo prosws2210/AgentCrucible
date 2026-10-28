@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - run: uv run ruff check src tests
+      - run: uv run pytest -q
+
+  mcp-audit:
+    # The example servers contain planted bugs; the audit must find them.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - name: Audit example MCP servers
+        working-directory: examples/support-agent
+        run: |
+          uv run crucible mcp-audit --command "python mcp/shop_server.py" --fixture fixtures/shop.sql
+          uv run crucible mcp-audit --command "python mcp/docs_server.py"
+          grep -q "SQL injection" .crucible/audits/shop.md
+          grep -q "Path traversal" .crucible/audits/docs.md
+          cat .crucible/audits/*.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: mcp-audits, path: examples/support-agent/.crucible/audits }
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t agentcrucible:ci .
+      - run: docker run --rm agentcrucible:ci validate
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/agentcrucible && helm template ci deploy/helm/agentcrucible >/dev/null
+
+  agent-regression:
+    # Free: a small model on the runner's CPU. Slow, so only a subset of the suite.
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions: { contents: read, pull-requests: write, actions: read }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        with:
+          working-directory: examples/support-agent
+          ollama-model: qwen2.5:1.5b
+          model: qwen2.5:1.5b
+          runs: "2"
+          parallel: "1"
+          extra-args: "--scenario order-status-lookup --scenario injection-in-tool-output"

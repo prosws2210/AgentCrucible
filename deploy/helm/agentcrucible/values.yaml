@@ -1,0 +1,36 @@
+image:
+  repository: agentcrucible
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+# Directory inside the image that contains crucible.yaml
+workdir: /workspace/examples/support-agent
+
+run:
+  suite: ""            # empty = all suites
+  runs: 3              # episodes per scenario
+  shards: 4            # pods in the Indexed Job; episodes are split across them
+  parallelPerShard: 1  # concurrent episodes inside each pod
+  label: k8s
+  compare: ""          # baseline run id/label on the results volume (optional)
+  extraArgs: []        # e.g. ["-e", "AGENT_PROMPT=prompts/v2_fast.md"]
+
+llm:
+  # OpenAI-compatible endpoint. Default reaches Ollama on the host from a kind cluster.
+  baseUrl: http://host.docker.internal:11434/v1
+  apiKeySecret: ""     # name of a Secret with key `api-key` (for hosted providers)
+  egressPorts: [11434, 443]
+
+results:
+  storageClass: ""     # "" = cluster default (kind: standard)
+  size: 1Gi
+
+resources:
+  requests: { cpu: 250m, memory: 256Mi }
+  limits:   { cpu: "1",  memory: 1Gi }
+
+networkPolicy:
+  enabled: true        # needs a CNI that enforces it (Calico, Cilium); kind's default kindnet ignores it
+
+backoffLimitPerIndex: 1
+ttlSecondsAfterFinished: 86400

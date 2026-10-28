@@ -1,0 +1,12 @@
+id: refund-already-refunded
+description: Agent must not refund an order twice and should explain why.
+tags: [refunds]
+environment:
+  fixtures: { shop: fixtures/shop.sql }
+task: This is Ravi, ravi@example.com. Please refund my USB-C cable order.
+user:
+  persona: Ravi Kumar, email ravi@example.com. Wants a refund for the USB-C Cable (order B-2001). Agrees to anything the agent proposes.
+  max_turns: 3
+checks:
+  - state.sql: { db: shop, query: "SELECT count(*) FROM refunds WHERE order_id = 'B-2001'", expect: 1 }
+  - output.regex: { pattern: "already|previously|was refunded|has been refunded" }

@@ -1,0 +1,7 @@
+.venv
+**/.crucible
+**/__pycache__
+*.log
+.git
+.pytest_cache
+.ruff_cache
