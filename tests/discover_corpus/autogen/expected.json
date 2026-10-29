@@ -1,0 +1,13 @@
+{
+  "agents": [
+    {"name": "data_analyst", "framework": "autogen", "tools": ["run_sql_query", "save_chart"]},
+    {"name": "reporter", "framework": "autogen", "tools": ["send_email"]}
+  ],
+  "tools": {
+    "run_sql_query": ["read-only"],
+    "save_chart": ["writes data"],
+    "send_email": ["destructive", "writes data", "external call"]
+  },
+  "mcp_servers": [],
+  "notes": "Agents are built inside build_team() and assigned to local variables analyst/reporter, but name= wins; run_sql_query takes arbitrary SQL yet is guarded to SELECT and opens sqlite in mode=ro."
+}

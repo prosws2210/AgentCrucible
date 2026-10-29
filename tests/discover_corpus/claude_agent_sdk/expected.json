@@ -1,0 +1,16 @@
+{
+  "agents": [
+    {"name": "review_pull_request", "framework": "claude_agent_sdk", "tools": ["Read", "Grep", "Glob", "Bash", "get_build_log", "retry_build"]},
+    {"name": "reviewer", "framework": "claude_agent_sdk", "tools": ["Read", "Grep", "Glob"]}
+  ],
+  "tools": {
+    "Read": ["read-only", "reads untrusted text"],
+    "Grep": ["read-only", "reads untrusted text"],
+    "Glob": ["read-only"],
+    "Bash": ["destructive", "writes data"],
+    "get_build_log": ["read-only", "external call", "reads untrusted text"],
+    "retry_build": ["writes data", "external call"]
+  },
+  "mcp_servers": ["ci-tools"],
+  "notes": "Main agent has no name and is not assigned (query() call), so identity is the enclosing function; 'reviewer' is a dict key in agents={}; SDK MCP tools are allow-listed as mcp__ci__<tool> (server key 'ci', server name 'ci-tools'); Read/Grep return PR contents, which are untrusted."
+}

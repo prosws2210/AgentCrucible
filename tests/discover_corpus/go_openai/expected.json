@@ -1,0 +1,14 @@
+{
+  "agents": [
+    {"name": "RunOpsAgent", "framework": "openai", "tools": ["get_service_health", "query_metrics", "restart_service"]}
+  ],
+  "tools": {
+    "get_service_health": ["read-only", "external call"],
+    "query_metrics": ["read-only", "external call"],
+    "restart_service": ["destructive", "writes data"],
+    "list_deployments": ["read-only", "external call"],
+    "rollback_deployment": ["destructive", "writes data"]
+  },
+  "mcp_servers": ["deploy-tools"],
+  "notes": "Go: tool schemas are a package-level []openai.Tool in tools.go, dispatch via toolHandlers map, loop in RunOpsAgent (agent.go); restart_service and rollback_deployment shell out (systemctl / kubectl); the mcp-go server lives in a separate package and is not wired to the agent."
+}

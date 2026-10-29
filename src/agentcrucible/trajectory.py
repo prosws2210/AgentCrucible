@@ -38,7 +38,19 @@ class Recorder:
 
     @property
     def tool_calls(self) -> list[dict[str, Any]]:
-        return self.of("tool_call")
+        """Executed tool calls (MCP gateway or adapter tracing), plus calls the model asked for to tools that run
+        inside the agent's own process, which neither the gateway nor a tracer saw."""
+        seen = {e["tool"] for e in self.of("tool_call")}
+        out = []
+        for e in self.events:
+            if e["type"] == "tool_call":
+                out.append(e)
+            elif e["type"] == "llm_call":
+                for r in e.get("tool_requests") or []:
+                    if r.get("name") and r["name"] not in seen:
+                        out.append({"t": e["t"], "type": "tool_call", "turn": e["turn"], "tool": r["name"],
+                                    "args": r.get("args") if isinstance(r.get("args"), dict) else {}, "source": "model"})
+        return out
 
     @property
     def final_reply(self) -> str:

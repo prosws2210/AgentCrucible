@@ -223,6 +223,9 @@ class Gateway:
             mgr = ep.proxies[parts[3]].manager
             assert mgr is not None
             return await mgr.handle_request(scope, receive, send)
+        if parts[2] == "events" and scope.get("method") == "POST":
+            resp = await self._events(ep, Request(scope, receive))
+            return await resp(scope, receive, send)
         if parts[2] == "v1":
             req = Request(scope, receive)
             tail = "/".join(parts[3:])
@@ -353,6 +356,32 @@ class Gateway:
         seq_file.parent.mkdir(parents=True, exist_ok=True)
         seq_file.write_text(json.dumps(ep.llm_seq), encoding="utf-8")
 
+    async def _events(self, ep: EpisodeRoutes, req: Request) -> Response:
+        """Tool calls reported by an agent adapter for tools that run inside the agent's own process."""
+        try:
+            body = await req.json()
+        except json.JSONDecodeError:
+            return JSONResponse({"error": "body must be JSON"}, 400)
+        events = body if isinstance(body, list) else [body]
+        n = 0
+        for ev in events[:200]:
+            if not isinstance(ev, dict) or ev.get("type") not in ("tool_call", "tool_result") or not ev.get("tool"):
+                continue
+            data = {"tool": str(ev["tool"])[:200], "source": "trace"}
+            if ev["type"] == "tool_call":
+                data["args"] = ev.get("args") if isinstance(ev.get("args"), dict) else {}
+                for flag in ("mocked", "blocked"):
+                    if ev.get(flag):
+                        data[flag] = True
+            else:
+                data["content"] = clip(str(ev.get("content", "")))
+                data["is_error"] = bool(ev.get("is_error"))
+                if isinstance(ev.get("duration_ms"), (int, float)):
+                    data["latency_ms"] = round(float(ev["duration_ms"]), 1)
+            ep.rec.add(ev["type"], **data)
+            n += 1
+        return JSONResponse({"recorded": n})
+
     def _store(self, cache_file: Path, data: dict[str, Any]) -> None:
         if self.llm.cache == "read_write":
             cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -376,4 +405,5 @@ class Gateway:
             n_tools=len(body.get("tools") or []),
             content=clip(s.content),
             tool_calls=s.tool_calls,
+            tool_requests=s.tool_requests,
         )

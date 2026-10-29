@@ -375,6 +375,124 @@ def merge(
 
 
 @app.command()
+def discover(
+    source: str = typer.Argument(".", help="Repository folder, or a Git URL to clone"),
+    include: Optional[list[str]] = typer.Option(None, "--include", "-i", help="Only scan these globs (e.g. services/billing/**)"),
+    out: Optional[Path] = typer.Option(None, "--out", "-o", help="Where the test project goes (default: <repo>/agent-tests)"),
+    llm: bool = typer.Option(True, "--llm/--no-llm", help="Let a model write purposes and extra questions (local by default)"),
+    llm_url: Optional[str] = typer.Option(None, "--llm-url", envvar="CRUCIBLE_LLM_URL", help="OpenAI-compatible base URL"),
+    llm_model: Optional[str] = typer.Option(None, "--llm-model", help="Model for the synthesis step"),
+    do_apply: bool = typer.Option(False, "--apply", help="Write the test project and smoke-run it"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask before writing files"),
+    smoke: bool = typer.Option(True, "--smoke/--no-smoke", help="Smoke-run after --apply"),
+    model: str = typer.Option("qwen2.5:7b", "--model", "-m", help="Model the tests force on every call"),
+    check_drift: bool = typer.Option(False, "--check", help="CI: compare with the approved discovery.json; exit 1 on risky drift"),
+    update: bool = typer.Option(False, "--update", help="Re-scan, keep your review, and draft tests for new parts"),
+    as_json: bool = typer.Option(False, "--json", help="Print discovery.json instead of a summary"),
+) -> None:
+    """Find the agents, tools and MCP servers in a codebase and draft their tests (review, then --apply)."""
+    from . import discover as disc
+    from .discover.sources import clone, is_git_url
+
+    origin = None
+    if is_git_url(source):
+        origin = source
+        root = clone(source, Path.cwd() / ".crucible" / "imports")
+        console.print(f"Cloned {source} into {root}")
+    else:
+        root = Path(source).resolve()
+        if not root.is_dir():
+            console.print(f"[red]{root} is not a folder[/]")
+            raise typer.Exit(2)
+    out_dir = (out or root / disc.OUT_DIR).resolve()
+    approved_file = out_dir / "discovery.json"
+    url, mdl = disc.default_llm(llm_url, llm_model) if llm else (None, None)
+    say = (lambda m: None) if as_json else (lambda m: console.print(f"[dim]·[/] {m}"))
+    d = disc.discover(root, include=include, llm_base_url=url, llm_model=mdl, source=origin, progress=say)
+
+    if check_drift:
+        if not approved_file.exists():
+            console.print(f"[red]No approved map at {approved_file}. Run `crucible discover {source} --apply` first.[/]")
+            raise typer.Exit(2)
+        rep = disc.check(disc.load(approved_file), d)
+        if as_json:
+            console.print_json(json.dumps({k: v for k, v in rep.items() if k != "markdown"}))
+        else:
+            console.print(rep["markdown"])
+        if os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+                f.write(rep["markdown"] + "\n")
+        raise typer.Exit(1 if rep["fail"] else 0)
+
+    if update and approved_file.exists():
+        d = disc.merge_review(d, disc.load(approved_file))
+    disc.build_plan(d, root)
+    draft = out_dir / "discovery.draft.json"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    draft.write_text(d.model_dump_json(indent=2), encoding="utf-8")
+    if as_json:
+        print(d.model_dump_json(indent=2))
+        return
+    _print_discovery(d)
+    console.print(f"\nDraft saved to [bold]{draft}[/]. Review it in the dashboard (Import), or apply it here.")
+    if not do_apply:
+        console.print(f"Next: [bold]crucible discover {source} --apply[/]")
+        return
+    if not yes and not typer.confirm(f"Write the test project to {out_dir} and smoke-run it?", default=True):
+        raise typer.Exit(1)
+    result = disc.apply(d, root, out_dir, model=model, smoke=smoke, progress=lambda m: console.print(f"[dim]·[/] {m}"))
+    rep = result.get("reality")
+    if rep:
+        console.print(f"\n[bold]Discovery vs reality[/]: {rep['passed']}/{rep['episodes']} smoke episodes passed, "
+                      f"{rep['errors']} errors, {len(rep['findings'])} findings")
+        for f in rep["findings"][:20]:
+            console.print(f"  [yellow]{f['kind']}[/] {f.get('agent', '')} {f.get('tool', '')}: {f['detail']}  [dim]{f['action']}[/]")
+    console.print(f"\nDone. Next: [bold]cd {out_dir} && crucible run --label baseline -k 3[/]")
+
+
+def _print_discovery(d) -> None:  # noqa: ANN001
+    t = Table(title=f"Agents in {d.repo.name}", show_lines=False)
+    for col in ("", "agent", "framework", "tools", "runs via", "confidence"):
+        t.add_column(col)
+    plans = {p.agent: p for p in d.plans}
+    for a in d.agents:
+        t.add_row("✓" if a.include else "·", a.name, a.framework, str(len(a.tools)),
+                  plans[a.id].strategy if a.id in plans else "—", a.confidence)
+    console.print(t)
+    tt = Table(title="Tools")
+    for col in ("tool", "kind", "effects", "used by"):
+        tt.add_column(col)
+    for tool in d.tools[:60]:
+        tt.add_row(tool.name, tool.kind if not tool.server else f"mcp:{tool.server}", ", ".join(tool.effects) or "?", ", ".join(tool.agents))
+    console.print(tt)
+    if d.questions:
+        console.print("[bold]Questions[/]")
+        for q in d.questions:
+            console.print(f"  • {q.text}" + (f" [dim](suggested: {q.suggested})[/]" if q.suggested else ""))
+    for p in d.plans:
+        for w in p.warnings:
+            console.print(f"  [yellow]![/] {p.agent}: {w}")
+    console.print(f"{sum(s.include for s in d.scenarios)} draft scenarios.")
+
+
+@app.command("import-traces")
+def import_traces(
+    file: Path = typer.Argument(..., help="OTLP JSON, LangSmith export (JSON/JSONL) or conversations JSONL"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Named agent the scenarios test"),
+    out: Path = typer.Option(Path("scenarios/imported"), "--out", "-o"),
+    limit: int = typer.Option(50, "--limit"),
+) -> None:
+    """Turn recorded production conversations into draft scenarios."""
+    from .discover.traces import read_traces, to_scenarios
+    traces = read_traces(file)
+    drafts = to_scenarios(traces, agent=agent, limit=limit)
+    out.mkdir(parents=True, exist_ok=True)
+    for s in drafts:
+        (out / f"{s.id}.yaml").write_text(s.yaml, encoding="utf-8")
+    console.print(f"Read {len(traces)} conversations; wrote {len(drafts)} draft scenarios to {out}. Review the checks before gating on them.")
+
+
+@app.command()
 def init(path: Path = typer.Argument(Path("."))) -> None:
     """Create a starter crucible.yaml and an example scenario."""
     from .config import CONFIG_FILENAME

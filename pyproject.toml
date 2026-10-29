@@ -34,6 +34,12 @@ dependencies = [
     "jsonschema>=4.21",
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
+    "tree-sitter>=0.23",
+    "tree-sitter-typescript>=0.23",
+    "tree-sitter-javascript>=0.23",
+    "tree-sitter-go>=0.23",
+    "tree-sitter-java>=0.23",
+    "pathspec>=0.12",
 ]
 
 [project.urls]
@@ -73,6 +79,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 110
 target-version = "py311"
+extend-exclude = ["tests/discover_corpus", "examples/import-demo/agent-tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]

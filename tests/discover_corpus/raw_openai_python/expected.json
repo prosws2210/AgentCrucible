@@ -1,0 +1,14 @@
+{
+  "agents": [
+    {"name": "run_support_agent", "framework": "openai", "tools": ["lookup_order", "update_shipping_address", "cancel_order", "get_exchange_rate", "log_feedback"]}
+  ],
+  "tools": {
+    "lookup_order": ["read-only"],
+    "update_shipping_address": ["writes data"],
+    "cancel_order": ["destructive", "writes data"],
+    "get_exchange_rate": ["read-only", "external call"],
+    "log_feedback": ["writes data"]
+  },
+  "mcp_servers": [],
+  "notes": "Raw chat.completions loop; schemas and the AVAILABLE_FUNCTIONS dispatch dict live in app/tools.py, the loop in app/agent.py; log_feedback uses sqlite3 directly while the others use SQLAlchemy."
+}

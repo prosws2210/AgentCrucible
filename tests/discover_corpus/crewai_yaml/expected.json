@@ -1,0 +1,13 @@
+{
+  "agents": [
+    {"name": "researcher", "framework": "crewai", "tools": ["Fetch Competitor Page", "Sales Lookup"]},
+    {"name": "analyst", "framework": "crewai", "tools": ["Sales Lookup", "Save Report"]}
+  ],
+  "tools": {
+    "Fetch Competitor Page": ["read-only", "external call", "reads untrusted text"],
+    "Sales Lookup": ["read-only"],
+    "Save Report": ["writes data"]
+  },
+  "mcp_servers": [],
+  "notes": "Agent identities are the YAML keys (role/goal live in config/agents.yaml); tool names are the strings passed to @tool(...), which contain spaces and differ from the Python function names."
+}

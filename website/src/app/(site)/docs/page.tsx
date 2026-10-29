@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 
 // [id, label] per section, grouped like the sidebar
 const TOC: [string, [string, string][]][] = [
-  ["Start", [["install", "Install"], ["quickstart", "Quickstart"]]],
+  ["Start", [["install", "Install"], ["quickstart", "Quickstart"], ["import", "Import a codebase"]]],
   ["Connect", [["agent", "Your agent"], ["models", "Model APIs"], ["mcp", "MCP servers"]]],
   ["Write tests", [["environment", "Clean environments"], ["scenarios", "Scenarios"], ["checks", "Checks reference"]]],
   ["Run", [["compare", "Run and compare"], ["ci", "CI gate"], ["dashboard", "Dashboard and access"], ["kubernetes", "Kubernetes"]]],
@@ -58,6 +58,24 @@ crucible run --label baseline -k 5
 crucible run --label candidate -k 5 -e AGENT_PROMPT=prompts/v2_fast.md --compare baseline
 crucible open latest        # HTML report with every trajectory`} />
           <P>For your own agent: <code className="font-mono text-[14px] text-fg">crucible init my-agent-tests</code> scaffolds a <code className="font-mono text-[14px] text-fg">crucible.yaml</code> and a first scenario.</P>
+
+          <H2 id="import">Import a codebase</H2>
+          <P>Already have agents? Point AgentCrucible at the repository. It reads the code without running it, finds the agents,
+            tools, MCP servers, prompts, databases and external APIs, and drafts adapters, fixtures and scenarios for you to review.
+            Nothing is written until you approve; then a smoke run shows whether what it found matches what the agents really do.</P>
+          <Code title="terminal" code={`crucible discover ./my-repo                  # writes agent-tests/discovery.draft.json for review
+crucible discover ./my-repo --apply --yes    # write agent-tests/ and smoke-run it
+crucible discover . --check                  # in CI: fail on a new agent or an untested destructive tool
+crucible import-traces traces.json --agent support   # production conversations become scenarios`} />
+          <P>In the dashboard, open <b className="text-fg">Import codebase</b>: pick a folder or a Git URL, review the system map,
+            tools and draft tests, answer any questions, and approve. With Docker Compose, mount the code with
+            <code className="font-mono text-[14px] text-fg"> CRUCIBLE_IMPORT_DIR=/path/to/code</code>.</P>
+          <ul className="mt-4 list-disc space-y-2 pl-5 text-[15px] leading-relaxed text-mute">
+            <li>Python: LangGraph, LangChain, OpenAI Agents SDK, CrewAI, PydanticAI, LlamaIndex, Claude Agent SDK, MCP servers and raw OpenAI / Anthropic tool loops. TypeScript: Vercel AI SDK, Mastra, OpenAI Agents JS, LangChain JS, MCP. Go and Java (Spring AI, LangChain4j) are detected and run through an HTTP bridge or a scaffold you fill in.</li>
+            <li>Every finding links to the file and line it came from; anything it can&apos;t prove becomes a question. <code className="font-mono text-[13.5px] text-fg">.env</code> files and secrets are skipped.</li>
+            <li>Destructive tools are mocked in the drafted tests until you change that, and external APIs become HTTP mocks.</li>
+            <li>Adapters report in-process tool calls, so trajectories show arguments and results for ordinary functions too.</li>
+          </ul>
 
           <H2 id="agent">Connect your agent</H2>
           <P>AgentCrucible needs two addresses to be configurable in your agent: the model API URL and the MCP server URLs. Pick how it reaches your agent:</P>
@@ -202,6 +220,8 @@ CRUCIBLE_VIEWER_TOKEN=<another one>         # optional: read-only`} />
             ["crucible serve", "API for the dashboard (DATABASE_URL for Postgres, SQLite by default)"],
             ["crucible mcp-audit", "--command, or --url with -H \"Authorization: …\" and --sse"],
             ["crucible label · calibrate", "Human labels → judge agreement (κ)"],
+            ["crucible discover", "Find agents in a repository and draft their tests: --apply, --check, --update, --json, --no-llm"],
+            ["crucible import-traces", "OpenTelemetry, LangSmith or JSONL conversations → draft scenarios"],
           ]} />
 
           <H2 id="env">Environment variables</H2>
@@ -211,6 +231,8 @@ CRUCIBLE_VIEWER_TOKEN=<another one>         # optional: read-only`} />
             ["CRUCIBLE_POSTGRES_URL", "Server where Postgres fixtures are created"],
             ["CRUCIBLE_API_TOKEN · CRUCIBLE_VIEWER_TOKEN", "Dashboard and API access"],
             ["DATABASE_URL", "Run history for crucible serve (Postgres); SQLite if unset"],
+            ["CRUCIBLE_DISCOVER_ROOTS", "Folders the dashboard's codebase import may read (default: home folder)"],
+            ["CRUCIBLE_IMPORT_DIR", "Docker Compose: host folder mounted at /import for the codebase import"],
           ]} />
 
           <H2 id="limits">Limitations</H2>
@@ -221,16 +243,13 @@ CRUCIBLE_VIEWER_TOKEN=<another one>         # optional: read-only`} />
             <li>Gemini and Bedrock native APIs: use their OpenAI-compatible endpoints.</li>
           </ul>
 
-          <H2 id="roadmap">Roadmap: import a whole codebase</H2>
-          <P>Next up: point AgentCrucible at a repository and it finds every agent, tool, MCP server, skill and prompt, drafts
-            the config, adapters and scenarios, and shows them to you for review. Nothing is written or run until you approve;
-            then a smoke run checks that what it found matches what your agents actually do.</P>
+          <H2 id="roadmap">Roadmap</H2>
           <ul className="mt-4 list-disc space-y-2 pl-5 text-[15px] leading-relaxed text-mute">
-            <li>Reads the code without running it; secrets are skipped and the analysis uses your local model by default.</li>
-            <li>Detectors for LangGraph, LangChain, OpenAI Agents SDK, CrewAI, PydanticAI, LlamaIndex, MCP, the Vercel AI SDK and plain SDK calls, with a fallback for any other framework.</li>
-            <li>Every finding links to the file and line it came from; anything it can&apos;t prove becomes a question.</li>
+            <li>Codebase import: pull-request comments from <code className="font-mono text-[13.5px] text-fg">--check</code>, and adapters for Go and Java agents.</li>
+            <li>MCP Python SDK 2.x and the stateless 2026 spec revision.</li>
+            <li>Docker-per-episode and Kubernetes Job-per-episode executors for agents with system dependencies.</li>
           </ul>
-          <P>Read the full plan: <a href={blob("docs/CODEBASE-IMPORT.md")} className="text-ember">docs/CODEBASE-IMPORT.md</a>.</P>
+          <P>The import design: <a href={blob("docs/CODEBASE-IMPORT.md")} className="text-ember">docs/CODEBASE-IMPORT.md</a>.</P>
 
           <div className="mt-14 rounded-xl border border-line bg-panel-2/40 p-5 text-[14.5px] text-mute">
             Something missing or wrong? <a href={`${GITHUB}/issues`} className="text-ember">Open an issue</a> or read the full <a href={blob("docs/ADOPTION.md")} className="text-ember">adoption guide</a>.

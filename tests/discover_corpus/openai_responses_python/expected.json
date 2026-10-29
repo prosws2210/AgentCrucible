@@ -1,0 +1,12 @@
+{
+  "agents": [
+    {"name": "analyze_company", "framework": "openai", "tools": ["get_stock_quote", "fetch_filing", "save_watchlist_note"]}
+  ],
+  "tools": {
+    "get_stock_quote": ["read-only", "external call"],
+    "fetch_filing": ["read-only", "external call", "reads untrusted text"],
+    "save_watchlist_note": ["writes data"]
+  },
+  "mcp_servers": [],
+  "notes": "Responses API flat tool shape ({type: function, name, parameters}) rather than chat.completions nesting; loop uses previous_response_id and function_call_output items; system prompt loaded from prompts/analyst.txt."
+}

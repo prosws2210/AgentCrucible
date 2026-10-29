@@ -95,6 +95,7 @@ class PostgresSettings(BaseModel):
 class SuiteSpec(BaseModel):
     path: str
     runs: int = 3
+    agent: str | None = None  # name in `agents` that this suite's scenarios test (default: the project's agent)
 
 
 class CISettings(BaseModel):
@@ -107,7 +108,9 @@ class CISettings(BaseModel):
 class ProjectConfig(BaseModel):
     version: int = 1
     project: str
-    agent: AgentSpec
+    # one agent (`agent`) or several named ones (`agents`), e.g. found by `crucible discover` in a multi-agent repo
+    agent: AgentSpec | None = None
+    agents: dict[str, AgentSpec] = Field(default_factory=dict)
     model: str = "qwen2.5:7b"
     llm: LLMSettings = Field(default_factory=LLMSettings)
     mcp_servers: dict[str, McpServerSpec] = Field(default_factory=dict)
@@ -118,6 +121,26 @@ class ProjectConfig(BaseModel):
     postgres: PostgresSettings = Field(default_factory=PostgresSettings)
 
     root: Path = Field(default=Path("."), exclude=True)
+
+    @model_validator(mode="after")
+    def _default_agent(self) -> "ProjectConfig":
+        if self.agent is None:
+            if not self.agents:
+                raise ValueError("crucible.yaml needs `agent` (or named `agents`)")
+            self.agent = next(iter(self.agents.values()))  # the first named agent is the default
+        for name, suite in self.suites.items():
+            if suite.agent and suite.agent not in self.agents:
+                raise ValueError(f"suite {name!r} names agent {suite.agent!r}, which is not in `agents`")
+        return self
+
+    def agent_for(self, name: str | None) -> AgentSpec:
+        """The agent a scenario runs against: a named one from `agents`, or the default."""
+        if name is None:
+            assert self.agent is not None
+            return self.agent
+        if name not in self.agents:
+            raise KeyError(f"unknown agent {name!r}; known: {', '.join(self.agents) or '(none)'}")
+        return self.agents[name]
 
     def resolve(self, p: str | None) -> Path | None:
         if p is None:
@@ -209,6 +232,7 @@ class Scenario(BaseModel):
     description: str = ""
     tags: list[str] = Field(default_factory=list)
     task: str
+    agent: str | None = None  # which named agent this scenario tests (default: the suite's, then the project's)
     user: UserSimSpec | None = None
     environment: Environment = Field(default_factory=Environment)
     checks: list[Check]
@@ -265,7 +289,8 @@ def load_config(path: Path | None = None) -> ProjectConfig:
     cfg = ProjectConfig.model_validate(data)
     cfg.root = f.parent
     # ${VAR} in agent headers, so tokens for staging services stay out of the file
-    cfg.agent.headers = {k: os.path.expandvars(v) for k, v in cfg.agent.headers.items()}
+    for spec in {id(a): a for a in [cfg.agent, *cfg.agents.values()] if a}.values():
+        spec.headers = {k: os.path.expandvars(v) for k, v in spec.headers.items()}
     # Deployment-time override, e.g. inside Kubernetes where the model server has another address.
     if url := os.environ.get("CRUCIBLE_LLM_URL"):
         cfg.llm.upstream_base_url = cfg.simulator.base_url = cfg.judge.base_url = url
@@ -303,6 +328,9 @@ def load_scenarios(cfg: ProjectConfig, suite: str | None = None, ids: list[str] 
             if sc.id in seen:
                 continue
             seen.add(sc.id)
+            sc.agent = sc.agent or spec.agent
+            if sc.agent and sc.agent not in cfg.agents:
+                raise ValueError(f"{f}: agent {sc.agent!r} is not in `agents`")
             out.append((sc, sc.runs or spec.runs))
     return out
 

@@ -7,6 +7,7 @@ const base = (d: React.ReactNode, className = "h-4 w-4") => (
 );
 
 export const IconOverview = ({ className }: P) => base(<><rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" /><rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" /></>, className);
+export const IconImport = ({ className }: P) => base(<><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5Z" /><path d="M12 11v5M9.5 13.5 12 16l2.5-2.5" /></>, className);
 export const IconRuns = ({ className }: P) => base(<><path d="M5 4.5v15l13-7.5Z" /></>, className);
 export const IconScenarios = ({ className }: P) => base(<><path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6h.01M4 12h.01M4 18h.01" /></>, className);
 export const IconServer = ({ className }: P) => base(<><rect x="3" y="4" width="18" height="7" rx="2" /><rect x="3" y="13" width="18" height="7" rx="2" /><path d="M7 7.5h.01M7 16.5h.01" /></>, className);

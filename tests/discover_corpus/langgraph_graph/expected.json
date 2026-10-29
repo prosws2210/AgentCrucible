@@ -1,0 +1,14 @@
+{
+  "agents": [
+    {"name": "workflow", "framework": "langgraph", "tools": ["save_report", "lookup_citation_count"]},
+    {"name": "researcher", "framework": "langgraph", "tools": ["search_arxiv", "fetch_paper"]}
+  ],
+  "tools": {
+    "search_arxiv": ["read-only", "external call", "reads untrusted text"],
+    "fetch_paper": ["read-only", "external call", "reads untrusted text"],
+    "lookup_citation_count": ["read-only", "external call"],
+    "save_report": ["writes data"]
+  },
+  "mcp_servers": [],
+  "notes": "StateGraph builder is `workflow` (compiled into `graph`); its ToolNode gets writer_tools via a list variable from tools.py; the 'research' node wraps a create_react_agent sub-agent named 'researcher' defined in nodes.py."
+}

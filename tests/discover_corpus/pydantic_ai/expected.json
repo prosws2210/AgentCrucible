@@ -1,0 +1,13 @@
+{
+  "agents": [
+    {"name": "support_agent", "framework": "pydantic_ai", "tools": ["customer_balance", "list_recent_transactions", "block_card", "get_fx_rate"]}
+  ],
+  "tools": {
+    "customer_balance": ["read-only"],
+    "list_recent_transactions": ["read-only"],
+    "block_card": ["destructive", "writes data"],
+    "get_fx_rate": ["read-only", "external call"]
+  },
+  "mcp_servers": [],
+  "notes": "Agent has no name= so identity is the variable; add_customer_name is a @support_agent.system_prompt function, not a tool; DB access goes through ctx.deps.db helpers defined in deps.py."
+}

@@ -1,0 +1,12 @@
+{
+  "agents": [
+    {"name": "billing_assistant", "framework": "langgraph", "tools": ["get_invoice", "issue_refund", "search_help_center"]}
+  ],
+  "tools": {
+    "get_invoice": ["read-only"],
+    "issue_refund": ["destructive", "writes data", "external call"],
+    "search_help_center": ["read-only", "external call", "reads untrusted text"]
+  },
+  "mcp_servers": [],
+  "notes": "create_react_agent is returned from a build_agent() factory and assigned to `agent`, but the explicit name= wins; the function search_web is exposed as 'search_help_center' via @tool(\"search_help_center\")."
+}

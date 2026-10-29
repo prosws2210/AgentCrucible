@@ -77,8 +77,12 @@ services:
       # Dashboard/API access. Empty = open (fine on your own machine); set before exposing the port.
       CRUCIBLE_API_TOKEN: ${CRUCIBLE_API_TOKEN:-}
       CRUCIBLE_VIEWER_TOKEN: ${CRUCIBLE_VIEWER_TOKEN:-}
+      # Import codebase: folders the dashboard may read (your code is mounted at /import)
+      CRUCIBLE_DISCOVER_ROOTS: /import:/workspace
     volumes:
       - results:/workspace/examples/${CRUCIBLE_PROJECT:-support-agent}/.crucible
+      # the folder holding the repositories you want to import; approved tests are written into them (agent-tests/)
+      - ${CRUCIBLE_IMPORT_DIR:-./examples}:/import
     ports:
       - "8000:8000"
     depends_on:

@@ -1,0 +1,18 @@
+competitor_scan:
+  description: >
+    Visit the pricing and feature pages of these competitors: {competitors}.
+    Extract plan names, list prices and the three headline features of each.
+  expected_output: >
+    A markdown table per competitor with plans, prices and features, plus source URLs.
+  agent: researcher
+
+positioning_brief:
+  description: >
+    Using the competitor scan and our last two quarters of sales by segment,
+    identify where we are losing deals on price and where on features. Save the brief.
+  expected_output: >
+    A one-page brief in markdown with 3 recommendations.
+  agent: analyst
+  context:
+    - competitor_scan
+  output_file: output/positioning_brief.md

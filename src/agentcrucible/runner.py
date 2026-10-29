@@ -7,6 +7,7 @@ import contextlib
 import datetime as dt
 import json
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -25,7 +26,7 @@ import uvicorn
 
 from .calibration import load_statuses
 from .checks import CheckResult, GradeContext, grade
-from .config import ProjectConfig, Scenario
+from .config import AgentSpec, ProjectConfig, Scenario
 from .gateway import EpisodeRoutes, Gateway, McpProxy, split_command
 from .stats import summarize_run
 from .trajectory import Recorder
@@ -94,6 +95,28 @@ def git(cwd: Path, *args: str) -> str:
     return r.stdout
 
 
+def agent_extra_env(sc: Scenario, dbs: dict[str, Path | str], mcp_servers: set[str]) -> dict[str, str]:
+    """What the agent process itself needs from the scenario's environment.
+
+    * fixtures not tied to an MCP server are the agent's own databases: CRUCIBLE_DB_<NAME> (SQLite path) or
+      CRUCIBLE_DB_<NAME>_URL (Postgres), which a generated adapter maps onto the app's own setting
+    * mocked and denied tools, so adapters can apply them to tools that run inside the agent's process
+    """
+    env: dict[str, str] = {}
+    for name, db in dbs.items():
+        if name in mcp_servers:
+            continue
+        key = "CRUCIBLE_DB_" + re.sub(r"\W", "_", name).upper()
+        env[key if isinstance(db, Path) else key + "_URL"] = str(db)
+    if sc.environment.mocks:
+        env["CRUCIBLE_TOOL_MOCKS"] = json.dumps(sc.environment.mocks)
+    if sc.environment.deny_tools:
+        env["CRUCIBLE_DENY_TOOLS"] = json.dumps(sc.environment.deny_tools)
+    if sc.environment.inject:
+        env["CRUCIBLE_TOOL_INJECT"] = json.dumps(sc.environment.inject)
+    return env
+
+
 def rmtree(path: Path) -> None:
     """Delete a temp dir, including read-only files (git objects on Windows)."""
     def _force(func: Any, p: str, _exc: Any) -> None:
@@ -147,12 +170,15 @@ class Runner:
                 self.on_episode(res)
             return res
 
-        service = None
+        services: list[asyncio.subprocess.Process] = []
         try:
-            service = await self._start_service()
+            services = await self._start_services()
             results = await asyncio.gather(*(guarded(sc, a) for sc, a in jobs))
         finally:
-            await self._stop_service(service)
+            for proc in services:
+                await self._stop_service(proc)
+            for log in getattr(self, "_service_logs", []):
+                log.close()
             server.should_exit = True
             await server_task
             await self.http.aclose()
@@ -183,34 +209,51 @@ class Runner:
 
     # ------------------------------------------------------------ http agent service
 
-    async def _start_service(self) -> asyncio.subprocess.Process | None:
-        """For http agents with a `command`: start the service once per run and wait until it answers."""
-        agent = self.cfg.agent
+    async def _start_services(self) -> list[asyncio.subprocess.Process]:
+        """Start every http agent that has a `command` once per run (each named agent may be its own service)."""
+        procs: list[asyncio.subprocess.Process] = []
+        specs = {id(a): (name, a) for name, a in [("agent", self.cfg.agent), *self.cfg.agents.items()] if a}
+        try:
+            for name, agent in specs.values():
+                proc = await self._start_service(name, agent)
+                if proc is not None:
+                    procs.append(proc)
+        except Exception:
+            for proc in procs:
+                await self._stop_service(proc)
+            raise
+        return procs
+
+    async def _start_service(self, name: str, agent: AgentSpec) -> asyncio.subprocess.Process | None:
+        """For an http agent with a `command`: start the service and wait until it answers."""
         if agent.transport != "http":
             return None
         if not agent.command:
-            await self._wait_ready(agent.url or "", agent.ready_timeout_s, None)
+            await self._wait_ready(agent.url or "", agent.ready_timeout_s, None, name)
             return None
         log_dir = self.run_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        self._service_log = open(log_dir / "agent-service.log", "w", encoding="utf-8")
+        log_name = "agent-service.log" if name == "agent" else f"agent-service-{name}.log"
+        log = open(log_dir / log_name, "w", encoding="utf-8")
+        self._service_logs = [*getattr(self, "_service_logs", []), log]
         env = {**os.environ, **agent.env, **self.opts.agent_env, "CRUCIBLE_MODEL": self.model,
                "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
         cwd = str((self.cfg.root / agent.cwd).resolve()) if agent.cwd else str(self.cfg.root)
-        proc = await asyncio.create_subprocess_exec(*split_command(agent.command), cwd=cwd, env=env,
-                                                    stdout=self._service_log, stderr=self._service_log)
+        proc = await asyncio.create_subprocess_exec(*split_command(agent.command or ""), cwd=cwd, env=env,
+                                                    stdout=log, stderr=log)
         try:
-            await self._wait_ready(agent.url or "", agent.ready_timeout_s, proc)
+            await self._wait_ready(agent.url or "", agent.ready_timeout_s, proc, log_name)
         except Exception:
             await self._stop_service(proc)
             raise
         return proc
 
-    async def _wait_ready(self, url: str, timeout: float, proc: asyncio.subprocess.Process | None) -> None:
+    async def _wait_ready(self, url: str, timeout: float, proc: asyncio.subprocess.Process | None,
+                          log_name: str = "agent-service.log") -> None:
         deadline = time.monotonic() + timeout
         while True:
             if proc is not None and proc.returncode is not None:
-                raise RuntimeError(f"agent service exited with code {proc.returncode}; see logs/agent-service.log")
+                raise RuntimeError(f"agent service exited with code {proc.returncode}; see logs/{log_name}")
             try:
                 await self.http.get(url, timeout=2)  # any HTTP response means it is listening
                 return
@@ -228,9 +271,6 @@ class Runner:
             except TimeoutError:
                 proc.kill()
                 await proc.wait()
-        log = getattr(self, "_service_log", None)
-        if log is not None:
-            log.close()
 
     # ------------------------------------------------------------ one episode
 
@@ -261,7 +301,7 @@ class Runner:
                 self.gateway.episodes[eid] = routes
                 stack.callback(self.gateway.episodes.pop, eid, None)
                 try:
-                    await self._converse(sc, rec, eid, workspace, stack)
+                    await self._converse(sc, rec, eid, workspace, stack, dbs)
                 except Exception as e:
                     error = f"{type(e).__name__}: {e}"
                     rec.add("error", message=error)
@@ -353,14 +393,16 @@ class Runner:
     # ------------------------------------------------------------ conversation
 
     async def _converse(self, sc: Scenario, rec: Recorder, eid: str, workspace: Path | None,
-                        stack: AsyncExitStack) -> None:
+                        stack: AsyncExitStack, dbs: dict[str, Path | str] | None = None) -> None:
         base = self.gateway.base(eid)
         mcp_urls = {n: f"{base}/mcp/{n}" for n in self.cfg.mcp_servers}
         http_urls = {n: f"{base}/http/{n}" for n in sc.environment.http_mocks}
-        if self.cfg.agent.transport == "http":
-            send = self._http_turns(eid, base, mcp_urls, http_urls, workspace)
+        agent = self.cfg.agent_for(sc.agent)
+        extra = agent_extra_env(sc, dbs or {}, set(self.cfg.mcp_servers))
+        if agent.transport == "http":
+            send = self._http_turns(agent, eid, base, mcp_urls, http_urls, workspace, extra)
         else:
-            send = await self._stdio_turns(eid, base, mcp_urls, http_urls, workspace, stack)
+            send = await self._stdio_turns(agent, eid, base, mcp_urls, http_urls, workspace, stack, extra)
 
         async def say(text: str) -> str:
             rec.turn += 1
@@ -380,15 +422,15 @@ class Runner:
             reply = await say(nxt)
             history += [("user", nxt), ("agent", reply)]
 
-    async def _stdio_turns(self, eid: str, base: str, mcp_urls: dict[str, str], http_urls: dict[str, str],
-                           workspace: Path | None, stack: AsyncExitStack) -> Callable[[str], Awaitable[str]]:
+    async def _stdio_turns(self, agent: AgentSpec, eid: str, base: str, mcp_urls: dict[str, str],
+                           http_urls: dict[str, str], workspace: Path | None, stack: AsyncExitStack,
+                           extra: dict[str, str]) -> Callable[[str], Awaitable[str]]:
         """One agent process per episode; gateway URLs arrive as environment variables."""
-        agent = self.cfg.agent
         env = {
-            **os.environ, **agent.env, **self.opts.agent_env,
+            **os.environ, **agent.env, **self.opts.agent_env, **extra,
             "OPENAI_BASE_URL": f"{base}/v1", "OPENAI_API_KEY": "agentcrucible",
             "ANTHROPIC_BASE_URL": base, "ANTHROPIC_API_KEY": "agentcrucible",
-            "CRUCIBLE_MODEL": self.model, "CRUCIBLE_EPISODE_ID": eid,
+            "CRUCIBLE_MODEL": self.model, "CRUCIBLE_EPISODE_ID": eid, "CRUCIBLE_EVENTS_URL": f"{base}/events",
             "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
             **({"CRUCIBLE_WORKSPACE": str(workspace)} if workspace else {}),
             **{f"CRUCIBLE_HTTP_{n.upper()}_URL": url for n, url in http_urls.items()},
@@ -432,10 +474,10 @@ class Runner:
 
         return send
 
-    def _http_turns(self, eid: str, base: str, mcp_urls: dict[str, str], http_urls: dict[str, str],
-                    workspace: Path | None) -> Callable[[str], Awaitable[str]]:
+    def _http_turns(self, agent: AgentSpec, eid: str, base: str, mcp_urls: dict[str, str],
+                    http_urls: dict[str, str], workspace: Path | None,
+                    extra: dict[str, str]) -> Callable[[str], Awaitable[str]]:
         """A long-running agent service; gateway URLs travel with every request in `context`."""
-        agent = self.cfg.agent
         history: list[dict[str, str]] = []
         context = {
             "episode_id": eid,
@@ -446,7 +488,8 @@ class Runner:
             "mcp": mcp_urls,
             "workspace": str(workspace) if workspace else None,
             "http": http_urls,
-            "env": self.opts.agent_env,
+            "events_url": f"{base}/events",
+            "env": {**self.opts.agent_env, **extra},
         }
 
         async def send(text: str) -> str:

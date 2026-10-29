@@ -25,6 +25,11 @@ testing, use Ollama: it serves both the OpenAI and the Anthropic API.
 
 ---
 
+**Shortcut for an existing codebase:** `crucible discover ./my-repo --apply` finds the agents, tools, MCP servers,
+databases and external APIs, writes everything in sections 2 to 4 below into `agent-tests/` for you to review, and
+smoke-runs it (or use **Import codebase** in the dashboard). The rest of this guide explains what it generated and how to
+adjust it.
+
 ## 2. Connect your agent
 
 AgentCrucible records everything at two boundaries every agent already has: **LLM calls** and **MCP tool

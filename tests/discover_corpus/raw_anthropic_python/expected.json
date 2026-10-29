@@ -1,0 +1,13 @@
+{
+  "agents": [
+    {"name": "answer_ticket", "framework": "anthropic", "tools": ["search_kb", "fetch_url", "create_ticket", "notify_oncall"]}
+  ],
+  "tools": {
+    "search_kb": ["read-only"],
+    "fetch_url": ["read-only", "external call", "reads untrusted text"],
+    "create_ticket": ["writes data"],
+    "notify_oncall": ["destructive", "writes data", "external call"]
+  },
+  "mcp_servers": [],
+  "notes": "Two messages.create call sites inside answer_ticket (initial + loop); tools list and HANDLERS dispatch dict are in support_bot/tools.py."
+}

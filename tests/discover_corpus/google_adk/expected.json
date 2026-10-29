@@ -1,0 +1,16 @@
+{
+  "agents": [
+    {"name": "travel_coordinator", "framework": "google_adk", "tools": ["get_weather"]},
+    {"name": "flight_agent", "framework": "google_adk", "tools": ["search_flights", "book_flight"]},
+    {"name": "hotel_agent", "framework": "google_adk", "tools": ["search_hotels", "cancel_hotel_booking"]}
+  ],
+  "tools": {
+    "get_weather": ["read-only", "external call"],
+    "search_flights": ["read-only", "external call"],
+    "book_flight": ["destructive", "writes data", "external call"],
+    "search_hotels": ["read-only", "external call"],
+    "cancel_hotel_booking": ["destructive", "writes data", "external call"]
+  },
+  "mcp_servers": [],
+  "notes": "Mix of Agent and LlmAgent classes; root_agent variable but name='travel_coordinator' wins; sub-agent tools are plain functions imported from tools/ package; search_flights uses HTTP POST but only creates a search request (read-only); book_flight makes a payment."
+}

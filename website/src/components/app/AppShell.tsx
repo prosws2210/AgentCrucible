@@ -6,7 +6,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { api, ApiError, UNAUTHORIZED, type AuthStatus, type Health, type Project, type Role } from "@/lib/api";
 import { GITHUB } from "@/lib/site";
 import { LogoMark } from "../Logo";
-import { IconBook, IconExternal, IconOverview, IconRuns, IconScenarios, IconServer, IconSetup } from "../Icons";
+import { IconBook, IconExternal, IconImport, IconOverview, IconRuns, IconScenarios, IconServer, IconSetup } from "../Icons";
 import { Code, Spinner } from "../ui";
 
 type Ctx = {
@@ -30,6 +30,7 @@ const NAV = [
   { href: "/dashboard/runs/", label: "Runs", icon: IconRuns },
   { href: "/dashboard/scenarios/", label: "Scenarios", icon: IconScenarios },
   { href: "/dashboard/servers/", label: "MCP servers", icon: IconServer },
+  { href: "/dashboard/import/", label: "Import codebase", icon: IconImport },
   { href: "/dashboard/setup/", label: "Setup", icon: IconSetup },
 ];
 

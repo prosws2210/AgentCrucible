@@ -1,0 +1,11 @@
+{
+  "agents": [],
+  "tools": {
+    "list_products": ["read-only"],
+    "get_stock": ["read-only"],
+    "adjust_stock": ["writes data"],
+    "delete_product": ["destructive", "writes data"]
+  },
+  "mcp_servers": ["inventory"],
+  "notes": "Pure MCP server, no agent; SQL lives behind a connect() context manager in db.py so the sqlite3 call is not in the tool body itself."
+}

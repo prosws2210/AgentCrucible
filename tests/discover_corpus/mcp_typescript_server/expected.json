@@ -1,0 +1,11 @@
+{
+  "agents": [],
+  "tools": {
+    "search_issues": ["read-only", "external call", "reads untrusted text"],
+    "fetch_readme": ["read-only", "external call", "reads untrusted text"],
+    "create_issue": ["writes data", "external call"],
+    "close_issue": ["destructive", "writes data", "external call"]
+  },
+  "mcp_servers": ["github-helper"],
+  "notes": "Mixes legacy server.tool(name, desc, shape, cb) and server.registerTool(name, {title, description, inputSchema}, cb); all network calls go through the gh() helper in github.ts; issue bodies and READMEs are third-party text."
+}

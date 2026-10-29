@@ -1,0 +1,13 @@
+{
+  "agents": [
+    {"name": "chatClient", "framework": "spring_ai", "tools": ["getOrderStatus", "cancelOrder", "track_shipment", "sendCustomerEmail"]}
+  ],
+  "tools": {
+    "getOrderStatus": ["read-only"],
+    "cancelOrder": ["destructive", "writes data"],
+    "track_shipment": ["read-only", "external call"],
+    "sendCustomerEmail": ["destructive", "writes data", "external call"]
+  },
+  "mcp_servers": [],
+  "notes": "ChatClient is built in the controller constructor and assigned to field chatClient; defaultTools receives two @Service beans so tools come from two classes; @Tool without name uses the method name, track_shipment uses an explicit name."
+}

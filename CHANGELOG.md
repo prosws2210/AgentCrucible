@@ -2,6 +2,29 @@
 
 All notable changes to AgentCrucible. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Codebase import:** `crucible discover <path | git URL>` reads a repository without running it and finds agents,
+  tools (with side effects), MCP servers, sub-agents, prompts, databases, external APIs, vector stores, entry points and
+  existing eval sets, across Python, TypeScript/JavaScript, Go and Java. Every finding cites its file and line; anything
+  unproven becomes a question. An optional local-model pass writes descriptions.
+- **Review and apply:** a draft `discovery.json`, a connection plan per agent and draft scenarios (uses, asks first,
+  refuses, prompt injection, routing, RAG, reused evals). `--apply` writes `agent-tests/` (multi-agent `crucible.yaml`,
+  adapters, SQL fixtures, HTTP mocks, scenarios), validates it and smoke-runs it with a discovery vs reality report.
+- **Dashboard: Import codebase:** connect a folder or Git URL, review the system map, tools, questions, run plan and
+  draft tests, approve, and see per-scenario results. Jobs survive a server restart.
+- **Framework adapters:** `agentcrucible.adapters` for plain functions, LangGraph, OpenAI Agents SDK, PydanticAI,
+  CrewAI, LlamaIndex and LangChain, with tool mocks, deny lists and injected tool output.
+- **In-process tool tracing:** `POST /ep/{id}/events` records tool calls and results from adapters, and model-requested
+  tool calls are recorded from every model API.
+- **Drift check:** `crucible discover . --check` fails CI on a new agent or an untested destructive tool;
+  `--update` re-drafts while keeping the review.
+- **Trace import:** `crucible import-traces` turns OpenTelemetry (GenAI, OpenInference, OpenLLMetry), LangSmith or JSONL
+  conversations into draft scenarios.
+- **Named agents:** `agents:` in `crucible.yaml`, with `agent:` per suite or scenario.
+- Budget checks accept `{max: N, hard: false}`.
+
 ## [0.2.0] - 2026-10-28
 
 ### Added

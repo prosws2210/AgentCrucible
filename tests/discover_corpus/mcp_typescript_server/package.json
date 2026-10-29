@@ -1,0 +1,12 @@
+{
+  "name": "github-helper-mcp",
+  "version": "0.4.0",
+  "type": "module",
+  "bin": { "github-helper-mcp": "dist/index.js" },
+  "scripts": { "build": "tsc", "start": "node dist/index.js" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": { "typescript": "^5.6.0", "@types/node": "^22.0.0" }
+}

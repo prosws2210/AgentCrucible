@@ -74,6 +74,11 @@ async def grade(scenario: Scenario, rec: Recorder, ctx: GradeContext) -> list[Ch
     return out
 
 
+def _num(v: Any) -> Any:
+    """A limit written as `20` or `{max: 20}` (the mapping form allows `hard: false`)."""
+    return v.get("max", v.get("value")) if isinstance(v, dict) else v
+
+
 def _as_list(v: Any) -> list[Any]:
     return v if isinstance(v, list) else [v]
 
@@ -305,7 +310,7 @@ async def _not_before_turn(c: Check, rec: Recorder, ctx: GradeContext):
 @grader("trajectory.max_tool_calls")
 async def _max_tool_calls(c: Check, rec: Recorder, ctx: GradeContext):
     n = len(rec.tool_calls)
-    return n <= int(c.params), f"{n} tool calls (max {c.params})", None
+    return n <= int(_num(c.params)), f"{n} tool calls (max {_num(c.params)})", None
 
 
 @grader("trajectory.no_tool_errors")
@@ -362,26 +367,26 @@ async def _regex(c: Check, rec: Recorder, ctx: GradeContext):
 @grader("budget.max_llm_calls")
 async def _max_llm(c: Check, rec: Recorder, ctx: GradeContext):
     n = rec.totals()["llm_calls"]
-    return n <= int(c.params), f"{n} LLM calls (max {c.params})", None
+    return n <= int(_num(c.params)), f"{n} LLM calls (max {_num(c.params)})", None
 
 
 @grader("budget.max_tokens")
 async def _max_tokens(c: Check, rec: Recorder, ctx: GradeContext):
     t = rec.totals()
     n = t["tokens_in"] + t["tokens_out"]
-    return n <= int(c.params), f"{n} tokens (max {c.params})", None
+    return n <= int(_num(c.params)), f"{n} tokens (max {_num(c.params)})", None
 
 
 @grader("budget.max_duration_s")
 async def _max_dur(c: Check, rec: Recorder, ctx: GradeContext):
     d = rec.totals()["duration_s"]
-    return d <= float(c.params), f"{d:.1f}s (max {c.params}s)", None
+    return d <= float(_num(c.params)), f"{d:.1f}s (max {_num(c.params)}s)", None
 
 
 @grader("budget.max_cost_usd")
 async def _max_cost(c: Check, rec: Recorder, ctx: GradeContext):
     cost = rec.totals()["cost_usd"]
-    return cost <= float(c.params), f"${cost:.4f} (max ${c.params})", None
+    return cost <= float(_num(c.params)), f"${cost:.4f} (max ${c.params})", None
 
 
 # ------------------------------------------------------------------ judge

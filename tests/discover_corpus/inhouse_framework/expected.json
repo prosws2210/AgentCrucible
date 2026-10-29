@@ -1,0 +1,13 @@
+{
+  "agents": [
+    {"name": "expense_runner", "framework": "inhouse", "tools": ["get_weather", "file_expense", "delete_expense", "summarize_receipt_url"]}
+  ],
+  "tools": {
+    "get_weather": ["read-only", "external call"],
+    "file_expense": ["writes data"],
+    "delete_expense": ["destructive", "writes data"],
+    "summarize_receipt_url": ["read-only", "external call", "reads untrusted text"]
+  },
+  "mcp_servers": [],
+  "notes": "No known framework: AgentRunner is defined in corelib/ and derives tool schemas from function signatures at runtime, so no tool JSON appears in source; the openai call is in corelib/llm.py, two hops from app.py."
+}

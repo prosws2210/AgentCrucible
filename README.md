@@ -128,6 +128,24 @@ CRUCIBLE_VIEWER_TOKEN=...   # optional: read-only (GET only)
 
 The dashboard then shows a sign-in screen (an HttpOnly session cookie, never the token itself, is stored in the browser). Scripts send `Authorization: Bearer <token>`. `/api/health` stays open for load balancers.
 
+## Import an existing codebase
+
+Already have agents? Point AgentCrucible at the repository instead of writing the config by hand:
+
+```bash
+crucible discover ./my-repo                  # read the code (never run it); draft agent-tests/discovery.draft.json
+crucible discover ./my-repo --apply --yes    # write agent-tests/ (config, adapters, fixtures, scenarios) and smoke-run it
+crucible discover . --check                  # in CI: fails when a new agent or an untested destructive tool appears
+crucible import-traces traces.json --agent support   # OpenTelemetry / LangSmith / JSONL conversations -> scenarios
+```
+
+Or use **Import codebase** in the dashboard: pick a folder or Git URL, review the system map, tools, questions and
+draft tests, then approve. It finds LangGraph, LangChain, OpenAI Agents SDK, CrewAI, PydanticAI, LlamaIndex, Claude
+Agent SDK, MCP servers and raw OpenAI/Anthropic tool loops in Python; Vercel AI SDK, Mastra, OpenAI Agents JS,
+LangChain JS and MCP in TypeScript; and Spring AI, LangChain4j and Go SDK agents. Every finding cites its file and line,
+destructive tools are mocked in the drafted tests, and a smoke run compares what was found with what the agents
+actually did. Try it on [examples/import-demo](examples/import-demo). Design: [docs/CODEBASE-IMPORT.md](docs/CODEBASE-IMPORT.md).
+
 ## Adopting it for your agent
 
 ```bash
@@ -261,6 +279,8 @@ The chart runs the suite as an **Indexed Job** (one shard per pod via `JOB_COMPL
 | `crucible serve` | HTTP API for the dashboard (`DATABASE_URL` for Postgres, SQLite by default) |
 | `crucible mcp-audit` | Audit an MCP server (`--command`, or `--url` with `-H "Authorization: Bearer …"` / `--sse`) |
 | `crucible label` / `calibrate` | Human labels → judge agreement (κ) |
+| `crucible discover` | Find the agents in a repository and draft their tests (`--apply`, `--check`, `--update`, `--json`, `--no-llm`) |
+| `crucible import-traces` | Production traces → draft scenarios |
 
 ## Development
 
@@ -309,11 +329,9 @@ the repository variable `PUBLISH_PYPI=true`).
 
 ## Roadmap
 
-- **Codebase import**: point AgentCrucible at a repository; it finds the agents, tools, MCP servers and prompts, drafts the tests for review, and verifies them with a smoke run. Plan: [docs/CODEBASE-IMPORT.md](docs/CODEBASE-IMPORT.md)
+- Codebase import: pull-request comments from `--check`; ready-made adapters for Go and Java agents
 - MCP Python SDK 2.x and the stateless 2026 spec revision
 - Docker-per-episode executor (agents with system dependencies) and a Kubernetes Job-per-episode executor
-- Trace import (OpenTelemetry GenAI conventions) and "promote production trace to scenario"
-- Framework adapters (LangGraph, OpenAI Agents SDK) for internal-step checks
 
 ## License
 

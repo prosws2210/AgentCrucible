@@ -1,0 +1,12 @@
+{
+  "agents": [
+    {"name": "Sales Assistant", "framework": "mastra", "tools": ["lookupAccount", "logActivity", "sendFollowUpEmail"]}
+  ],
+  "tools": {
+    "lookupAccount": ["read-only", "external call"],
+    "logActivity": ["writes data", "external call"],
+    "sendFollowUpEmail": ["destructive", "writes data", "external call"]
+  },
+  "mcp_servers": [],
+  "notes": "Tools are passed with object shorthand ({ lookupAccount, ... }) and their createTool ids match the keys; lookupAccount is an HTTP POST to a search endpoint but only reads; agent is registered in Mastra under key salesAgent but its name is 'Sales Assistant'."
+}

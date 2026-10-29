@@ -1,0 +1,11 @@
+[project]
+name = "market_crew"
+version = "0.1.0"
+requires-python = ">=3.10,<3.14"
+dependencies = ["crewai[tools]>=0.150.0", "beautifulsoup4>=4.12", "requests>=2.32"]
+
+[project.scripts]
+market_crew = "market_crew.main:run"
+
+[tool.crewai]
+type = "crew"

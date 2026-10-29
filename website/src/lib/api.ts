@@ -186,3 +186,53 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const reportUrl = (id: string) => `${API}/api/runs/${id}/report`;
+
+// ---------------------------------------------------------------- codebase import (/api/discover)
+
+export type Effect = "read-only" | "writes data" | "destructive" | "external call" | "reads untrusted text";
+export type Evidence = { file: string; line: number; snippet: string };
+export type Fact = { id: string; kind: string; name: string; framework: string; evidence: Evidence[]; attrs: Record<string, unknown> };
+export type DAgent = {
+  id: string; name: string; purpose: string; framework: string; language: string;
+  model: { value: string | null; env: string | null }; system_prompt: { file: string | null; text: string | null };
+  tools: string[]; subagents: string[]; mcp_servers: string[]; datastores: string[]; external_apis: string[];
+  entrypoint: { kind: string; route: string | null; command: string | null; module: string | null; object: string | null; factory: boolean };
+  confidence: "high" | "medium" | "low"; evidence: string[]; include: boolean; notes: string[];
+};
+export type DTool = {
+  name: string; description: string; kind: string; server: string | null; params: Record<string, string>;
+  effects: Effect[]; touches: string[]; agents: string[]; confidence: string; evidence: string[]; include: boolean;
+};
+export type DPlan = {
+  agent: string; strategy: "http" | "stdio" | "code" | "manual"; why: string; adapter_file: string | null; adapter_code: string | null;
+  command: string | null; env_needed: string[]; env_map: Record<string, string>; warnings: string[];
+};
+export type DQuestion = { id: string; text: string; about: string | null; suggested: string | null; options: string[]; answer: string | null; evidence: string[] };
+export type DScenario = { id: string; agent: string; reason: string; yaml: string; include: boolean };
+export type Discovery = {
+  repo: { root: string; name: string; commit: string | null; languages: Record<string, number>; frameworks: string[]; files_scanned: number; files_skipped: number; source: string | null };
+  agents: DAgent[]; tools: DTool[];
+  mcp_servers: { name: string; command: string | null; url: string | null; tools: string[]; defined_here: boolean; include: boolean; evidence: string[] }[];
+  skills: { name: string; description: string; file: string }[];
+  datastores: { id: string; kind: string; url_env: string | null; tables: Record<string, Record<string, string>>; schema_files: string[] }[];
+  external_apis: { id: string; base_url: string | null; base_url_env: string | null; paths: string[] }[];
+  vector_stores: { id: string; kind: string }[];
+  env_vars: string[]; test_cases: { input: string; expected: string | null; file: string }[];
+  questions: DQuestion[]; plans: DPlan[]; scenarios: DScenario[]; facts: Record<string, Fact>;
+  synthesis: { used?: boolean; model?: string; error?: string };
+};
+export type RealityFinding = { kind: string; agent?: string; tool?: string; detail: string; action: string; scenario?: string };
+export type ScenarioOutcome = {
+  scenario: string; agent: string | null; passed: boolean; why: string; error: string | null;
+  failed: { check: string; detail: string }[];
+};
+export type ImportJob = {
+  id: string; status: "scanning" | "review" | "failed" | "applying" | "applied" | "apply_failed"; source: string; root: string;
+  progress: { t: number; message: string }[]; error: string | null; discovery: Discovery | null; started: number;
+  result: null | {
+    out: string; files: string[]; validate: { agents: string[]; scenarios: number; suites: string[] };
+    run_id?: string;
+    reality?: { ok: boolean; episodes: number; passed: number; errors: number; observed_tools: Record<string, Record<string, number>>;
+      models: Record<string, string[]>; findings: RealityFinding[]; scenarios?: ScenarioOutcome[] };
+  };
+};

@@ -1,6 +1,20 @@
 # Codebase import: plan
 
-> Status: **proposed** (not built yet) · Target: AgentCrucible 0.3 · Owner: Shakti Swaroop Sahu
+> Status: **implemented** (unreleased, targeting 0.3) · Owner: Shakti Swaroop Sahu
+>
+> Built: all three phases below, except the items listed under "Not built yet". Try it with
+> `crucible discover examples/import-demo` or **Import codebase** in the dashboard.
+>
+> **Measured so far:** on a 22-repository labelled corpus (`tests/discover_corpus`), agents and tools were found with
+> 100% recall and precision, MCP servers 100%, side-effect badges 98%. The detectors were tuned on this corpus, so
+> expect lower numbers on unseen code. The "10 open-source repositories in under 10 minutes" target has not been
+> measured yet.
+>
+> **Not built yet:** pull-request comments from `--check` (it prints markdown and exits non-zero); a published
+> TypeScript adapter package (TypeScript agents get a generated `tsx` adapter instead); ready-made Go and Java
+> adapters (they get an HTTP bridge or a scaffold); vector-store snapshots. The LangGraph, OpenAI Agents SDK and
+> PydanticAI adapters are tested end to end with the real libraries; the CrewAI, LlamaIndex and LangChain
+> `AgentExecutor` adapters have no tests yet.
 
 Point AgentCrucible at a repository. It reads the code (without running it), finds every agent, tool, MCP server,
 skill, prompt and model, drafts a complete test setup, and shows it to you for review. When you approve, it writes
@@ -294,8 +308,8 @@ The planner picks the first option that applies and explains the choice:
 |---|---|---|---|
 | 1 | Behind an HTTP endpoint that takes messages | `transport: http` (started per run, or an already-deployed URL with headers) | Built |
 | 2 | A command-line program or script | `transport: stdio` with a generated adapter | Built |
-| 3 | An object in code (a compiled graph, `Agent(...)`, a `Crew`) | Generated adapter that imports it (`module:object`) and calls it per turn | New: framework adapters |
-| 4 | Assembled at runtime from configuration or a database | Ask the user for a constructor; scaffold an adapter | New |
+| 3 | An object in code (a compiled graph, `Agent(...)`, a `Crew`) | Generated adapter that imports it (`module:object`) and calls it per turn | Built |
+| 4 | Assembled at runtime from configuration or a database | Ask the user for a constructor; scaffold an adapter | Built |
 
 For option 3, AgentCrucible ships small framework adapters: `agentcrucible.adapters.langgraph`, `.openai_agents`,
 `.crewai`, `.pydantic_ai`, `.llamaindex`, `.langchain`, plus a TypeScript package for the Vercel AI SDK and Mastra. The

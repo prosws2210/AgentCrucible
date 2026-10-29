@@ -1,0 +1,12 @@
+{
+  "agents": [],
+  "tools": {
+    "list_notes": ["read-only"],
+    "read_note": ["read-only"],
+    "append_note": ["writes data"],
+    "purge_notes": ["destructive", "writes data"],
+    "import_from_url": ["writes data", "external call", "reads untrusted text"]
+  },
+  "mcp_servers": ["team-notes"],
+  "notes": "Low-level Server: tool names only appear as types.Tool(name=...) strings and in the if/elif dispatch inside call_tool; effects come from storage.py helpers; server name repeated in InitializationOptions."
+}

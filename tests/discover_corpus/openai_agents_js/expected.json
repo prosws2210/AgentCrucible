@@ -1,0 +1,13 @@
+{
+  "agents": [
+    {"name": "Front Desk", "framework": "openai_agents", "tools": ["lookup_order"]},
+    {"name": "Refund Agent", "framework": "openai_agents", "tools": ["issue_refund", "email_customer"]}
+  ],
+  "tools": {
+    "lookup_order": ["read-only", "external call"],
+    "issue_refund": ["destructive", "writes data", "external call"],
+    "email_customer": ["destructive", "writes data", "external call"]
+  },
+  "mcp_servers": [],
+  "notes": "One agent built with new Agent(...), the other with Agent.create(...); tool names come from name: in tool({...}) and differ from the exported camelCase variables; refund goes through the Stripe SDK rather than fetch."
+}

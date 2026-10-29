@@ -1,0 +1,13 @@
+{
+  "agents": [
+    {"name": "travel_executor", "framework": "langchain", "tools": ["web_search", "get_flight_status", "book_hotel", "currency_convert"]}
+  ],
+  "tools": {
+    "web_search": ["read-only", "external call", "reads untrusted text"],
+    "get_flight_status": ["read-only", "external call"],
+    "book_hotel": ["destructive", "writes data", "external call"],
+    "currency_convert": ["read-only", "external call"]
+  },
+  "mcp_servers": [],
+  "notes": "One agent: the AgentExecutor `travel_executor` wrapping the runnable `tool_agent` from create_tool_calling_agent (do not count both); function `convert` is exposed as 'currency_convert'; book_hotel captures a card payment."
+}

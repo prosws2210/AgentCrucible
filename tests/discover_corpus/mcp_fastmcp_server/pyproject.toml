@@ -1,0 +1,8 @@
+[project]
+name = "inventory-mcp"
+version = "0.2.0"
+requires-python = ">=3.11"
+dependencies = ["mcp[cli]>=1.12"]
+
+[project.scripts]
+inventory-mcp = "inventory_mcp.server:mcp.run"

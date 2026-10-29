@@ -1,0 +1,13 @@
+{
+  "agents": [
+    {"name": "answerShopper", "framework": "vercel_ai", "tools": ["search_products", "get_order_status", "apply_discount"]},
+    {"name": "POST", "framework": "vercel_ai", "tools": ["search_products", "get_order_status"]}
+  ],
+  "tools": {
+    "search_products": ["read-only"],
+    "get_order_status": ["read-only", "external call"],
+    "apply_discount": ["writes data"]
+  },
+  "mcp_servers": [],
+  "notes": "Tool names the model sees are the object keys (search_products), not the exported variable names (searchProductsTool); two model-call sites: generateText in lib/agent.ts and streamText in the Next.js route handler POST."
+}

@@ -1,0 +1,12 @@
+{
+  "agents": [
+    {"name": "DocsAgent", "framework": "llamaindex", "tools": ["search_docs", "open_ticket", "fetch_release_notes"]}
+  ],
+  "tools": {
+    "search_docs": ["read-only"],
+    "open_ticket": ["writes data", "external call"],
+    "fetch_release_notes": ["read-only", "external call", "reads untrusted text"]
+  },
+  "mcp_servers": [],
+  "notes": "Functions are referenced via module alias (t.search_docs) inside FunctionTool.from_defaults; create_jira_ticket is renamed 'open_ticket' via name=; search_docs queries a local persisted vector index (no network)."
+}

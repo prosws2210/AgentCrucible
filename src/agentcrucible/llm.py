@@ -24,6 +24,17 @@ class Summary:
     content: str
     tool_calls: list[str]
     stop_reason: str | None
+    # the tools the model asked for, with arguments: how in-process tools (not MCP) become visible
+    tool_requests: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _args(raw: Any) -> Any:
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            return {"_raw": raw}
+    return raw if raw is not None else {}
 
 
 def summarize(api: Api, data: dict[str, Any]) -> Summary:
@@ -39,6 +50,8 @@ def summarize(api: Api, data: dict[str, Any]) -> Summary:
             content=text,
             tool_calls=[it.get("name", "") for it in items if it.get("type") == "function_call"],
             stop_reason=data.get("status"),
+            tool_requests=[{"name": it.get("name", ""), "args": _args(it.get("arguments"))}
+                           for it in items if it.get("type") == "function_call"],
         )
     if api == "anthropic":
         usage = data.get("usage") or {}
@@ -50,6 +63,8 @@ def summarize(api: Api, data: dict[str, Any]) -> Summary:
             content="".join(b.get("text", "") for b in blocks if b.get("type") == "text"),
             tool_calls=[b.get("name", "") for b in blocks if b.get("type") == "tool_use"],
             stop_reason=data.get("stop_reason"),
+            tool_requests=[{"name": b.get("name", ""), "args": _args(b.get("input"))}
+                           for b in blocks if b.get("type") == "tool_use"],
         )
     usage = data.get("usage") or {}
     choice = (data.get("choices") or [{}])[0]
@@ -61,6 +76,8 @@ def summarize(api: Api, data: dict[str, Any]) -> Summary:
         content=msg.get("content") or "",
         tool_calls=[(tc.get("function") or {}).get("name", "") for tc in msg.get("tool_calls") or []],
         stop_reason=choice.get("finish_reason"),
+        tool_requests=[{"name": (tc.get("function") or {}).get("name", ""), "args": _args((tc.get("function") or {}).get("arguments"))}
+                       for tc in msg.get("tool_calls") or []],
     )
 
 

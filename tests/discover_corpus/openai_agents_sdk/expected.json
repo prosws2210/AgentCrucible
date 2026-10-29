@@ -1,0 +1,15 @@
+{
+  "agents": [
+    {"name": "Triage", "framework": "openai_agents", "tools": []},
+    {"name": "Billing Specialist", "framework": "openai_agents", "tools": ["lookup_invoice", "refund_payment"]},
+    {"name": "Tech Support", "framework": "openai_agents", "tools": ["get_service_status", "reset_password"]}
+  ],
+  "tools": {
+    "lookup_invoice": ["read-only"],
+    "refund_payment": ["destructive", "writes data", "external call"],
+    "get_service_status": ["read-only", "external call"],
+    "reset_password": ["destructive", "writes data", "external call"]
+  },
+  "mcp_servers": [],
+  "notes": "Triage has only handoffs (no function tools); specialists live in a separate module; check_status is exposed as 'get_service_status' via name_override; reset_password both nulls the hash and sends an email."
+}

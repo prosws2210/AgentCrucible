@@ -414,6 +414,9 @@ def create_app(config_path: Path | None = None) -> FastAPI:
                               cfg.llm.upstream_base_url, cfg.llm.api_key, spec.headers, spec.transport)
         return await asyncio.to_thread(store.add_audit, req.server, rep.to_dict())
 
+    from .server_discover import register as register_discover
+    register_discover(app, cfg, lock)
+
     return app
 
 
