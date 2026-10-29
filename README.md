@@ -117,7 +117,14 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build   # NV
 # open http://localhost:8080/dashboard/
 ```
 
-From the dashboard you can start runs (suite, runs per scenario, model, agent env such as `AGENT_PROMPT=prompts/v2_fast.md`, baseline to compare against), watch live progress, open the HTML report for any run, and audit the project's MCP servers. The API only audits servers declared in `crucible.yaml`; it never runs arbitrary commands.
+The dashboard works per **project** (one `crucible.yaml` with any number of agents) and switches between them in the
+sidebar. Imported codebases become projects automatically, and **Add agents** adds one agent by hand (a Python function
+or framework object, a TypeScript export, a web service or a stdio command) with its first test, to the current
+project or to another codebase. For each agent you see how it's connected, the tools it uses, its tests with their
+latest results and its own runs. You can start runs of everything, one agent, one suite or picked scenarios (runs per
+scenario, model, agent env such as `AGENT_PROMPT=prompts/v2_fast.md`, a baseline to compare against), watch live
+progress, open the HTML report for any run, and audit the project's MCP servers. The API only audits servers declared
+in `crucible.yaml` and only reads folders under `CRUCIBLE_DISCOVER_ROOTS`; it never runs arbitrary commands.
 
 **Access control.** The stack is open by default, which is fine on your own machine. Before exposing it, set tokens in `.env`:
 
@@ -145,7 +152,8 @@ draft tests, then approve. It finds LangGraph, LangChain, OpenAI Agents SDK, Cre
 Agent SDK, MCP servers and raw OpenAI/Anthropic tool loops in Python; Vercel AI SDK, Mastra, OpenAI Agents JS,
 LangChain JS and MCP in TypeScript; and Spring AI, LangChain4j and Go SDK agents. Every finding cites its file and line,
 destructive tools are mocked in the drafted tests, and a smoke run compares what was found with what the agents
-actually did. Try it on [examples/import-demo](examples/import-demo). Design: [docs/CODEBASE-IMPORT.md](docs/CODEBASE-IMPORT.md).
+actually did. The approved project then appears in the dashboard's project switcher with all its agents. Try it on
+[examples/import-demo](examples/import-demo). Design: [docs/CODEBASE-IMPORT.md](docs/CODEBASE-IMPORT.md).
 
 In CI, the drift check can comment on pull requests:
 
@@ -316,6 +324,8 @@ src/agentcrucible/
   report.py       Markdown + self-contained HTML report
   cli.py          Typer CLI
   server.py       FastAPI backend for the dashboard
+  projects.py     the projects one server shows (server_projects.py: projects and agents API)
+  add_agent.py    add or remove one agent by hand, through the same planner as discover
   auth.py         API tokens and session cookies
   db.py           run/audit history (Postgres or SQLite)
 examples/support-agent/   stdio agent (OpenAI API), 2 MCP servers with planted bugs, 10 scenarios

@@ -80,6 +80,8 @@ class Agent(BaseModel):
     memory: str | None = None  # how it keeps state between turns or sessions (a checkpointer, a session store...)
     service: str | None = None  # in a monorepo: the folder of the service it belongs to
     auth_env: str | None = None  # its HTTP endpoint needs a token: the variable that holds a test token
+    added_by_hand: bool = False  # added in the dashboard, not found by a scan: re-imports keep it
+    app_url: str | None = None  # hand-added web service: where it runs (becomes APP_URL for the bridge)
 
 
 class Tool(BaseModel):
@@ -185,6 +187,7 @@ class ConnectionPlan(BaseModel):
     url: str | None = None
     env_needed: list[str] = Field(default_factory=list)
     env_map: dict[str, str] = Field(default_factory=dict)  # app setting -> AgentCrucible variable
+    env: dict[str, str] = Field(default_factory=dict)  # fixed values the agent gets, e.g. APP_URL
     warnings: list[str] = Field(default_factory=list)
     fixes: list[CodeFix] = Field(default_factory=list)
 

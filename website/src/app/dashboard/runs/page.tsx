@@ -71,7 +71,7 @@ function Row({ r, all }: { r: Run; all: Run[] }) {
         <Link href={`/dashboard/run/?id=${r.id}`} className="font-medium hover:text-ember" onClick={(e) => e.stopPropagation()}>
           {r.label || <span className="text-mute">unlabeled run</span>}
         </Link>
-        <div className="font-mono text-[11px] text-dim">{r.suite ?? "all suites"} · {r.n_episodes ?? r.progress?.total ?? "–"} episodes</div>
+        <div className="font-mono text-[11px] text-dim">{r.params?.agent ? `agent ${r.params.agent}` : r.suite ?? "all suites"} · {r.n_episodes ?? r.progress?.total ?? "–"} episodes</div>
       </td>
       <td className="px-5 py-3.5"><RunStatus r={r} /></td>
       <td className="px-5 py-3.5"><PassRate value={r.pass_at_1} /></td>
@@ -98,7 +98,9 @@ function NewRun({ runs, onClose }: { runs: Run[]; onClose: () => void }) {
   const suites = Object.entries(project.suites);
   const allScenarios = suites.flatMap(([suite, s]) => s.scenarios.map((sc) => ({ ...sc, suite })));
 
-  const [scope, setScope] = useState<"all" | "suite" | "pick">("all");
+  const multi = project.agents.length > 1;
+  const [scope, setScope] = useState<"all" | "agent" | "suite" | "pick">("all");
+  const [agent, setAgent] = useState(project.agents[0]?.name ?? "");
   const [suite, setSuite] = useState(suites[0]?.[0] ?? "");
   const [picked, setPicked] = useState<string[]>([]);
   const [k, setK] = useState(3);
@@ -106,11 +108,22 @@ function NewRun({ runs, onClose }: { runs: Run[]; onClose: () => void }) {
   const [label, setLabel] = useState("");
   const [prompt, setPrompt] = useState("");
   const [extraEnv, setExtraEnv] = useState("");
-  const [compare, setCompare] = useState(runs.find((r) => r.status === "done")?.id ?? "");
+  // a baseline only means something for the same set of scenarios: default to the latest run of the same scope
+  const baselineFor = (sc: typeof scope, ag: string, su: string) => runs.find((r) => r.status === "done"
+    && (r.params?.agent ?? null) === (sc === "agent" ? ag : null) && (r.suite ?? null) === (sc === "suite" ? su : null)
+    && !(r.params?.scenarios?.length))?.id ?? "";
+  const [compare, setCompare] = useState(() => baselineFor("all", agent, suite));
+  const pick = (sc: typeof scope, ag = agent, su = suite) => {
+    setScope(sc);
+    setAgent(ag);
+    setSuite(su);
+    setCompare(sc === "pick" ? "" : baselineFor(sc, ag, su));
+  };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const nScenarios = scope === "all" ? allScenarios.length : scope === "suite" ? project.suites[suite]?.scenarios.length ?? 0 : picked.length;
+  const nScenarios = scope === "all" ? allScenarios.length : scope === "agent" ? project.agents.find((a) => a.name === agent)?.scenarios ?? 0
+    : scope === "suite" ? project.suites[suite]?.scenarios.length ?? 0 : picked.length;
   const episodes = nScenarios * k;
   const perEpisode = useMemo(() => {
     const done = runs.filter((r) => r.status === "done" && r.finished_at && r.n_episodes);
@@ -136,6 +149,7 @@ function NewRun({ runs, onClose }: { runs: Run[]; onClose: () => void }) {
         method: "POST",
         body: JSON.stringify({
           suite: scope === "suite" ? suite : null,
+          agent: scope === "agent" ? agent : null,
           scenarios: scope === "pick" ? picked : null,
           runs: k, model: model || null, label, agent_env: env, compare: compare || null,
         }),
@@ -164,12 +178,17 @@ function NewRun({ runs, onClose }: { runs: Run[]; onClose: () => void }) {
         <div className="space-y-5">
           <Field label="What to test">
             <div className="flex flex-wrap gap-2">
-              {([["all", `Everything (${allScenarios.length})`], ["suite", "One suite"], ["pick", "Pick scenarios"]] as const).map(([v, l]) => (
-                <Chip key={v} on={scope === v} onClick={() => setScope(v)}>{l}</Chip>
+              {([["all", multi ? `All agents (${allScenarios.length})` : `Everything (${allScenarios.length})`], ...(multi ? [["agent", "One agent"]] : []), ["suite", "One suite"], ["pick", "Pick scenarios"]] as [typeof scope, string][]).map(([v, l]) => (
+                <Chip key={v} on={scope === v} onClick={() => pick(v)}>{l}</Chip>
               ))}
             </div>
+            {scope === "agent" && (
+              <select value={agent} onChange={(e) => pick("agent", e.target.value)} className={`${input} mt-3`}>
+                {project.agents.map((a) => <option key={a.name} value={a.name}>{a.name} · {a.scenarios} scenarios</option>)}
+              </select>
+            )}
             {scope === "suite" && (
-              <select value={suite} onChange={(e) => setSuite(e.target.value)} className={`${input} mt-3`}>
+              <select value={suite} onChange={(e) => pick("suite", agent, e.target.value)} className={`${input} mt-3`}>
                 {suites.map(([n, s]) => <option key={n} value={n}>{n} · {s.scenarios.length} scenarios</option>)}
               </select>
             )}

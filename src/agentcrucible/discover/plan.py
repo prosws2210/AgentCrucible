@@ -203,7 +203,8 @@ def _plan_agent(d: Discovery, ag: Agent, root: Path, fixes: list[CodeFix]) -> Co
         else:
             obj = ep.object
         if adapter is None:
-            if a.get("role") in ("loop",) or ag.framework.startswith("raw") or ag.framework == "claude-agent-sdk" or ep.factory is False and a.get("function"):
+            if a.get("role") in ("loop",) or ag.framework.startswith("raw") or ag.framework == "claude-agent-sdk" or ep.factory is False and a.get("function") \
+                    or ag.added_by_hand and ag.framework == "generic":
                 adapter = "function"
         tool_modules = sorted({d.facts[t.evidence[0]].attrs.get("module") for t in tools
                                if t and t.kind == "in-process" and t.evidence and d.facts[t.evidence[0]].attrs.get("module")})
@@ -253,6 +254,14 @@ def _plan_agent(d: Discovery, ag: Agent, root: Path, fixes: list[CodeFix]) -> Co
     if ep.kind == "http" and ep.route:
         method, _, path = ep.route.partition(" ")
         code = _http_bridge(ag, path or method)
+        if ag.app_url:  # added by hand: the reviewer said where the service runs
+            return ConnectionPlan(agent=ag.id, strategy="http", adapter_file=rel + ".py", adapter_code=code,
+                                  command=f"{_python(root)} {rel}.py", url=ag.app_url.rstrip("/") + (path or method),
+                                  env={"APP_URL": ag.app_url.rstrip("/")}, env_map=env_map, warnings=warnings + [
+                                      "Start the service yourself before a run (pointed at the URLs in the episode). "
+                                      "Check the request and response field names in the adapter."],
+                                  env_needed=env_needed + ([ag.auth_env] if ag.auth_env else []),
+                                  why=f"A web service at {ag.app_url}; the adapter forwards each message to {ep.route}.")
         return ConnectionPlan(agent=ag.id, strategy="http", adapter_file=rel + ".py", adapter_code=code,
                               command=f"{_python(root)} {rel}.py", url=f"http://127.0.0.1:8000{path or method}",
                               env_needed=env_needed + ["APP_URL"] + ([ag.auth_env] if ag.auth_env else []), env_map=env_map, warnings=warnings + [
@@ -563,7 +572,8 @@ def draft_scenarios(d: Discovery, ag: Agent, mocked: set[str]) -> list[DraftScen
         else:
             add(f"{ag.id}-unknown-answer", "RAG: when nothing relevant is retrieved, the agent should say it doesn't know rather than invent an answer.",
                 {"task": "What was the exact attendance at the 1987 company picnic in Reykjavik?", "environment": env(), "checks": [dont_know, budget]})
-    for i, case in enumerate(d.test_cases[:5]):
+    # the repo's examples were written for the agents found in it; one added by hand gets its own first test instead
+    for i, case in enumerate([] if ag.added_by_hand else d.test_cases[:5]):
         checks = [budget]
         exp = case.get("expected")
         if exp:  # the judge accepts "3 to 5 days" for "3-5 days"; the literal check is only a hint
@@ -595,11 +605,15 @@ def build_plan(d: Discovery, root: Path) -> None:
     for ag in d.agents:
         if ag.include:
             scenarios += draft_scenarios(d, ag, mocked)
-    edited = {s.id: s.yaml for s in d.scenarios if s.edited}
+    edited = {s.id: s for s in d.scenarios if s.edited}
     for s in scenarios:
         s.include = keep.get(s.id, True)
         if s.id in edited:
-            s.yaml, s.edited = edited[s.id], True
+            s.yaml, s.edited = edited[s.id].yaml, True
+    drafted = {s.id for s in scenarios}
+    included = {ag.id for ag in d.agents if ag.include}
+    # scenarios written by hand (no draft of the same id) stay as long as their agent does
+    scenarios += [s for s in edited.values() if s.id not in drafted and s.agent in included]
     d.scenarios = scenarios
 
 
@@ -613,6 +627,7 @@ def project_files(d: Discovery, root: Path, model: str = "qwen2.5:7b",
         if not p.command:
             continue
         env = {"PYTHONPATH": os.pathsep.join(["."] + (["src"] if (root / "src").is_dir() else []))}
+        env.update(p.env)
         agents[p.agent] = {"transport": "stdio", "command": p.command, "cwd": "..", "env": env, "turn_timeout_s": 300}
         suites[p.agent] = {"path": f"scenarios/{p.agent}", "runs": 3, "agent": p.agent}
         if p.adapter_file and p.adapter_code:

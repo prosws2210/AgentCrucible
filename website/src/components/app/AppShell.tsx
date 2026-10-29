@@ -1,19 +1,26 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { api, ApiError, UNAUTHORIZED, type AuthStatus, type Health, type Project, type Role } from "@/lib/api";
+import {
+  api, ApiError, setCurrentProject, UNAUTHORIZED,
+  type AuthStatus, type Health, type Project, type ProjectSummary, type Role,
+} from "@/lib/api";
 import { GITHUB } from "@/lib/site";
 import { LogoMark } from "../Logo";
-import { IconBook, IconExternal, IconImport, IconOverview, IconRuns, IconScenarios, IconServer, IconSetup } from "../Icons";
+import { IconAgents, IconBook, IconExternal, IconImport, IconOverview, IconPlus, IconRuns, IconScenarios, IconServer, IconSetup } from "../Icons";
 import { Code, Spinner } from "../ui";
 
 type Ctx = {
   project: Project;
+  /** every test project this server shows; the switcher picks one */
+  projects: ProjectSummary[];
   health: Health;
   models: string[];
   refresh: () => Promise<void>;
+  /** make another project current (and go to `to`, default: stay on this page) */
+  switchProject: (id: string, to?: string) => void;
   /** false for a read-only (viewer) session: hide or disable anything that starts runs or audits */
   canWrite: boolean;
 };
@@ -26,20 +33,31 @@ export function useProject(): Ctx {
 }
 
 const NAV = [
-  { href: "/dashboard/", label: "Overview", icon: IconOverview },
-  { href: "/dashboard/runs/", label: "Runs", icon: IconRuns },
-  { href: "/dashboard/scenarios/", label: "Scenarios", icon: IconScenarios },
-  { href: "/dashboard/servers/", label: "MCP servers", icon: IconServer },
-  { href: "/dashboard/import/", label: "Import codebase", icon: IconImport },
-  { href: "/dashboard/setup/", label: "Setup", icon: IconSetup },
+  { href: "/dashboard/", label: "Overview", icon: IconOverview, also: [] as string[] },
+  { href: "/dashboard/agents/", label: "Agents", icon: IconAgents, also: ["/dashboard/agent/"] },
+  { href: "/dashboard/runs/", label: "Runs", icon: IconRuns, also: ["/dashboard/run/"] },
+  { href: "/dashboard/scenarios/", label: "Scenarios", icon: IconScenarios, also: [] },
+  { href: "/dashboard/servers/", label: "MCP servers", icon: IconServer, also: [] },
+  { href: "/dashboard/add/", label: "Add agents", icon: IconImport, also: ["/dashboard/import/"] },
+  { href: "/dashboard/setup/", label: "Setup", icon: IconSetup, also: [] },
 ];
 
 const norm = (p: string) => (p.endsWith("/") ? p : `${p}/`);
+const STORE_KEY = "crucible.project";
+
+function savedProject(): string {
+  try {
+    return new URLSearchParams(window.location.search).get("project") || localStorage.getItem(STORE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = norm(usePathname() || "/dashboard/");
   const [state, setState] = useState<"loading" | "offline" | "login" | "ready">("loading");
   const [project, setProject] = useState<Project | null>(null);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [auth, setAuth] = useState<AuthStatus | null>(null);
@@ -52,7 +70,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setState("login");
         return;
       }
+      const list = await api<ProjectSummary[]>("/api/projects");
+      const wanted = savedProject();
+      const id = list.find((x) => x.id === wanted && !x.error)?.id ?? list.find((x) => x.home)?.id ?? list[0]?.id ?? "";
+      setCurrentProject(id);
       const [h, p] = await Promise.all([api<Health>("/api/health"), api<Project>("/api/project")]);
+      setProjects(list);
       setHealth(h);
       setProject(p);
       setState("ready");
@@ -70,6 +93,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener(UNAUTHORIZED, expired);
   }, [refresh]);
 
+  const router = useRouter();
+  const switchProject = useCallback((id: string, to?: string) => {
+    try { localStorage.setItem(STORE_KEY, id); } catch {}
+    setCurrentProject(id);
+    if (to) router.push(to);
+    else if (new URLSearchParams(window.location.search).has("project")) router.replace(window.location.pathname);
+    refresh();
+  }, [refresh, router]);
+
   const signOut = useCallback(async () => {
     await api("/api/auth/logout", { method: "POST" }).catch(() => {});
     setProject(null);
@@ -78,8 +110,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen flex-col lg:flex-row">
-      <Sidebar pathname={pathname} project={state === "ready" ? project : null} health={health} models={models}
-        role={auth?.required && state === "ready" ? auth.role : null} onSignOut={signOut} />
+      <Sidebar pathname={pathname} project={state === "ready" ? project : null} projects={projects} health={health} models={models}
+        role={auth?.required && state === "ready" ? auth.role : null} onSignOut={signOut} onSwitch={switchProject} />
       <main className="min-w-0 flex-1">
         <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-8 sm:py-8">
           {state === "loading" && (
@@ -90,8 +122,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {state === "offline" && <Offline onRetry={refresh} />}
           {state === "login" && <Login onDone={refresh} />}
           {state === "ready" && project && health && (
-            <ProjectCtx.Provider value={{ project, health, models, refresh, canWrite: auth?.role !== "viewer" }}>
-              {children}
+            <ProjectCtx.Provider value={{ project, projects, health, models, refresh, switchProject, canWrite: auth?.role !== "viewer" }}>
+              {/* keyed: switching projects remounts the page, so it reloads that project's data */}
+              <div key={project.id}>{children}</div>
             </ProjectCtx.Provider>
           )}
         </div>
@@ -100,13 +133,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Sidebar({ pathname, project, health, models, role, onSignOut }: {
+function Sidebar({ pathname, project, projects, health, models, role, onSignOut, onSwitch }: {
   pathname: string;
   project: Project | null;
+  projects: ProjectSummary[];
   health: Health | null;
   models: string[];
   role: Role | null;
   onSignOut: () => void;
+  onSwitch: (id: string, to?: string) => void;
 }) {
   const modelOk = project ? models.some((m) => m === project.model || m === `${project.model}:latest`) : false;
   const { ref: navRef, update: onNavScroll, mask: navMask } = useNavScroll(pathname);
@@ -127,16 +162,15 @@ function Sidebar({ pathname, project, health, models, role, onSignOut }: {
       </div>
 
       {project && (
-        <div className="mx-4 mb-4 hidden rounded-xl border border-line bg-panel-2/70 p-3 lg:mx-5 lg:block">
-          <div className="text-[11px] uppercase tracking-[0.14em] text-dim">Project</div>
-          <div className="mt-1 truncate text-[14px] font-semibold">{project.project}</div>
-          <div className="mt-2 space-y-1 text-[12px] text-mute">
+        <div className="mx-4 mb-3 rounded-xl border border-line bg-panel-2/70 p-3 lg:mx-5 lg:mb-4">
+          <ProjectSwitcher project={project} projects={projects} onSwitch={onSwitch} />
+          <div className="mt-2 hidden space-y-1 text-[12px] text-mute lg:block">
             <Status ok label={`API · ${health?.db ?? "…"}`} />
             <Status ok={modelOk} label={modelOk ? `Model · ${project.model}` : `Model ${project.model} not found`} />
             {health?.busy && <Status ok warn label="A run is in progress" />}
           </div>
           {role && (
-            <div className="mt-3 flex items-center justify-between border-t border-line pt-2.5 text-[12px]">
+            <div className="mt-3 hidden items-center justify-between border-t border-line pt-2.5 text-[12px] lg:flex">
               <span className="text-mute">{role === "viewer" ? "Signed in · read-only" : "Signed in · full access"}</span>
               <button onClick={onSignOut} className="text-dim hover:text-fg">Sign out</button>
             </div>
@@ -151,8 +185,8 @@ function Sidebar({ pathname, project, health, models, role, onSignOut }: {
         style={{ maskImage: navMask, WebkitMaskImage: navMask }}
         className="flex gap-1 overflow-x-auto px-3 pb-3 [scrollbar-width:none] lg:flex-1 lg:flex-col lg:overflow-visible lg:px-3 lg:pb-0 lg:![mask-image:none] [&::-webkit-scrollbar]:hidden"
       >
-        {NAV.map(({ href, label, icon: Icon }) => {
-          const active = href === "/dashboard/" ? pathname === href : pathname.startsWith(href) || (href === "/dashboard/runs/" && pathname.startsWith("/dashboard/run/"));
+        {NAV.map(({ href, label, icon: Icon, also }) => {
+          const active = href === "/dashboard/" ? pathname === href : [href, ...also].some((h) => pathname.startsWith(h));
           return (
             <Link
               key={href}
@@ -173,11 +207,69 @@ function Sidebar({ pathname, project, health, models, role, onSignOut }: {
         <a href={`${GITHUB}/blob/main/docs/ADOPTION.md`} target="_blank" rel="noreferrer" className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] text-mute hover:text-fg">
           <IconBook /> Documentation <IconExternal className="ml-auto h-3.5 w-3.5" />
         </a>
-        <Link href="/start/" className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] text-mute hover:text-fg">
-          <IconSetup /> Connect another agent
+        <Link href="/dashboard/projects/" className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] text-mute hover:text-fg">
+          <IconOverview /> All projects
         </Link>
       </div>
     </aside>
+  );
+}
+
+export const SOURCE: Record<string, string> = { server: "server project", import: "imported", manual: "added by hand", added: "added" };
+
+function ProjectSwitcher({ project, projects, onSwitch }: { project: Project; projects: ProjectSummary[]; onSwitch: (id: string, to?: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", esc); };
+  }, [open]);
+  const n = project.agents.length;
+  return (
+    <div ref={ref} className="relative">
+      <button onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="listbox"
+        className="flex w-full items-center gap-2 rounded-lg text-left" title="Switch project">
+        <span className="min-w-0 flex-1">
+          <span className="block text-[11px] uppercase tracking-[0.14em] text-dim">Project</span>
+          <span className="block truncate text-[14px] font-semibold">{project.project}</span>
+          <span className="block truncate text-[12px] text-mute">{n} agent{n === 1 ? "" : "s"} · {SOURCE[project.source] ?? project.source}</span>
+        </span>
+        <svg viewBox="0 0 24 24" className={`h-4 w-4 shrink-0 text-dim transition-transform ${open ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="2"><path d="m7 10 5 5 5-5" /></svg>
+      </button>
+      {open && (
+        <div role="listbox" className="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-xl border border-line bg-panel shadow-2xl shadow-black/40">
+          <ul className="max-h-72 overflow-y-auto py-1">
+            {projects.map((p) => (
+              <li key={p.id}>
+                <button role="option" aria-selected={p.id === project.id} disabled={!!p.error}
+                  onClick={() => { setOpen(false); if (p.id !== project.id) onSwitch(p.id); }}
+                  className={`flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-white/[0.05] disabled:opacity-50 ${p.id === project.id ? "bg-white/[0.04]" : ""}`}>
+                  <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${p.id === project.id ? "bg-ember" : "bg-transparent"}`} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-[13px] font-medium">{p.name}</span>
+                    <span className="block truncate text-[11.5px] text-dim">
+                      {p.error ? "crucible.yaml doesn\u2019t load" : `${p.agents.length} agent${p.agents.length === 1 ? "" : "s"} · ${p.scenarios} scenarios · ${SOURCE[p.source] ?? p.source}`}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="border-t border-line p-1">
+            <Link href="/dashboard/add/" onClick={() => setOpen(false)} className="flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-ember hover:bg-white/[0.04]">
+              <IconPlus className="h-3.5 w-3.5" /> Add agents or a codebase
+            </Link>
+            <Link href="/dashboard/projects/" onClick={() => setOpen(false)} className="flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-mute hover:bg-white/[0.04] hover:text-fg">
+              <IconOverview className="h-3.5 w-3.5" /> All projects
+            </Link>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -239,7 +331,7 @@ function Offline({ onRetry }: { onRetry: () => void }) {
           I&apos;ve started it, retry
         </button>
         <Link href="/start/" className="rounded-full border border-line bg-panel px-5 py-2.5 text-[14px] font-medium hover:border-ember/60">
-          New here? Set up your agent
+          New here? Get started
         </Link>
       </div>
     </div>

@@ -20,7 +20,7 @@ export type Run = {
   verdict: string | null;
   gate: string | null;
   error: string | null;
-  params?: { agent_env?: Record<string, string>; scenarios?: string[] | null };
+  params?: { agent_env?: Record<string, string>; scenarios?: string[] | null; agent?: string | null };
   progress?: { done: number; total: number; failed: number };
 };
 
@@ -29,7 +29,31 @@ export type Health = { ok: boolean; db: string; llm_url: string; busy: boolean }
 export type Role = "admin" | "viewer";
 export type AuthStatus = { required: boolean; authenticated: boolean; role: Role | null };
 
+export type ProjectSource = "server" | "import" | "manual" | "added";
+
+/** One test project (a crucible.yaml) this server shows, for the project switcher. */
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  source: ProjectSource;
+  home: boolean;
+  codebase: string | null;
+  root: string;
+  path: string;
+  agents: string[];
+  scenarios: number;
+  discovery: boolean;
+  error: string | null;
+  last_run: { id: string; label: string; status: RunStatus; pass_at_1: number | null; created_at: string; gate: string | null } | null;
+};
+
 export type Project = {
+  id: string;
+  source: ProjectSource;
+  codebase: string | null;
+  root: string;
+  discovery: boolean;
+  agents: { name: string; scenarios: number; suites: string[] }[];
   project: string;
   model: string;
   suites: Record<string, { runs: number; scenarios: { id: string; description: string; tags: string[] }[] }>;
@@ -40,7 +64,9 @@ export type Project = {
 
 export type Config = {
   project: string;
+  root: string;
   agent: { transport: "stdio" | "http"; command: string | null; url: string | null; turn_timeout_s: number };
+  agents: { name: string; transport: "stdio" | "http"; command: string | null; url: string | null; cwd: string | null; turn_timeout_s: number }[];
   model: string;
   llm: { openai_base_url: string; anthropic_base_url: string; cache: string };
   mcp_servers: { name: string; command: string | null; url: string | null; remote: boolean }[];
@@ -56,6 +82,7 @@ export type Doctor = { ok: boolean; checks: DoctorCheck[] };
 export type Scenario = {
   id: string;
   suite: string;
+  agent: string;
   description: string;
   tags: string[];
   runs: number;
@@ -132,7 +159,7 @@ export type RunDetail = {
     errors: number;
   };
   episodes?: Episode[];
-  scenario_meta?: Record<string, { description: string; tags: string[] }>;
+  scenario_meta?: Record<string, { description: string; tags: string[]; agent?: string | null }>;
   failures?: { scenario_id: string; attempt: number; error: string | null; failed_checks: string[] }[];
   comparison?: {
     overall: { verdict: string; delta: number; ci: [number, number] };
@@ -162,13 +189,18 @@ export class ApiError extends Error {
 /** Fired when the server says the session is missing or expired, so the shell can show the login screen. */
 export const UNAUTHORIZED = "crucible:unauthorized";
 
+// The project every project-scoped request acts on (sent as a header; the shell sets it).
+let currentProject = "";
+export const setCurrentProject = (id: string) => { currentProject = id; };
+export const getCurrentProject = () => currentProject;
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   let r: Response;
   try {
     r = await fetch(`${API}${path}`, {
       ...init,
       credentials: "include", // session cookie set by /api/auth/login
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      headers: { "Content-Type": "application/json", ...(currentProject ? { "X-Crucible-Project": currentProject } : {}), ...init?.headers },
     });
   } catch {
     throw new ApiError("offline");
@@ -240,9 +272,62 @@ export type ImportJob = {
   progress: { t: number; message: string }[]; error: string | null; discovery: Discovery | null; started: number;
   result: null | {
     out: string; files: string[]; validate: { agents: string[]; scenarios: number; suites: string[] };
-    run_id?: string; code_changes?: string[];
+    run_id?: string; code_changes?: string[]; project?: string;
     connection?: { id: string; ok: boolean; detail: string }[];
     reality?: { ok: boolean; episodes: number; passed: number; errors: number; observed_tools: Record<string, Record<string, number>>;
       models: Record<string, string[]>; requested_models?: Record<string, string[]>; findings: RealityFinding[]; scenarios?: ScenarioOutcome[] };
   };
+};
+
+// ---------------------------------------------------------------- agents (/api/agents)
+
+export type AgentRow = {
+  name: string;
+  title: string;
+  purpose: string;
+  framework: string | null;
+  language: string | null;
+  origin: "found" | "hand" | "config";
+  service: string | null;
+  transport: "stdio" | "http" | null;
+  command: string | null;
+  url: string | null;
+  cwd: string | null;
+  env: Record<string, string>;
+  connection: { strategy: string; why: string; adapter_file: string | null; env_needed: string[]; warnings: string[] } | null;
+  model: string | null;
+  memory: string | null;
+  subagents: string[];
+  mcp_servers: string[];
+  tools: { name: string; effects: Effect[]; description: string; mock: boolean | null }[];
+  suites: string[];
+  scenarios: number;
+  tested: number;
+  passed: number;
+  episodes: number;
+  failing: number;
+  last_tested: string | null;
+};
+
+export type AgentDetail = AgentRow & {
+  scenario_list: (Omit<Scenario, "agent" | "runs" | "environment"> & { latest: Scenario["latest"] })[];
+  runs: { id: string; label: string; status: RunStatus; model: string; created_at: string; pass_at_1: number | null; gate: string | null; agent: string | null; passed?: number; n?: number }[];
+};
+
+export type NewAgent = {
+  name: string;
+  kind: "python" | "typescript" | "http" | "command";
+  purpose?: string;
+  module?: string;
+  object?: string;
+  framework?: string;
+  factory?: boolean;
+  app_url?: string;
+  route?: string;
+  command?: string;
+  task: string;
+  must_call?: string;
+  must_not_call?: string;
+  reply_mentions?: string;
+  codebase?: string | null;
 };

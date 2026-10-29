@@ -41,7 +41,7 @@ function RunView() {
             <RunStatus r={r} />
           </div>
           <p className="mt-1 font-mono text-[12px] text-dim">
-            {when(r.created_at)} · {r.model} · {r.suite ?? "all suites"} · {r.k}× per scenario · {r.id}
+            {when(r.created_at)} · {r.model} · {r.params?.agent ? `agent ${r.params.agent}` : r.suite ?? "all suites"} · {r.k}× per scenario · {r.id}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -120,6 +120,7 @@ function Progress({ detail }: { detail: RunDetail }) {
 /* ------------------------------------------------------------------ results */
 
 function Results({ detail }: { detail: RunDetail }) {
+  const multiAgent = new Set(Object.values(detail.scenario_meta ?? {}).map((m) => m.agent).filter(Boolean)).size > 1;
   const s = detail.summary!;
   const params = useSearchParams();
   const cmp = detail.comparison;
@@ -168,7 +169,10 @@ function Results({ detail }: { detail: RunDetail }) {
                         <span className="font-mono text-[12.5px]">{row.id}</span>
                         {row.flaky && <Badge tone="warn">flaky</Badge>}
                       </div>
-                      <div className="ml-3.5 truncate text-[12px] text-dim">{detail.scenario_meta?.[row.id]?.description}</div>
+                      <div className="ml-3.5 truncate text-[12px] text-dim">
+                        {multiAgent && detail.scenario_meta?.[row.id]?.agent ? <span className="text-ember/80">{detail.scenario_meta[row.id].agent} · </span> : null}
+                        {detail.scenario_meta?.[row.id]?.description}
+                      </div>
                     </td>
                     <td className="px-5 py-3"><Dots passed={row.passed} n={row.n} /></td>
                     <td className="px-5 py-3"><PassRate value={row.pass_rate} /> <span className="font-mono text-[11.5px] text-dim">{row.passed}/{row.n}</span></td>

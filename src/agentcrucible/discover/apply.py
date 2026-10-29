@@ -25,6 +25,7 @@ def write_project(d: Discovery, root: Path, out: Path | None = None, model: str 
     if not d.plans:
         build_plan(d, root)
     files = project_files(d, root, model=model, upstream=upstream)
+    _remove_stale(out, files)
     written = []
     for rel, content in files.items():
         p = out / rel
@@ -38,6 +39,30 @@ def write_project(d: Discovery, root: Path, out: Path | None = None, model: str 
     if not gi.exists():
         gi.write_text(".crucible/\n", encoding="utf-8")
     return out, sorted(written)
+
+
+def _remove_stale(out: Path, files: dict[str, str]) -> list[str]:
+    """Delete scenarios and adapters an earlier apply wrote that the new plan no longer has (a removed agent, a draft
+    switched off). Only files still exactly as generated go; anything the user edited stays."""
+    f = out / "discovery.json"
+    if not f.is_file():
+        return []
+    try:
+        old = Discovery.model_validate_json(f.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    before = {f"scenarios/{s.agent}/{s.id}.yaml": s.yaml for s in old.scenarios if s.include}
+    before.update({p.adapter_file.removeprefix(OUT_DIR + "/"): p.adapter_code for p in old.plans
+                   if p.adapter_file and p.adapter_code})
+    gone = []
+    for rel, text in before.items():
+        p = out / rel
+        if rel not in files and p.is_file() and p.read_text(encoding="utf-8") == text:
+            p.unlink()
+            gone.append(rel)
+            if p.parent.name != "adapters" and p.parent.is_dir() and not any(p.parent.iterdir()):
+                p.parent.rmdir()
+    return gone
 
 
 def validate(out: Path) -> dict[str, Any]:

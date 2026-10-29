@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { PageHeader, useProject } from "@/components/app/AppShell";
 import { useResource } from "@/components/app/hooks";
 import { IconCheck, IconRefresh, IconX } from "@/components/Icons";
@@ -25,8 +26,9 @@ export default function SetupPage() {
     <>
       <PageHeader
         title="Setup"
-        sub="Everything a run needs: your agent, a model endpoint and your MCP servers. Configuration lives in crucible.yaml next to your scenarios."
-        actions={<Button variant="secondary" href="/start/">Connect a different agent</Button>}
+        sub={<>Everything a run of this project needs: its agents, a model endpoint and its MCP servers. Configuration lives in{" "}
+          <code className="break-all font-mono text-[12.5px]">{c ? `${c.root}/crucible.yaml` : "crucible.yaml"}</code>, next to the scenarios.</>}
+        actions={<Button variant="secondary" href="/dashboard/add/">Add agents</Button>}
       />
 
       <Card>
@@ -57,14 +59,22 @@ export default function SetupPage() {
 
       <div className="mt-5 grid gap-5 lg:grid-cols-2">
         <Card>
-          <CardHeader title="Your agent" sub={c?.agent.transport === "http" ? "An HTTP service: every turn is POSTed with the gateway addresses." : "A process started for every episode; it talks JSON lines over stdin/stdout."} />
+          <CardHeader title={c && c.agents.length > 1 ? `Agents (${c.agents.length})` : "Your agent"}
+            sub="stdio: a process started for every episode, talking JSON lines. http: a service every turn is POSTed to, with the gateway addresses." />
           {c ? (
-            <dl className="divide-y divide-line/70 text-[13px]">
-              <Row k="Transport"><Badge tone="ember">{c.agent.transport}</Badge></Row>
-              {c.agent.command && <Row k="Command"><code className="font-mono text-[12px]">{c.agent.command}</code></Row>}
-              {c.agent.url && <Row k="URL"><code className="font-mono text-[12px]">{c.agent.url}</code></Row>}
-              <Row k="Turn timeout">{c.agent.turn_timeout_s}s</Row>
-            </dl>
+            <ul className="divide-y divide-line/70">
+              {c.agents.map((a) => (
+                <li key={a.name} className="px-5 py-3 text-[13px]">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Link href={`/dashboard/agent/?name=${encodeURIComponent(a.name)}`} className="font-mono text-[12.5px] font-semibold hover:text-ember">{a.name}</Link>
+                    <Badge tone="ember">{a.transport}</Badge>
+                    <span className="text-[12px] text-dim">turn timeout {a.turn_timeout_s}s{a.cwd ? ` · runs in ${a.cwd}` : ""}</span>
+                  </div>
+                  {a.command && <code className="mt-1 block break-all font-mono text-[12px] text-mute">{a.command}</code>}
+                  {a.url && <code className="mt-1 block break-all font-mono text-[12px] text-mute">{a.url}</code>}
+                </li>
+              ))}
+            </ul>
           ) : <Loading />}
         </Card>
 

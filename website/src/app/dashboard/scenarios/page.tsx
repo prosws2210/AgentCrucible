@@ -23,10 +23,13 @@ const ENV: Record<string, { label: string; icon: React.ReactNode }> = {
 
 export default function ScenariosPage() {
   const { data, error } = useScenarios();
+  const { project } = useProject();
   const [filter, setFilter] = useState("all");
+  const [agent, setAgent] = useState("all");
 
-  const suites = [...new Set((data ?? []).map((s) => s.suite))];
-  const shown = (data ?? []).filter((s) => filter === "all" || s.suite === filter || (filter === "failing" && s.latest && s.latest.passed < s.latest.n));
+  const mine = (data ?? []).filter((s) => agent === "all" || s.agent === agent);
+  const suites = [...new Set(mine.map((s) => s.suite))];
+  const shown = mine.filter((s) => filter === "all" || s.suite === filter || (filter === "failing" && s.latest && s.latest.passed < s.latest.n));
 
   return (
     <>
@@ -41,11 +44,22 @@ export default function ScenariosPage() {
         <Card><Empty icon={<IconScenarios />} title="No scenarios found">Add YAML files under the paths listed in your crucible.yaml suites.</Empty></Card>
       ) : (
         <>
+          {project.agents.length > 1 && (
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <span className="text-[12px] text-dim">Agent</span>
+              {["all", ...project.agents.map((a) => a.name)].map((a) => (
+                <button key={a} onClick={() => { setAgent(a); setFilter("all"); }}
+                  className={`rounded-full border px-3 py-1.5 font-mono text-[12px] ${agent === a ? "border-ember/60 bg-ember/10" : "border-line text-mute hover:text-fg"}`}>
+                  {a === "all" ? `all agents (${data.length})` : `${a} (${data.filter((s) => s.agent === a).length})`}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="mb-4 flex flex-wrap gap-2">
             {["all", ...suites, "failing"].map((f) => (
               <button key={f} onClick={() => setFilter(f)}
                 className={`rounded-full border px-3 py-1.5 text-[12.5px] ${filter === f ? "border-ember/60 bg-ember/10" : "border-line text-mute hover:text-fg"}`}>
-                {f === "all" ? `All (${data.length})` : f === "failing" ? "Failing" : `${f} (${data.filter((s) => s.suite === f).length})`}
+                {f === "all" ? `All (${mine.length})` : f === "failing" ? "Failing" : `${f} (${mine.filter((s) => s.suite === f).length})`}
               </button>
             ))}
           </div>
@@ -61,7 +75,7 @@ export default function ScenariosPage() {
 
 function ScenarioCard({ s }: { s: Scenario }) {
   const router = useRouter();
-  const { canWrite } = useProject();
+  const { canWrite, project } = useProject();
   const [busy, setBusy] = useState(false);
   async function run() {
     setBusy(true);
@@ -109,6 +123,7 @@ function ScenarioCard({ s }: { s: Scenario }) {
 
       <div className="mt-auto flex flex-wrap items-center justify-between gap-3 pt-5">
         <div className="flex flex-wrap gap-1.5">
+          {project.agents.length > 1 && <Badge tone="ember">{s.agent}</Badge>}
           <Badge>{s.suite}</Badge>
           {s.environment.map((e) => <Badge key={e} tone={e === "inject" || e === "deny_tools" ? "warn" : "mute"}>{ENV[e]?.icon}{ENV[e]?.label ?? e}</Badge>)}
           {s.tags.filter((t) => t !== s.suite).map((t) => <Badge key={t}>#{t}</Badge>)}

@@ -68,8 +68,10 @@ crucible discover ./my-repo --apply --yes    # write agent-tests/ and smoke-run 
 crucible discover . --check                  # in CI: fail on a new agent or an untested destructive tool
 crucible import-traces traces.json --agent support   # production conversations become scenarios`} />
           <Code title=".github/workflows/agent-map.yml" code={`- uses: prosws2210/AgentCrucible/discover@main   # comments on the PR when the agent map drifts`} />
-          <P>In the dashboard, open <b className="text-fg">Import codebase</b>: pick a folder or a Git URL, review the system map,
-            tools and draft tests, answer any questions, and approve. With Docker Compose, mount the code with
+          <P>In the dashboard, open <b className="text-fg">Add agents</b> and choose <b className="text-fg">Import a codebase</b>: pick a folder or a Git URL, review the system map,
+            tools and draft tests, answer any questions, and approve. The codebase then becomes a project in the dashboard with all its agents.
+            Or add one agent by hand (a function, a framework object, a TypeScript export, a web service or a command) with its first test.
+            With Docker Compose, mount the code with
             <code className="font-mono text-[14px] text-fg"> CRUCIBLE_IMPORT_DIR=/path/to/code</code>.</P>
           <ul className="mt-4 list-disc space-y-2 pl-5 text-[15px] leading-relaxed text-mute">
             <li>Python: LangGraph, LangChain, OpenAI Agents SDK, CrewAI, PydanticAI, LlamaIndex, Claude Agent SDK, MCP servers and raw OpenAI / Anthropic tool loops. TypeScript: Vercel AI SDK, Mastra, OpenAI Agents JS, LangChain JS, MCP. Go and Java (Spring AI, LangChain4j) are detected and run through an HTTP bridge or a scaffold you fill in.</li>
@@ -201,6 +203,8 @@ cp .env.example .env
 docker compose up --build             # add -f docker-compose.gpu.yml for an NVIDIA GPU
 # http://localhost:8080/dashboard/`} />
           <P>Frontend, API, Postgres for history and an Ollama model server, as separate services. Or run just the API next to your project with <code className="font-mono text-[14px] text-fg">crucible serve</code>.</P>
+          <P>One server shows several projects, each a <code className="font-mono text-[14px] text-fg">crucible.yaml</code> with any number of agents: switch between them in the sidebar.
+            Every agent has its own page with how it&apos;s connected, its tools, its tests and their latest results, and a button that runs just its tests.</P>
           <P>The dashboard is open by default, which is fine on your own machine. Before sharing it, set tokens in <code className="font-mono text-[14px] text-fg">.env</code>:</P>
           <Code title=".env" code={`CRUCIBLE_API_TOKEN=<long random string>     # full access: start runs and audits
 CRUCIBLE_VIEWER_TOKEN=<another one>         # optional: read-only`} />

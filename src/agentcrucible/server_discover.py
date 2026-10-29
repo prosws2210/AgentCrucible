@@ -4,7 +4,8 @@
     GET   /api/discover/roots           folders the server may read, with suggestions
     GET   /api/discover/{job}           status, progress and the draft discovery.json
     PATCH /api/discover/{job}           the reviewer's edits and answers -> re-planned draft
-    POST  /api/discover/{job}/apply     write the test project, validate, smoke-run, compare with reality
+    POST  /api/discover/{job}/apply     write the test project, validate, smoke-run, compare with reality, and add it to
+                                        the dashboard's projects (agents added by hand earlier are kept)
 
 Only folders under CRUCIBLE_DISCOVER_ROOTS (os.pathsep-separated; default: the user's home folder and the folder
 above this project) can be read. Nothing is written until `apply`.
@@ -20,7 +21,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 from fastapi import FastAPI, HTTPException
@@ -28,9 +29,11 @@ from pydantic import BaseModel, Field
 
 from .config import ProjectConfig, Scenario
 from .discover import apply, build_plan, clone, default_llm, discover, is_git_url
+from .discover.plan import OUT_DIR
 from .discover.scan import scan
 from .discover.schema import Discovery, Entrypoint
 from .discover.synthesize import dump
+from .projects import Workspace
 
 
 class DiscoverRequest(BaseModel):
@@ -110,9 +113,38 @@ def answer_questions(d: Discovery, answers: dict[str, str]) -> None:
                 s.command = a
 
 
-def register(app: FastAPI, cfg: ProjectConfig, lock: asyncio.Lock) -> None:
+def keep_hand_added(d: Discovery, out: Path) -> list[str]:
+    """Carry agents added by hand (and their scenarios) from the project already written at `out` into a re-import."""
+    f = out / "discovery.json"
+    if not f.is_file():
+        return []
+    try:
+        old = Discovery.model_validate_json(f.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - an unreadable old file just means nothing to keep
+        return []
+    kept = []
+    for ag in old.agents:
+        if ag.added_by_hand and d.agent(ag.id) is None:
+            d.agents.append(ag)
+            d.scenarios += [s for s in old.scenarios if s.agent == ag.id and s.edited]
+            kept.append(ag.id)
+    return kept
+
+
+def register(app: FastAPI, ws: Workspace, lock: asyncio.Lock, index_runs: Callable[[Any], None]) -> None:
     jobs: dict[str, dict[str, Any]] = {}
+    cfg: ProjectConfig = ws.home.cfg  # imports use the server's model settings
     work = cfg.root / ".crucible" / "imports"
+
+    # imports approved before projects existed (or while the list was lost) still show up as projects
+    for f in sorted(work.glob("*.json")) if work.is_dir() else []:
+        try:
+            old = json.loads(f.read_text(encoding="utf-8"))
+            out = Path(((old.get("result") or {}).get("out")) or "")
+            if old.get("status") == "applied" and (out / "crucible.yaml").is_file() and ws.for_path(out / "crucible.yaml") is None:
+                ws.register(out / "crucible.yaml", "import", codebase=old.get("root") or None, job=old.get("id"))
+        except Exception:  # noqa: BLE001 - a stale or broken job file is skipped
+            continue
 
     def save(j: dict[str, Any]) -> None:
         """Keep the job on disk so a server restart doesn't lose a review in progress."""
@@ -305,9 +337,18 @@ def register(app: FastAPI, cfg: ProjectConfig, lock: asyncio.Lock) -> None:
         async def run() -> None:
             async with lock:  # shares the model server with dashboard runs
                 try:
+                    root = Path(j["root"])
+                    kept = keep_hand_added(d, root / OUT_DIR)
+                    if kept:
+                        build_plan(d, root)
+                        say(f"Kept {len(kept)} agents added by hand: {', '.join(kept)}")
                     result = await asyncio.to_thread(
-                        apply, d, Path(j["root"]), None, model=req.model or cfg.model, upstream=cfg.llm.upstream_base_url,
+                        apply, d, root, None, model=req.model or cfg.model, upstream=cfg.llm.upstream_base_url,
                         smoke=req.smoke, progress=say, on_episode=on_episode)
+                    proj = ws.register(Path(result["out"]), "import", codebase=str(root), job=jid)
+                    await asyncio.to_thread(index_runs, proj)  # the smoke run shows up in the project's runs
+                    result["project"] = proj.id
+                    say(f"Added to the dashboard as project {proj.cfg.project}")
                     j["result"], j["status"] = result, "applied"
                 except Exception as e:  # noqa: BLE001
                     j["status"], j["error"] = "apply_failed", f"{type(e).__name__}: {e}"

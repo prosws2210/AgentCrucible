@@ -5,8 +5,9 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { PageHeader, useProject } from "@/components/app/AppShell";
 import { useAudits, useResource, useRuns, useScenarios } from "@/components/app/hooks";
+import { agentHref, FRAMEWORK, health, ORIGIN, RunAgentButton, useAgents } from "@/components/app/agents";
 import { TrendChart } from "@/components/app/TrendChart";
-import { IconArrow, IconCheck, IconPlus, IconX } from "@/components/Icons";
+import { IconAgents, IconArrow, IconCheck, IconPlus, IconX } from "@/components/Icons";
 import { Badge, Button, Card, CardHeader, Dots, Empty, PassRate, Spinner, Stat } from "@/components/ui";
 import { api, type Doctor, type Run } from "@/lib/api";
 import { Grade, RunStatus } from "@/components/app/bits";
@@ -20,6 +21,7 @@ export default function OverviewPage() {
   const audits = useAudits();
   const nScenarios = Object.values(project.suites).reduce((n, s) => n + s.scenarios.length, 0);
 
+  const nAgents = project.agents.length;
   if (!runs.data) return <Loading />;
   if (runs.data.length === 0) return <Welcome nScenarios={nScenarios} />;
 
@@ -27,7 +29,10 @@ export default function OverviewPage() {
   const done = all.filter((r) => r.status === "done");
   const active = all.find((r) => r.status === "running" || r.status === "queued");
   const latest = done[0];
-  const previous = done[1];
+  // compare like with like: a run of one agent (or suite) against the previous run of the same scope
+  const scope = (r?: Run) => `${r?.params?.agent ?? ""}|${r?.suite ?? ""}`;
+  const previous = done.slice(1).find((r) => scope(r) === scope(latest));
+  const scoped = latest?.params?.agent ? ` (${latest.params.agent})` : latest?.suite ? ` (${latest.suite})` : "";
   const failing = (scenarios.data ?? []).filter((s) => s.latest && s.latest.passed < s.latest.n)
     .sort((a, b) => a.latest!.passed / a.latest!.n - b.latest!.passed / b.latest!.n);
   const trend = [...done].reverse().slice(-20).map((r) => ({
@@ -38,7 +43,7 @@ export default function OverviewPage() {
     <>
       <PageHeader
         title={project.project}
-        sub={`${nScenarios} scenarios · ${project.mcp_servers.length} MCP server${project.mcp_servers.length === 1 ? "" : "s"} · model ${project.model}`}
+        sub={`${nAgents} agent${nAgents === 1 ? "" : "s"} · ${nScenarios} scenarios · ${project.mcp_servers.length} MCP server${project.mcp_servers.length === 1 ? "" : "s"} · model ${project.model}`}
         actions={canWrite && <Button href="/dashboard/runs/?new=1"><IconPlus /> New run</Button>}
       />
 
@@ -46,14 +51,16 @@ export default function OverviewPage() {
       {latest && <LatestSummary run={latest} previous={previous} />}
 
       <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Pass rate · latest run" value={pct(latest?.pass_at_1)}
-          sub={previous && latest ? `${signedPts((latest.pass_at_1 ?? 0) - (previous.pass_at_1 ?? 0))} vs previous` : "first finished run"}
+        <Stat label={`Pass rate · latest run${scoped}`} value={pct(latest?.pass_at_1)}
+          sub={previous && latest ? `${signedPts((latest.pass_at_1 ?? 0) - (previous.pass_at_1 ?? 0))} vs previous` : scoped ? "first run of this scope" : "first finished run"}
           tone={latest?.pass_at_1 == null ? undefined : latest.pass_at_1 >= 0.9 ? "ok" : latest.pass_at_1 >= 0.6 ? "warn" : "bad"} />
         <Stat label={latest?.k === 1 ? "Scenarios passed · latest run" : `Reliability · all ${latest?.k ?? "k"} attempts pass`} value={pct(latest?.pass_pow_k)}
           sub={latest?.k === 1 ? "use 3+ attempts to measure reliability" : "share of scenarios that never fail"} />
         <Stat label="Scenarios failing" value={scenarios.data ? failing.length : "–"} sub={`of ${nScenarios} in the latest results`} tone={failing.length ? "bad" : "ok"} />
         <Stat label="Runs" value={all.length} sub={latest ? `last finished ${ago(latest.finished_at ?? latest.created_at)}` : "none finished yet"} />
       </div>
+
+      <AgentsPanel />
 
       <div className="mt-5 grid items-start gap-5 lg:grid-cols-[1.6fr_1fr]">
         <Card>
@@ -231,8 +238,9 @@ function Welcome({ nScenarios }: { nScenarios: number }) {
     <>
       <PageHeader
         title={`Welcome to AgentCrucible`}
-        sub={<>Your project <b className="text-fg">{project.project}</b> is loaded with {nScenarios} scenarios. Four steps to your first regression gate.</>}
+        sub={<>Your project <b className="text-fg">{project.project}</b> is loaded with {project.agents.length} agent{project.agents.length === 1 ? "" : "s"} and {nScenarios} scenarios. Four steps to your first regression gate.</>}
       />
+      <AgentsPanel welcome />
       <ol className="space-y-4">
         <WelcomeStep n={1} done={connected === true} title="Check the connection" sub="Model server, MCP servers and your agent must all be reachable.">
           {!doctor.data ? (
@@ -297,5 +305,57 @@ function Loading() {
     <div className="flex items-center justify-center gap-3 py-40 text-[13px] text-dim">
       <Spinner /> {slow ? "Still loading…" : "Loading…"}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ agents */
+
+function AgentsPanel({ welcome }: { welcome?: boolean }) {
+  const agents = useAgents();
+  const list = agents.data ?? [];
+  return (
+    <Card className={welcome ? "mb-5" : "mt-5"}>
+      <CardHeader
+        title={`Agents (${agents.data ? list.length : "…"})`}
+        sub={welcome ? "What this project tests. Run one agent's tests on its own, or everything at once below." : "How each agent did in the latest results of its tests"}
+        action={<div className="flex gap-1"><Button variant="ghost" href="/dashboard/add/"><IconPlus /> Add</Button><Button variant="ghost" href="/dashboard/agents/">All agents <IconArrow /></Button></div>}
+      />
+      {!agents.data ? (
+        <div className="flex items-center gap-2 px-5 py-6 text-[13px] text-dim"><Spinner /> Loading agents…</div>
+      ) : (
+        <ul className="divide-y divide-line/70">
+          {list.slice(0, 8).map((a) => {
+            const h = health(a);
+            const rate = a.episodes ? a.passed / a.episodes : null;
+            return (
+              <li key={a.name} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3">
+                <Link href={agentHref(a.name)} className="flex min-w-0 flex-1 basis-56 items-center gap-3 hover:text-ember">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-ember/12 text-ember"><IconAgents className="h-4 w-4" /></span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[13.5px] font-medium">{a.title}</span>
+                    <span className="block truncate text-[11.5px] text-dim">
+                      {a.scenarios} scenarios · {ORIGIN[a.origin].label}{a.framework ? ` · ${FRAMEWORK[a.framework] ?? a.framework}` : ""}
+                    </span>
+                  </span>
+                </Link>
+                <div className="flex items-center gap-3">
+                  <div className="hidden w-28 sm:block" title={rate == null ? "no results yet" : `${a.passed} of ${a.episodes} episodes passed`}>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-panel-2">
+                      {rate != null && <div className={`h-full rounded-full ${rate >= 0.9 ? "bg-ok" : rate >= 0.6 ? "bg-warn" : "bg-bad"}`} style={{ width: `${rate * 100}%` }} />}
+                    </div>
+                  </div>
+                  <span className="w-11 text-right font-mono text-[12px] text-mute">{pct(rate)}</span>
+                  <Badge tone={h.tone}>{h.label}</Badge>
+                  {a.scenarios > 0 && <RunAgentButton name={a.name} k={welcome ? 1 : 3} variant="ghost" label={welcome ? "Run once" : "Run 3×"} />}
+                </div>
+              </li>
+            );
+          })}
+          {list.length > 8 && (
+            <li className="px-5 py-3 text-[13px]"><Link href="/dashboard/agents/" className="text-ember">{list.length - 8} more agents →</Link></li>
+          )}
+        </ul>
+      )}
+    </Card>
   );
 }

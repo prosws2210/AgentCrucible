@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader, useProject } from "@/components/app/AppShell";
-import { IconCheck, IconGit, IconImport, IconRefresh, IconServer, IconShield, IconX } from "@/components/Icons";
+import { IconArrow, IconCheck, IconGit, IconImport, IconRefresh, IconServer, IconShield, IconX } from "@/components/Icons";
 import { Badge, Button, Card, CardHeader, Code, Empty, Spinner } from "@/components/ui";
 import { api, type DAgent, type Discovery, type DTool, type Effect, type ImportJob, type ImportPreview } from "@/lib/api";
 
@@ -56,7 +56,7 @@ function Import() {
     <>
       <PageHeader
         title="Import a codebase"
-        sub="Point AgentCrucible at a repository. It reads the code (without running it), finds the agents, tools and MCP servers, and drafts their tests. Nothing is written until you approve."
+        sub="Point AgentCrucible at a repository. It reads the code (without running it), finds every agent, tool and MCP server, and drafts their tests. Nothing is written until you approve; then the repository becomes a project in this dashboard with all its agents."
         actions={jobId ? <Button variant="secondary" onClick={() => router.push("/dashboard/import/")}><IconImport className="h-3.5 w-3.5" /> New import</Button> : undefined}
       />
       <Stepper step={step} />
@@ -795,8 +795,22 @@ function Results({ job }: { job: ImportJob }) {
   const r = job.result!;
   const rep = r.reality;
   const d = job.discovery!;
+  const { switchProject } = useProject();
+  const nAgents = r.validate.agents.length;
   return (
     <div className="space-y-5">
+      {r.project && (
+        <Card className="flex flex-wrap items-center justify-between gap-4 border-ember/40 bg-ember/[0.05] p-5">
+          <div className="min-w-0">
+            <div className="text-[15px] font-semibold">Your {nAgents} agent{nAgents === 1 ? " is" : "s are"} now a project in this dashboard</div>
+            <p className="mt-0.5 text-[13px] text-mute">Switch to it to see each agent, run its tests, and compare runs over time. Switch back any time from the sidebar.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={() => switchProject(r.project!, "/dashboard/agents/")}>See the agents</Button>
+            <Button onClick={() => switchProject(r.project!, "/dashboard/")}>Open the project <IconArrow className="h-3.5 w-3.5" /></Button>
+          </div>
+        </Card>
+      )}
       <Card className={`p-5 ${rep && !rep.ok ? "border-warn/40" : "border-ok/30"}`}>
         <div className="flex items-start gap-3">
           <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${rep && !rep.ok ? "bg-warn/15 text-warn" : "bg-ok/15 text-ok"}`}>
@@ -894,7 +908,8 @@ function Results({ job }: { job: ImportJob }) {
       )}
       <Card className="p-5">
         <div className="mb-3 text-[14px] font-semibold">Next</div>
-        <Code title="terminal" code={`cd ${r.out}\ncrucible run --label baseline -k 3      # a baseline to compare changes against\ncrucible serve                          # this dashboard, for these tests`} />
+        <p className="mb-3 text-[13px] text-mute">Run a baseline from <b className="text-fg">Runs</b> in the new project, or from the terminal:</p>
+        <Code title="terminal" code={`cd ${r.out}\ncrucible run --label baseline -k 3      # a baseline to compare changes against`} />
         <p className="mt-3 text-[12.5px] text-dim">
           <IconRefresh className="mr-1 inline h-3.5 w-3.5" />Keep it current in CI with <code className="font-mono">crucible discover . --check</code>: it fails when a new agent or a destructive tool has no tests.
         </p>

@@ -49,7 +49,25 @@ All notable changes to AgentCrucible. Versions follow [Semantic Versioning](http
     report, and the `prosws2210/AgentCrucible/discover` action posts it as a pull-request comment. Removed tools mark
     their scenarios stale.
 
+- **Projects and agents in the dashboard:**
+  - One server shows several projects (one `crucible.yaml` with any number of agents each): the one it was started in,
+    every approved import, and folders added by path. A switcher in the sidebar picks one; the list is kept in
+    `.crucible/projects.json`. Imports approved before this release are picked up from their saved jobs.
+  - **Agents** page and a page per agent: how it's connected (adapter, command, environment), what it uses (tools with
+    side effects, model, memory, sub-agents), its tests with their latest results, its own runs, and buttons to run
+    just its tests.
+  - **Add agents**: import a codebase, or add one agent by hand (Python function or framework object, TypeScript
+    export, web service, or stdio command) with its first test, to the current project or another codebase. It uses
+    the same planner and adapters as `discover`; re-imports keep agents added by hand. Agents can be removed again.
+  - Overview lists every agent with its pass rate; runs can target one agent (`POST /api/runs {agent}`) and compare
+    against the latest run of the same scope; scenarios and run results show which agent they belong to; Setup
+    checks every agent.
+  - `/start/` offers importing a codebase first, and setting up one agent by hand second.
+
 ### Fixed
+- An approved import didn't appear anywhere in the dashboard: it is now a project there.
+- Re-applying an import left the tests and adapters of removed agents or switched-off drafts on disk (unedited ones
+  are now deleted).
 - Re-scans no longer read the generated `agent-tests/` folder as part of the user's code.
 - Workspace copies skip virtualenvs and `node_modules`.
 
