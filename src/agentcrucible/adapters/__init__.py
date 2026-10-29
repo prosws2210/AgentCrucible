@@ -113,17 +113,22 @@ def as_text(reply: Any) -> str:
 
 
 def prepare(env_map: dict[str, str] | None = None, tool_modules: list[str] | None = None, tools: list[str] | None = None,
-            dispatch: dict[str, list[str]] | None = None, sys_path: list[str] | None = None) -> None:
+            dispatch: dict[str, list[str]] | None = None, sys_path: list[str] | None = None,
+            workspace: bool = False) -> None:
     """Call before importing the agent.
 
     env_map: your setting -> what to point it at: "db:<fixture>" (the episode's database as a URL), "dbpath:<fixture>"
              (as a file path), "http:<mock>" (an HTTP mock's base URL), "openai" / "anthropic" (the model gateway).
     tool_modules + tools: modules to import first and the tool names in them to wrap (traced, mockable, blockable).
     dispatch: {"app.agent": ["TOOLS"]}: name->function tables of a hand-written tool loop to wrap in place.
+    workspace: run in the episode's fresh copy of the repository (CRUCIBLE_WORKSPACE), so files the tools read or
+               write are the copy's. Code is still imported from where it is.
     """
     for p in sys_path or []:
-        if p not in sys.path:
-            sys.path.insert(0, p)
+        p = os.path.abspath(p)
+        if p in sys.path:  # ahead of the adapter's own folder, so `weather.agent` isn't adapters/weather.py
+            sys.path.remove(p)
+        sys.path.insert(0, p)
     apply_env_map(env_map or {})
     names = set(tools or [])
     for mod_name in tool_modules or []:
@@ -151,6 +156,8 @@ def prepare(env_map: dict[str, str] | None = None, tool_modules: list[str] | Non
                 for k, fn in list(d.items()):
                     if callable(fn):
                         d[k] = instrument(fn, str(k))
+    if workspace and os.environ.get("CRUCIBLE_WORKSPACE"):
+        os.chdir(os.environ["CRUCIBLE_WORKSPACE"])
 
 
 def apply_env_map(env_map: dict[str, str]) -> None:

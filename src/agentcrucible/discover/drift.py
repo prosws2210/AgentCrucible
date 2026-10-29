@@ -12,10 +12,14 @@ def coverage(d: Discovery) -> dict[str, Any]:
     texts = [s.yaml for s in d.scenarios if s.include]
     agents = [a for a in d.agents if a.include]
     tools = sorted({t for a in agents for t in a.tools})
-    tested_tools = [t for t in tools if any(f" {t}" in x or f": {t}\n" in x or f"tool: {t}" in x for x in texts)]
+    tested_tools = [t for t in tools if any(_mentions(x, t) for x in texts)]
     tested_agents = [a.id for a in agents if any(s.agent == a.id and s.include for s in d.scenarios)]
     return {"agents": len(agents), "agents_tested": len(tested_agents), "tools": len(tools), "tools_tested": len(tested_tools),
             "untested_tools": [t for t in tools if t not in tested_tools]}
+
+
+def _mentions(scenario_yaml: str, tool: str) -> bool:
+    return f" {tool}" in scenario_yaml or f": {tool}\n" in scenario_yaml or f"tool: {tool}" in scenario_yaml
 
 
 def check(approved: Discovery, fresh: Discovery) -> dict[str, Any]:
@@ -35,7 +39,8 @@ def check(approved: Discovery, fresh: Discovery) -> dict[str, Any]:
         "added_tools": added_tools,
         "removed_tools": [n for n in old_tools if n not in new_tools],
         "changed_effects": changed,
-        "stale_scenarios": [s.id for s in approved.scenarios if s.include and s.agent not in new_agents],
+        "stale_scenarios": [s.id for s in approved.scenarios if s.include and (
+            s.agent not in new_agents or any(_mentions(s.yaml, n) for n in old_tools if n not in new_tools))],
         "coverage": cov,
     }
     risky = [t for t in added_tools if "destructive" in t["effects"] and not t["tested"]]
@@ -59,6 +64,8 @@ def to_markdown(r: dict[str, Any]) -> str:
         lines.append(f"- Tool `{t}` was removed.")
     for c in r["changed_effects"]:
         lines.append(f"- Tool `{c['name']}` changed: {', '.join(c['before']) or 'unknown'} → {', '.join(c['after']) or 'unknown'}.")
+    if r["stale_scenarios"]:
+        lines.append(f"- Stale scenarios (their agent or tool is gone): {', '.join(f'`{s}`' for s in r['stale_scenarios'][:12])}.")
     cov = r["coverage"]
     lines += ["", f"Coverage: {cov['agents_tested']}/{cov['agents']} agents and {cov['tools_tested']}/{cov['tools']} tools have scenarios."]
     if r["fail"]:

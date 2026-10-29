@@ -389,10 +389,31 @@ def discover(
     check_drift: bool = typer.Option(False, "--check", help="CI: compare with the approved discovery.json; exit 1 on risky drift"),
     update: bool = typer.Option(False, "--update", help="Re-scan, keep your review, and draft tests for new parts"),
     as_json: bool = typer.Option(False, "--json", help="Print discovery.json instead of a summary"),
+    report: Optional[Path] = typer.Option(None, "--report", help="With --check: also write the markdown report here (for a PR comment)"),
+    use_draft: bool = typer.Option(False, "--use-draft", help="With --apply: apply agent-tests/discovery.draft.json as you "
+                                                              "edited it (toggles, answers, `accept: true` on code changes), without re-scanning"),
 ) -> None:
     """Find the agents, tools and MCP servers in a codebase and draft their tests (review, then --apply)."""
     from . import discover as disc
     from .discover.sources import clone, is_git_url
+
+    if use_draft:
+        root = Path(source).resolve()
+        draft_file = (out or root / disc.OUT_DIR).resolve() / "discovery.draft.json"
+        if not draft_file.exists():
+            console.print(f"[red]No draft at {draft_file}. Run `crucible discover {source}` first.[/]")
+            raise typer.Exit(2)
+        d = disc.load(draft_file)
+        for s in d.scenarios:  # whatever is in the file is the reviewer's version
+            s.edited = True
+        disc.build_plan(d, root)  # re-plan for their toggles and answers; keeps their scenarios and accepted changes
+        _print_discovery(d)
+        if not yes and not typer.confirm(f"Write the reviewed draft to {draft_file.parent} and smoke-run it?", default=True):
+            raise typer.Exit(1)
+        result = disc.apply(d, root, draft_file.parent, model=model, smoke=smoke, progress=lambda m: console.print(f"[dim]·[/] {m}"))
+        _print_reality(result)
+        console.print(f"\nDone. Next: [bold]cd {draft_file.parent} && crucible run --label baseline -k 3[/]")
+        return
 
     origin = None
     if is_git_url(source):
@@ -415,6 +436,9 @@ def discover(
             console.print(f"[red]No approved map at {approved_file}. Run `crucible discover {source} --apply` first.[/]")
             raise typer.Exit(2)
         rep = disc.check(disc.load(approved_file), d)
+        if report:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("<!-- crucible-discover -->\n" + rep["markdown"] + "\n", encoding="utf-8")
         if as_json:
             console.print_json(json.dumps({k: v for k, v in rep.items() if k != "markdown"}))
         else:
@@ -441,13 +465,22 @@ def discover(
     if not yes and not typer.confirm(f"Write the test project to {out_dir} and smoke-run it?", default=True):
         raise typer.Exit(1)
     result = disc.apply(d, root, out_dir, model=model, smoke=smoke, progress=lambda m: console.print(f"[dim]·[/] {m}"))
-    rep = result.get("reality")
-    if rep:
-        console.print(f"\n[bold]Discovery vs reality[/]: {rep['passed']}/{rep['episodes']} smoke episodes passed, "
-                      f"{rep['errors']} errors, {len(rep['findings'])} findings")
-        for f in rep["findings"][:20]:
-            console.print(f"  [yellow]{f['kind']}[/] {f.get('agent', '')} {f.get('tool', '')}: {f['detail']}  [dim]{f['action']}[/]")
+    _print_reality(result)
     console.print(f"\nDone. Next: [bold]cd {out_dir} && crucible run --label baseline -k 3[/]")
+
+
+def _print_reality(result: dict) -> None:
+    rep = result.get("reality")
+    if not rep:
+        return
+    console.print(f"\n[bold]Discovery vs reality[/]: {rep['passed']}/{rep['episodes']} smoke episodes passed, "
+                  f"{rep['errors']} errors, {len(rep['findings'])} findings")
+    for f in rep["findings"][:20]:
+        console.print(f"  [yellow]{f['kind']}[/] {f.get('agent', '')} {f.get('tool', '')}: {f['detail']}  [dim]{f['action']}[/]")
+    for s in rep.get("scenarios", []):
+        if not s["passed"]:
+            why = "; ".join(f"{c['check']}: {c['detail']}" for c in s["failed"]) or s.get("error") or ""
+            console.print(f"  [red]✗[/] {s['scenario']}  [dim]{why[:200]}[/]")
 
 
 def _print_discovery(d) -> None:  # noqa: ANN001

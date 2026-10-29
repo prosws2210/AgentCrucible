@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader, useProject } from "@/components/app/AppShell";
 import { IconCheck, IconGit, IconImport, IconRefresh, IconServer, IconShield, IconX } from "@/components/Icons";
 import { Badge, Button, Card, CardHeader, Code, Empty, Spinner } from "@/components/ui";
-import { api, type DAgent, type Discovery, type DTool, type Effect, type ImportJob } from "@/lib/api";
+import { api, type DAgent, type Discovery, type DTool, type Effect, type ImportJob, type ImportPreview } from "@/lib/api";
 
 const EFFECTS: Effect[] = ["read-only", "writes data", "destructive", "external call", "reads untrusted text"];
 const EFFECT_TONE: Record<Effect, "ok" | "warn" | "bad" | "info" | "ember"> = {
@@ -97,13 +97,46 @@ function Connect({ onStarted }: { onStarted: (id: string) => void }) {
   const [git, setGit] = useState("");
   const [include, setInclude] = useState("");
   const [useLlm, setUseLlm] = useState(true);
+  const [llmUrl, setLlmUrl] = useState("");
+  const [llmModel, setLlmModel] = useState("");
   const [roots, setRoots] = useState<{ roots: string[]; suggestions: string[] } | null>(null);
+  const [previewed, setPreviewed] = useState<{ key: string; data: ImportPreview | null } | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api<{ roots: string[]; suggestions: string[] }>("/api/discover/roots").then(setRoots).catch(() => setRoots({ roots: [], suggestions: [] }));
   }, []);
+
+  const includes = useMemo(() => include.split(",").map((s) => s.trim()).filter(Boolean), [include]);
+  const llm = { use_llm: useLlm, ...(llmUrl.trim() ? { llm_url: llmUrl.trim() } : {}), ...(llmModel.trim() ? { llm_model: llmModel.trim() } : {}) };
+  const llmKey = JSON.stringify(llm);
+  const previewKey = JSON.stringify([path.trim(), includes, llmKey]);
+  // a preview is shown only while it still answers the current inputs
+  const preview = previewed?.key === previewKey ? previewed.data : null;
+  // what a scan would read and skip, and which model would see the snippets: before anything is read
+  useEffect(() => {
+    if (mode !== "path" || !path.trim()) return;
+    let live = true;
+    const t = setTimeout(async () => {
+      setPreviewing(true);
+      try {
+        const p = await api<ImportPreview>("/api/discover/preview", {
+          method: "POST", body: JSON.stringify({ path: path.trim(), include: includes, ...JSON.parse(llmKey) }),
+        });
+        if (live) setPreviewed({ key: previewKey, data: p });
+      } catch {
+        if (live) setPreviewed({ key: previewKey, data: null });
+      } finally {
+        if (live) setPreviewing(false);
+      }
+    }, 450);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [mode, path, includes, llmKey, previewKey]);
 
   async function start() {
     setBusy(true);
@@ -112,7 +145,7 @@ function Connect({ onStarted }: { onStarted: (id: string) => void }) {
       const body = mode === "path" ? { path: path.trim() } : { git_url: git.trim() };
       const j = await api<ImportJob>("/api/discover", {
         method: "POST",
-        body: JSON.stringify({ ...body, use_llm: useLlm, include: include.split(",").map((s) => s.trim()).filter(Boolean) }),
+        body: JSON.stringify({ ...body, ...llm, include: includes }),
       });
       onStarted(j.id);
     } catch (e) {
@@ -160,10 +193,44 @@ function Connect({ onStarted }: { onStarted: (id: string) => void }) {
             </div>
             <label className="flex items-center gap-2 text-[13px]">
               <input type="checkbox" checked={useLlm} onChange={(e) => setUseLlm(e.target.checked)} className="accent-[#e8592a]" />
-              Let the local model write one-line descriptions and extra questions
+              Let a model write one-line descriptions and extra questions
             </label>
+            {useLlm && (
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px]">
+                <div>
+                  <label htmlFor="import-llm-url" className="block text-[12.5px] text-mute">Model server (empty: the local one)</label>
+                  <input id="import-llm-url" value={llmUrl} onChange={(e) => setLlmUrl(e.target.value)} placeholder="https://openrouter.ai/api/v1"
+                    className="mt-1 w-full rounded-lg border border-line bg-panel-2 px-3 py-2 font-mono text-[12.5px] outline-none focus:border-ember/70" />
+                </div>
+                <div>
+                  <label htmlFor="import-llm-model" className="block text-[12.5px] text-mute">Model</label>
+                  <input id="import-llm-model" value={llmModel} onChange={(e) => setLlmModel(e.target.value)} placeholder="auto"
+                    className="mt-1 w-full rounded-lg border border-line bg-panel-2 px-3 py-2 font-mono text-[12.5px] outline-none focus:border-ember/70" />
+                </div>
+                <p className="text-[12px] text-dim sm:col-span-2">A hosted server uses the key in <code className="font-mono">CRUCIBLE_LLM_API_KEY</code>. Only redacted snippets are sent; the review lists every one.</p>
+              </div>
+            )}
           </div>
         </details>
+        {mode === "path" && path.trim() && (
+          <div className="mt-4 rounded-lg border border-line bg-panel-2/40 p-3.5 text-[12.5px]" aria-live="polite">
+            {!preview && (previewing || previewed?.key !== previewKey) ? <span className="flex items-center gap-2 text-dim"><Spinner /> Checking the folder…</span> : preview ? (
+              <>
+                <div className="font-medium text-fg">
+                  Will read {preview.files} files{Object.keys(preview.languages).length > 0 && ": "}
+                  <span className="font-normal text-mute">{Object.entries(preview.languages).map(([l, n]) => `${n} ${l}`).join(", ")}</span>
+                </div>
+                <div className="mt-1 text-mute">
+                  Skips {[...Object.entries(preview.skipped).map(([why, n]) => `${n} ${why}`), ...(preview.secrets_skipped ? [`${preview.secrets_skipped} secret files (.env, keys)`] : [])].join(" · ") || "nothing"}
+                </div>
+                <div className={`mt-1 ${preview.hosted ? "text-warn" : "text-mute"}`}>
+                  {preview.model ? <>Descriptions by <code className="font-mono">{preview.model.model}</code> at <code className="font-mono">{preview.model.url}</code>{preview.hosted ? " (hosted: redacted snippets leave this machine)" : " (local)"}</>
+                    : useLlm ? "No model server answered: descriptions will come from the code only." : "No model: descriptions come from the code only."}
+                </div>
+              </>
+            ) : <span className="text-dim">Can&apos;t preview this folder.</span>}
+          </div>
+        )}
         {error && <p role="alert" className="mt-4 text-[13px] text-bad">{error}</p>}
         <div className="mt-5">
           <Button onClick={start} disabled={!value.trim() || busy || !canWrite} title={canWrite ? undefined : "Read-only access"}>
@@ -218,16 +285,34 @@ function Review({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =>
   const d = job.discovery as Discovery;
   const { canWrite } = useProject();
   const [tab, setTab] = useState<Tab>("map");
+  const [focus, setFocus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function patch(body: Record<string, unknown>) {
+  // the system map's nodes open their card on the matching tab
+  function openCard(t: Tab, id: string) {
+    setTab(t);
+    setFocus(id);
+  }
+  useEffect(() => {
+    if (!focus) return;
+    const el = document.getElementById(focus);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.add("ring-2", "ring-ember/60");
+    const t = setTimeout(() => el.classList.remove("ring-2", "ring-ember/60"), 1600);
+    return () => clearTimeout(t);
+  }, [focus, tab]);
+
+  async function patch(body: Record<string, unknown>): Promise<boolean> {
     setSaving(true);
     setError(null);
     try {
       onChange(await api<ImportJob>(`/api/discover/${job.id}`, { method: "PATCH", body: JSON.stringify(body) }));
+      return true;
     } catch (e) {
       setError((e as Error).message);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -257,7 +342,8 @@ function Review({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =>
         <Summary label="Agents to test" value={included.length} sub={`${d.agents.length} found · ${d.repo.frameworks.join(", ") || "no framework"}`} />
         <Summary label="Tools" value={d.tools.length} sub={`${d.tools.filter((t) => t.effects.includes("destructive")).length} destructive (mocked by default)`} />
         <Summary label="Open questions" value={open.length} sub={open.length ? "answer what you can" : "nothing to clarify"} tone={open.length ? "warn" : "ok"} />
-        <Summary label="Draft tests" value={scenarios.length} sub={`${d.repo.files_scanned} files read · ${d.repo.files_skipped} skipped`} />
+        <Summary label="Draft tests" value={scenarios.length}
+          sub={`${coverage(d).tested.length}/${coverage(d).tools.length} tools covered · ${d.repo.files_scanned} files read`} />
       </div>
       <div className="mb-4 flex gap-1 overflow-x-auto border-b border-line [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {tabs.map(([k, label, n]) => (
@@ -267,12 +353,12 @@ function Review({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =>
           </button>
         ))}
       </div>
-      {error && <p className="mb-3 text-[13px] text-bad">{error}</p>}
-      {tab === "map" && <SystemMap d={d} />}
+      {error && <p role="alert" className="mb-3 text-[13px] text-bad">{error}</p>}
+      {tab === "map" && <><SystemMap d={d} open={openCard} /><Synthesis d={d} /></>}
       {tab === "agents" && <Agents d={d} patch={patch} disabled={!canWrite || saving} />}
       {tab === "tools" && <Tools d={d} patch={patch} disabled={!canWrite || saving} />}
       {tab === "questions" && <Questions d={d} patch={patch} disabled={!canWrite || saving} />}
-      {tab === "connection" && <Connection d={d} />}
+      {tab === "connection" && <Connection d={d} patch={patch} disabled={!canWrite || saving} />}
       {tab === "tests" && <Tests d={d} patch={patch} disabled={!canWrite || saving} />}
       <div className="sticky bottom-0 mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-ink/90 px-4 py-3 backdrop-blur">
         <div className="text-[13px] text-mute">
@@ -322,23 +408,61 @@ function Evidence({ d, ids }: { d: Discovery; ids: string[] }) {
   );
 }
 
-function SystemMap({ d }: { d: Discovery }) {
+function Synthesis({ d }: { d: Discovery }) {
+  const s = d.synthesis;
+  if (!s.used && !s.error) return null;
+  return (
+    <Card className="mt-4 p-4 text-[12.5px] text-mute">
+      {s.error ? <>The model step was skipped ({s.error}); everything above comes from the code alone.</> : (
+        <details>
+          <summary className="cursor-pointer">
+            Descriptions by <code className="font-mono text-fg">{s.model}</code>{s.base_url && <> at <code className="font-mono">{s.base_url}</code></>}:
+            {" "}{s.sent?.length ?? 0} redacted snippets sent in {s.requests ?? 1} request{(s.requests ?? 1) === 1 ? "" : "s"}
+            {s.cached ? `, ${s.cached} answered from the cache` : ""}. Show what was sent
+          </summary>
+          <ul className="mt-2 max-h-48 space-y-0.5 overflow-auto font-mono text-[11.5px] text-dim">
+            {(s.sent ?? []).map((x) => <li key={`${x.fact}${x.file}${x.line}`}>{x.file}:{x.line}</li>)}
+          </ul>
+        </details>
+      )}
+    </Card>
+  );
+}
+
+function SystemMap({ d, open }: { d: Discovery; open: (t: Tab, id: string) => void }) {
   const agents = d.agents.filter((a) => a.include);
   if (!agents.length) return <Card><Empty icon={<IconImport />} title="No agents selected">Include an agent on the Agents tab.</Empty></Card>;
+  const services = [...new Set(agents.map((a) => a.service ?? ""))];
   return (
     <div className="space-y-4">
-      {agents.map((a) => {
-        const subs = a.subagents.map((s) => d.agents.find((x) => x.id === s)).filter(Boolean) as DAgent[];
-        const tools = [...a.tools, ...subs.flatMap((s) => s.tools)].map((n) => d.tools.find((t) => t.name === n)).filter(Boolean) as DTool[];
-        return (
-          <Card key={a.id} className="p-5">
+      {services.map((svc) => (
+        <div key={svc || "root"} className="space-y-4">
+          {svc && <div className="pt-1 font-mono text-[12px] uppercase tracking-[0.12em] text-dim">{svc}</div>}
+          {agents.filter((a) => (a.service ?? "") === svc).map((a) => <MapRow key={a.id} d={d} a={a} open={open} />)}
+        </div>
+      ))}
+      <p className="text-[12px] text-dim">Click an agent or a tool to open its card.</p>
+      <div className="flex flex-wrap gap-3 text-[11.5px] text-dim">
+        {(Object.keys(EFFECT_TONE) as Effect[]).map((e) => <span key={e} className="flex items-center gap-1.5"><Badge tone={EFFECT_TONE[e]}>{e}</Badge></span>)}
+      </div>
+    </div>
+  );
+}
+
+function MapRow({ d, a, open }: { d: Discovery; a: DAgent; open: (t: Tab, id: string) => void }) {
+  const subs = a.subagents.map((s) => d.agents.find((x) => x.id === s)).filter(Boolean) as DAgent[];
+  const tools = [...a.tools, ...subs.flatMap((s) => s.tools)].map((n) => d.tools.find((t) => t.name === n)).filter(Boolean) as DTool[];
+  return (
+          <Card className="p-5">
             <div className="grid gap-4 lg:grid-cols-[230px_minmax(0,1fr)_200px] lg:items-start">
-              <div className="rounded-xl border border-ember/50 bg-ember/[0.07] p-3">
+              <button type="button" onClick={() => open("agents", `agent-${a.id}`)}
+                className="rounded-xl border border-ember/50 bg-ember/[0.07] p-3 text-left transition-colors hover:bg-ember/[0.12]">
                 <div className="text-[14px] font-semibold">{a.name}</div>
                 <div className="mt-0.5 text-[12px] text-mute">{a.framework} · {a.entrypoint.kind === "http" ? a.entrypoint.route : a.entrypoint.object ?? a.entrypoint.command ?? "start: ?"}</div>
                 {a.purpose && <p className="mt-2 text-[12.5px] leading-snug text-fg/85">{a.purpose}</p>}
                 {subs.length > 0 && <div className="mt-2 text-[12px] text-mute">hands work to {subs.map((s) => s.name).join(", ")}</div>}
-              </div>
+                {a.memory && <div className="mt-1 text-[12px] text-mute">remembers via {a.memory}</div>}
+              </button>
               <div className="min-w-0">
                 <div className="mb-1.5 text-[11px] uppercase tracking-[0.12em] text-dim">Tools</div>
                 <div className="flex flex-wrap gap-1.5">
@@ -346,10 +470,10 @@ function SystemMap({ d }: { d: Discovery }) {
                     const worst = (["destructive", "writes data", "reads untrusted text", "external call", "read-only"] as Effect[]).find((e) => t.effects.includes(e));
                     const tone = worst ? EFFECT_TONE[worst] : "mute";
                     return (
-                      <span key={t.name} title={t.effects.join(", ") || "effects unknown"}
-                        className={`rounded-lg border px-2 py-1 font-mono text-[11.5px] ${tone === "bad" ? "border-bad/50 text-bad" : tone === "warn" ? "border-warn/50 text-warn" : tone === "ember" ? "border-ember/50 text-ember" : tone === "info" ? "border-info/40 text-info" : "border-line text-mute"}`}>
+                      <button type="button" key={t.name} title={t.effects.join(", ") || "effects unknown"} onClick={() => open("tools", `tool-${t.name}`)}
+                        className={`rounded-lg border px-2 py-1 font-mono text-[11.5px] hover:bg-white/[0.04] ${tone === "bad" ? "border-bad/50 text-bad" : tone === "warn" ? "border-warn/50 text-warn" : tone === "ember" ? "border-ember/50 text-ember" : tone === "info" ? "border-info/40 text-info" : "border-line text-mute"}`}>
                         {t.server ? `${t.server}/` : ""}{t.name}
-                      </span>
+                      </button>
                     );
                   })}
                   {!tools.length && <span className="text-[12.5px] text-dim">no tools</span>}
@@ -359,19 +483,13 @@ function SystemMap({ d }: { d: Discovery }) {
                 <div className="mb-1.5 text-[11px] uppercase tracking-[0.12em] text-dim">Touches</div>
                 <ul className="space-y-1 text-[12.5px]">
                   {a.datastores.map((s) => <li key={s} className="flex items-center gap-1.5"><IconServer className="h-3.5 w-3.5 text-dim" /> database <code className="font-mono">{s}</code></li>)}
-                  {a.external_apis.map((s) => <li key={s} className="flex items-center gap-1.5"><IconGit className="h-3.5 w-3.5 text-dim" /> API <code className="font-mono">{s}</code></li>)}
+                  {a.external_apis.map((s) => <li key={s} className="flex items-center gap-1.5"><IconGit className="h-3.5 w-3.5 text-dim" /> {d.external_apis.find((x) => x.id === s)?.kind === "queue" ? "queue" : "API"} <code className="font-mono">{s}</code></li>)}
                   {a.mcp_servers.map((s) => <li key={s} className="flex items-center gap-1.5"><IconServer className="h-3.5 w-3.5 text-dim" /> MCP <code className="font-mono">{s}</code></li>)}
                   {!a.datastores.length && !a.external_apis.length && !a.mcp_servers.length && <li className="text-dim">nothing outside the process</li>}
                 </ul>
               </div>
             </div>
           </Card>
-        );
-      })}
-      <div className="flex flex-wrap gap-3 text-[11.5px] text-dim">
-        {(Object.keys(EFFECT_TONE) as Effect[]).map((e) => <span key={e} className="flex items-center gap-1.5"><Badge tone={EFFECT_TONE[e]}>{e}</Badge></span>)}
-      </div>
-    </div>
   );
 }
 
@@ -379,7 +497,7 @@ function Agents({ d, patch, disabled }: { d: Discovery; patch: (b: Record<string
   return (
     <div className="space-y-3">
       {d.agents.map((a) => (
-        <Card key={a.id} className={`p-5 ${a.include ? "" : "opacity-70"}`}>
+        <Card key={a.id} id={`agent-${a.id}`} className={`p-5 transition-shadow ${a.include ? "" : "opacity-70"}`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <input aria-label={`Name of ${a.id}`} defaultValue={a.name} disabled={disabled}
@@ -403,6 +521,11 @@ function Agents({ d, patch, disabled }: { d: Discovery; patch: (b: Record<string
             <Row k="Model">{a.model.value ?? (a.model.env ? `$${a.model.env}` : <span className="text-dim">not found (tests force one anyway)</span>)}</Row>
             <Row k="System prompt">{a.system_prompt.file ?? (a.system_prompt.text ? `“${a.system_prompt.text.slice(0, 70)}…”` : <span className="text-dim">not found</span>)}</Row>
             <Row k="Tools">{a.tools.length ? a.tools.join(", ") : <span className="text-dim">none</span>}</Row>
+            {a.subagents.length > 0 && <Row k="Hands work to">{a.subagents.map((s) => d.agents.find((x) => x.id === s)?.name ?? s).join(", ")}</Row>}
+            {a.mcp_servers.length > 0 && <Row k="MCP servers">{a.mcp_servers.join(", ")}</Row>}
+            <Row k="Memory / state">{a.memory ?? <span className="text-dim">none found (each conversation starts fresh)</span>}</Row>
+            {(a.datastores.length > 0 || a.external_apis.length > 0) && <Row k="Touches">{[...a.datastores.map((s) => `database ${s}`), ...a.external_apis].join(", ")}</Row>}
+            {a.service && <Row k="Service">{a.service}</Row>}
           </dl>
           {a.notes.map((n) => <p key={n} className="mt-2 text-[12.5px] text-mute">• <Ticks text={n} /></p>)}
           <Evidence d={d} ids={a.evidence} />
@@ -432,7 +555,7 @@ function Tools({ d, patch, disabled }: { d: Discovery; patch: (b: Record<string,
       <CardHeader title="Tools" sub="Click a badge to correct what a tool does. Destructive tools are mocked in the drafted tests until you change that." />
       <ul className="divide-y divide-line/70">
         {d.tools.map((t) => (
-          <li key={t.name} className="px-5 py-3.5">
+          <li key={t.name} id={`tool-${t.name}`} className="scroll-mt-24 rounded-lg px-5 py-3.5 transition-shadow">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="min-w-0">
                 <span className="font-mono text-[13.5px] font-semibold">{t.name}</span>
@@ -452,6 +575,26 @@ function Tools({ d, patch, disabled }: { d: Discovery; patch: (b: Record<string,
               </div>
             </div>
             {t.description && <p className="mt-1 text-[13px] text-mute">{t.description}</p>}
+            <dl className="mt-2 grid gap-x-6 gap-y-1 text-[12px] sm:grid-cols-2">
+              <Row k="Inputs">{Object.keys(t.params).length ? <code className="font-mono">{Object.entries(t.params).map(([p, ty]) => `${p}: ${ty}`).join(", ")}</code> : <span className="text-dim">none found</span>}</Row>
+              {t.touches.length > 0 && <Row k="Touches">{t.touches.map((x) => x.replace(":", " ")).join(", ")}</Row>}
+              {t.sql_writes.length > 0 && <Row k="Writes"><code className="font-mono">{t.sql_writes.join("; ")}</code></Row>}
+              {t.files.length > 0 && <Row k="Files">{t.files.join(" and ")} (tests run in a fresh copy of the repository)</Row>}
+            </dl>
+            {(t.effects.includes("destructive") || t.effects.includes("writes data")) && t.kind !== "builtin" && (() => {
+              const mocked = t.mock ?? t.effects.includes("destructive");
+              return (
+                <label className="mt-2 flex items-start gap-2 text-[12.5px]">
+                  <input type="checkbox" checked={mocked} disabled={disabled} className="mt-0.5 accent-[#e8592a]"
+                    onChange={(e) => patch({ tools: { [t.name]: { mock: e.target.checked } } })} />
+                  <span>
+                    Mock it in tests <span className="text-dim">
+                      {mocked ? "(a canned reply; nothing real changes)" : "(it runs against the test fixtures; drafts check what changed)"}
+                    </span>
+                  </span>
+                </label>
+              );
+            })()}
             <Evidence d={d} ids={t.evidence} />
           </li>
         ))}
@@ -476,7 +619,7 @@ function Questions({ d, patch, disabled }: { d: Discovery; patch: (b: Record<str
               {q.answer ? <IconCheck className="h-3.5 w-3.5" /> : "?"}
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-[14px] font-medium">{q.text}</p>
+              <p className="text-[14px] font-medium"><Ticks text={q.text} /></p>
               {q.answer && <p className="mt-1 text-[13px] text-ok">Answered: {q.answer}</p>}
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 {q.options.map((o) => (
@@ -501,7 +644,21 @@ function Questions({ d, patch, disabled }: { d: Discovery; patch: (b: Record<str
   );
 }
 
-function Connection({ d }: { d: Discovery }) {
+function Diff({ title, removed, added, note }: { title: string; removed: string[]; added: string[]; note?: string }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-line bg-panel-2/60">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2 font-mono text-[11.5px] text-dim">
+        <span className="break-all">{title}</span>{note && <span>{note}</span>}
+      </div>
+      <pre className="code max-h-96 overflow-auto px-4 py-3 text-[12px]">
+        {removed.map((l, i) => <div key={`r${i}`} className="whitespace-pre-wrap break-words text-bad"><span className="select-none text-bad/70">- </span>{l}</div>)}
+        {added.map((l, i) => <div key={`a${i}`} className="whitespace-pre-wrap break-words text-ok"><span className="select-none text-ok/70">+ </span>{l}</div>)}
+      </pre>
+    </div>
+  );
+}
+
+function Connection({ d, patch, disabled }: { d: Discovery; patch: (b: Record<string, unknown>) => Promise<boolean>; disabled: boolean }) {
   if (!d.plans.length) return <Card><Empty icon={<IconServer />} title="No agents selected">Include an agent on the Agents tab.</Empty></Card>;
   return (
     <div className="space-y-4">
@@ -524,7 +681,26 @@ function Connection({ d }: { d: Discovery }) {
               <Row k="Settings it reads">{p.env_needed.length ? p.env_needed.join(", ") : <span className="text-dim">none found</span>}</Row>
               {Object.entries(p.env_map).map(([k, v]) => <Row key={k} k={k}><span className="text-mute">→ </span><code className="font-mono">{v}</code></Row>)}
             </dl>
-            {p.adapter_code && <div className="mt-3"><Code title={p.adapter_file ?? "adapter"} code={p.adapter_code} /></div>}
+            {p.fixes.length > 0 && (
+              <div className="mt-4 space-y-3">
+                <div className="text-[13px] font-medium">Suggested change to your code <span className="font-normal text-dim">(applied only if you accept it)</span></div>
+                {p.fixes.map((fx) => (
+                  <div key={fx.id} className="space-y-2">
+                    <Diff title={`${fx.file}:${fx.line}`} removed={[fx.old]} added={[...(fx.add_import ? [`${fx.add_import}   # at the top of the file`] : []), fx.new]} />
+                    <label className="flex items-start gap-2 text-[12.5px]">
+                      <input type="checkbox" checked={fx.accept} disabled={disabled} className="mt-0.5 accent-[#e8592a]"
+                        onChange={(e) => patch({ fixes: { [fx.id]: e.target.checked } })} />
+                      <span>Apply this change when I approve. <span className="text-dim">{fx.why}</span></span>
+                    </label>
+                  </div>
+                ))}
+              </div>
+            )}
+            {p.adapter_code && (
+              <div className="mt-4">
+                <Diff title={p.adapter_file ?? "adapter"} note="new file" removed={[]} added={p.adapter_code.replace(/\n$/, "").split("\n")} />
+              </div>
+            )}
           </Card>
         );
       })}
@@ -532,14 +708,34 @@ function Connection({ d }: { d: Discovery }) {
   );
 }
 
-function Tests({ d, patch, disabled }: { d: Discovery; patch: (b: Record<string, unknown>) => void; disabled: boolean }) {
+/** Tools of the included agents that at least one included draft mentions (same rule as `crucible discover --check`). */
+function coverage(d: Discovery) {
+  const texts = d.scenarios.filter((s) => s.include).map((s) => s.yaml);
+  const tools = [...new Set(d.agents.filter((a) => a.include).flatMap((a) => a.tools))];
+  const tested = tools.filter((t) => texts.some((x) => x.includes(` ${t}`) || x.includes(`: ${t}\n`) || x.includes(`tool: ${t}`)));
+  return { tools, tested, untested: tools.filter((t) => !tested.includes(t)) };
+}
+
+function Tests({ d, patch, disabled }: { d: Discovery; patch: (b: Record<string, unknown>) => Promise<boolean>; disabled: boolean }) {
   const byAgent = useMemo(() => {
     const m: Record<string, typeof d.scenarios> = {};
     for (const s of d.scenarios) (m[s.agent] ??= []).push(s);
     return m;
   }, [d]);
+  const cov = coverage(d);
+  const pct = cov.tools.length ? Math.round((cov.tested.length / cov.tools.length) * 100) : 100;
   return (
     <div className="space-y-5">
+      <Card className="p-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-2 text-[13px]">
+          <span className="font-medium">Coverage: {cov.tested.length} of {cov.tools.length} tools have at least one test</span>
+          <span className="font-mono text-[12px] text-dim">{pct}%</span>
+        </div>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/[0.06]" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Tool coverage">
+          <div className={`h-full rounded-full ${pct === 100 ? "bg-ok" : "bg-warn"}`} style={{ width: `${pct}%` }} />
+        </div>
+        {cov.untested.length > 0 && <p className="mt-2 text-[12.5px] text-mute">No test yet: {cov.untested.map((t) => <code key={t} className="mr-1.5 font-mono">{t}</code>)}</p>}
+      </Card>
       {Object.entries(byAgent).map(([agent, list]) => (
         <Card key={agent}>
           <CardHeader title={d.agents.find((a) => a.id === agent)?.name ?? agent} sub={`${list.filter((s) => s.include).length} of ${list.length} drafts included`} />
@@ -550,12 +746,9 @@ function Tests({ d, patch, disabled }: { d: Discovery; patch: (b: Record<string,
                   <input type="checkbox" aria-label={`Include ${s.id}`} checked={s.include} disabled={disabled}
                     onChange={(e) => patch({ scenarios: { [s.id]: { include: e.target.checked } } })} className="mt-1 accent-[#e8592a]" />
                   <div className="min-w-0 flex-1">
-                    <div className="font-mono text-[13px]">{s.id}</div>
+                    <div className="flex flex-wrap items-center gap-2 font-mono text-[13px]">{s.id}{s.edited && <Badge tone="info">edited</Badge>}</div>
                     <p className="text-[12.5px] text-mute"><Ticks text={s.reason} /></p>
-                    <details className="mt-1.5">
-                      <summary className="cursor-pointer text-[12px] text-dim hover:text-fg">YAML</summary>
-                      <div className="mt-2"><Code title={`scenarios/${agent}/${s.id}.yaml`} code={s.yaml} small /></div>
-                    </details>
+                    <ScenarioYaml agent={agent} s={s} patch={patch} disabled={disabled} />
                   </div>
                 </div>
               </li>
@@ -564,6 +757,35 @@ function Tests({ d, patch, disabled }: { d: Discovery; patch: (b: Record<string,
         </Card>
       ))}
     </div>
+  );
+}
+
+function ScenarioYaml({ agent, s, patch, disabled }: {
+  agent: string; s: Discovery["scenarios"][number]; patch: (b: Record<string, unknown>) => Promise<boolean>; disabled: boolean;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <details className="mt-1.5">
+      <summary className="cursor-pointer text-[12px] text-dim hover:text-fg">YAML</summary>
+      {draft === null ? (
+        <div className="mt-2 space-y-2">
+          <Code title={`scenarios/${agent}/${s.id}.yaml`} code={s.yaml} small />
+          <Button variant="secondary" disabled={disabled} onClick={() => setDraft(s.yaml)}>Edit</Button>
+        </div>
+      ) : (
+        <div className="mt-2 space-y-2">
+          <textarea aria-label={`YAML of ${s.id}`} value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false}
+            rows={Math.min(24, draft.split("\n").length + 1)}
+            className="w-full resize-y rounded-lg border border-line bg-panel-2 px-3 py-2 font-mono text-[12px] outline-none focus:border-ember/60" />
+          <div className="flex flex-wrap gap-2">
+            <Button disabled={disabled || draft === s.yaml} onClick={async () => {
+              if (await patch({ scenarios: { [s.id]: { yaml: draft } } })) setDraft(null);
+            }}>Save</Button>
+            <Button variant="secondary" onClick={() => setDraft(null)}>Cancel</Button>
+          </div>
+        </div>
+      )}
+    </details>
   );
 }
 
@@ -592,6 +814,23 @@ function Results({ job }: { job: ImportJob }) {
           </div>
         </div>
       </Card>
+      {(r.connection || (r.code_changes && r.code_changes.length > 0)) && (
+        <Card>
+          <CardHeader title="Before the smoke run" sub="Connection check: the model server, every MCP server and every agent's start command." />
+          <ul className="divide-y divide-line/70 text-[13px]">
+            {(r.code_changes ?? []).map((c) => (
+              <li key={c} className="flex flex-wrap items-center gap-2 px-5 py-2.5"><Badge tone="info">code change</Badge> applied at <code className="font-mono text-[12.5px]">{c}</code></li>
+            ))}
+            {(r.connection ?? []).map((c) => (
+              <li key={c.id} className="flex flex-wrap items-start gap-2 px-5 py-2.5">
+                <Badge tone={c.ok ? "ok" : "bad"}>{c.ok ? "ok" : "failed"}</Badge>
+                <span className="font-mono text-[12.5px]">{c.id}</span>
+                <span className="min-w-0 break-words text-mute"><Ticks text={c.detail} /></span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
       {rep && (
         <div className="grid gap-5 lg:grid-cols-2">
           <Card>
@@ -601,7 +840,8 @@ function Results({ job }: { job: ImportJob }) {
                 const seen = rep.observed_tools[a.id] ?? {};
                 return (
                   <li key={a.id} className="px-5 py-3 text-[13px]">
-                    <div className="font-medium">{a.name} <span className="text-dim">· models {(rep.models[a.id] ?? []).join(", ") || "none"}</span></div>
+                    <div className="font-medium">{a.name} <span className="text-dim">· ran on {(rep.models[a.id] ?? []).join(", ") || "no model calls"}
+                      {(rep.requested_models?.[a.id] ?? []).length > 0 && ` · its code asks for ${rep.requested_models![a.id].join(", ")}`}</span></div>
                     <div className="mt-1.5 flex flex-wrap gap-1.5">
                       {a.tools.map((t) => (
                         <span key={t} className={`rounded-md px-2 py-0.5 font-mono text-[11.5px] ${seen[t] ? "bg-ok/12 text-ok" : "bg-white/5 text-dim"}`} title={seen[t] ? `called ${seen[t]}x` : "never called"}>

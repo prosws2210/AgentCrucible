@@ -198,28 +198,37 @@ export type DAgent = {
   tools: string[]; subagents: string[]; mcp_servers: string[]; datastores: string[]; external_apis: string[];
   entrypoint: { kind: string; route: string | null; command: string | null; module: string | null; object: string | null; factory: boolean };
   confidence: "high" | "medium" | "low"; evidence: string[]; include: boolean; notes: string[];
+  memory: string | null; service: string | null; auth_env: string | null;
 };
 export type DTool = {
   name: string; description: string; kind: string; server: string | null; params: Record<string, string>;
   effects: Effect[]; touches: string[]; agents: string[]; confidence: string; evidence: string[]; include: boolean;
+  sql_writes: string[]; files: ("read" | "write")[]; mock: boolean | null;
 };
+export type DFix = { id: string; file: string; line: number; old: string; new: string; add_import: string | null; why: string; accept: boolean };
 export type DPlan = {
   agent: string; strategy: "http" | "stdio" | "code" | "manual"; why: string; adapter_file: string | null; adapter_code: string | null;
-  command: string | null; env_needed: string[]; env_map: Record<string, string>; warnings: string[];
+  command: string | null; env_needed: string[]; env_map: Record<string, string>; warnings: string[]; fixes: DFix[];
 };
 export type DQuestion = { id: string; text: string; about: string | null; suggested: string | null; options: string[]; answer: string | null; evidence: string[] };
-export type DScenario = { id: string; agent: string; reason: string; yaml: string; include: boolean };
+export type DScenario = { id: string; agent: string; reason: string; yaml: string; include: boolean; edited: boolean };
 export type Discovery = {
   repo: { root: string; name: string; commit: string | null; languages: Record<string, number>; frameworks: string[]; files_scanned: number; files_skipped: number; source: string | null };
   agents: DAgent[]; tools: DTool[];
   mcp_servers: { name: string; command: string | null; url: string | null; tools: string[]; defined_here: boolean; include: boolean; evidence: string[] }[];
   skills: { name: string; description: string; file: string }[];
   datastores: { id: string; kind: string; url_env: string | null; tables: Record<string, Record<string, string>>; schema_files: string[] }[];
-  external_apis: { id: string; base_url: string | null; base_url_env: string | null; paths: string[] }[];
-  vector_stores: { id: string; kind: string }[];
+  external_apis: { id: string; base_url: string | null; base_url_env: string | null; paths: string[]; kind: "http" | "queue" }[];
+  vector_stores: { id: string; kind: string; test_with: "mock" | "live" }[];
   env_vars: string[]; test_cases: { input: string; expected: string | null; file: string }[];
   questions: DQuestion[]; plans: DPlan[]; scenarios: DScenario[]; facts: Record<string, Fact>;
-  synthesis: { used?: boolean; model?: string; error?: string };
+  synthesis: { used?: boolean; model?: string; base_url?: string; error?: string; requests?: number; cached?: number; chars?: number;
+    sent?: { fact: string; file: string; line: number }[] };
+  generator: Record<string, string>;
+};
+export type ImportPreview = {
+  root: string; files: number; languages: Record<string, number>; skipped: Record<string, number>; secrets_skipped: number;
+  model: { url: string; model: string } | null; hosted: boolean;
 };
 export type RealityFinding = { kind: string; agent?: string; tool?: string; detail: string; action: string; scenario?: string };
 export type ScenarioOutcome = {
@@ -231,8 +240,9 @@ export type ImportJob = {
   progress: { t: number; message: string }[]; error: string | null; discovery: Discovery | null; started: number;
   result: null | {
     out: string; files: string[]; validate: { agents: string[]; scenarios: number; suites: string[] };
-    run_id?: string;
+    run_id?: string; code_changes?: string[];
+    connection?: { id: string; ok: boolean; detail: string }[];
     reality?: { ok: boolean; episodes: number; passed: number; errors: number; observed_tools: Record<string, Record<string, number>>;
-      models: Record<string, string[]>; findings: RealityFinding[]; scenarios?: ScenarioOutcome[] };
+      models: Record<string, string[]>; requested_models?: Record<string, string[]>; findings: RealityFinding[]; scenarios?: ScenarioOutcome[] };
   };
 };

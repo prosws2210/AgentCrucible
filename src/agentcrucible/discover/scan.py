@@ -26,7 +26,8 @@ CONFIG_NAMES = {"Dockerfile", "Procfile", "docker-compose.yml", "docker-compose.
 
 ALWAYS_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "env", "__pycache__", ".mypy_cache", ".pytest_cache",
                     ".ruff_cache", "dist", "build", ".next", "out", "target", ".tox", ".idea", ".vscode-test",
-                    "site-packages", ".crucible", "coverage", ".turbo", ".cache", "vendor"}
+                    "site-packages", ".crucible", "coverage", ".turbo", ".cache", "vendor",
+                    "agent-tests"}  # what `crucible discover --apply` wrote: generated adapters aren't the user's agents
 SECRET_FILE = re.compile(r"(^\.env($|\.(?!example$|sample$|template$|dist$).*)|\.pem$|\.key$|\.p12$|\.pfx$|^id_rsa|"
                          r"^id_ed25519|credentials\.json$|secrets?\.(json|ya?ml|toml)$|\.keystore$)", re.I)
 MAX_FILE_BYTES = 1_000_000
@@ -88,6 +89,11 @@ class Inventory:
     files: list[SourceFile] = field(default_factory=list)
     skipped: int = 0
     skipped_secret: list[str] = field(default_factory=list)
+    skip_reasons: dict[str, int] = field(default_factory=dict)  # why things were left out, for the preview
+
+    def skip(self, reason: str) -> None:
+        self.skipped += 1
+        self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + 1
 
     def code(self, *languages: str) -> list[SourceFile]:
         return [f for f in self.files if f.language in languages]
@@ -130,10 +136,10 @@ def scan(root: Path, include: list[str] | None = None) -> Inventory:
             rel = p.relative_to(root).as_posix()
             if p.is_dir():
                 if p.name in ALWAYS_SKIP_DIRS or p.name.startswith(".") and p.name not in (".claude", ".github", ".cursor", ".vscode"):
-                    inv.skipped += 1
+                    inv.skip("dependency, build and hidden folders")
                     continue
                 if ignore.match_file(rel + "/"):
-                    inv.skipped += 1
+                    inv.skip("folders in .gitignore")
                     continue
                 stack.append(p)
                 continue
@@ -141,15 +147,15 @@ def scan(root: Path, include: list[str] | None = None) -> Inventory:
                 inv.skipped_secret.append(rel)
                 continue
             if ignore.match_file(rel) or (only and not only.match_file(rel)):
-                inv.skipped += 1
+                inv.skip("files in .gitignore" if ignore.match_file(rel) else "outside the chosen paths")
                 continue
             lang = LANGS.get(p.suffix.lower())
             if lang is None and p.suffix.lower() not in CONFIG_SUFFIXES and p.name not in CONFIG_NAMES:
-                inv.skipped += 1
+                inv.skip("binaries, media and other non-code files")
                 continue
             try:
                 if p.stat().st_size > MAX_FILE_BYTES:
-                    inv.skipped += 1
+                    inv.skip("files over 1 MB")
                     continue
             except OSError:
                 continue

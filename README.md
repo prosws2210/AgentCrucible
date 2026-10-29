@@ -135,6 +135,7 @@ Already have agents? Point AgentCrucible at the repository instead of writing th
 ```bash
 crucible discover ./my-repo                  # read the code (never run it); draft agent-tests/discovery.draft.json
 crucible discover ./my-repo --apply --yes    # write agent-tests/ (config, adapters, fixtures, scenarios) and smoke-run it
+crucible discover ./my-repo --apply --use-draft   # apply agent-tests/discovery.draft.json after editing it
 crucible discover . --check                  # in CI: fails when a new agent or an untested destructive tool appears
 crucible import-traces traces.json --agent support   # OpenTelemetry / LangSmith / JSONL conversations -> scenarios
 ```
@@ -145,6 +146,12 @@ Agent SDK, MCP servers and raw OpenAI/Anthropic tool loops in Python; Vercel AI 
 LangChain JS and MCP in TypeScript; and Spring AI, LangChain4j and Go SDK agents. Every finding cites its file and line,
 destructive tools are mocked in the drafted tests, and a smoke run compares what was found with what the agents
 actually did. Try it on [examples/import-demo](examples/import-demo). Design: [docs/CODEBASE-IMPORT.md](docs/CODEBASE-IMPORT.md).
+
+In CI, the drift check can comment on pull requests:
+
+```yaml
+- uses: prosws2210/AgentCrucible/discover@main   # comments when a new agent or untested destructive tool appears
+```
 
 ## Adopting it for your agent
 
@@ -279,7 +286,7 @@ The chart runs the suite as an **Indexed Job** (one shard per pod via `JOB_COMPL
 | `crucible serve` | HTTP API for the dashboard (`DATABASE_URL` for Postgres, SQLite by default) |
 | `crucible mcp-audit` | Audit an MCP server (`--command`, or `--url` with `-H "Authorization: Bearer …"` / `--sse`) |
 | `crucible label` / `calibrate` | Human labels → judge agreement (κ) |
-| `crucible discover` | Find the agents in a repository and draft their tests (`--apply`, `--check`, `--update`, `--json`, `--no-llm`) |
+| `crucible discover` | Find the agents in a repository and draft their tests (`--apply`, `--use-draft`, `--check --report`, `--update`, `--json`, `--no-llm`) |
 | `crucible import-traces` | Production traces → draft scenarios |
 
 ## Development
@@ -329,7 +336,7 @@ the repository variable `PUBLISH_PYPI=true`).
 
 ## Roadmap
 
-- Codebase import: pull-request comments from `--check`; ready-made adapters for Go and Java agents
+- Codebase import: ready-made adapters for Go and Java agents; open a pull request instead of writing `agent-tests/`
 - MCP Python SDK 2.x and the stateless 2026 spec revision
 - Docker-per-episode executor (agents with system dependencies) and a Kubernetes Job-per-episode executor
 

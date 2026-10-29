@@ -582,15 +582,26 @@ class PyDetector:
             self._fact("mcp_server", sname, "claude-agent-sdk", call, var=self.m.assigned_name(call), tools=tools,
                        command=None, sdk=True)
             return
+        # model APIs the gateway doesn't speak natively (Gemini, Bedrock): flagged with their OpenAI-compatible route
+        native = ("bedrock" if last == "client" and "bedrock" in (self.m.string(self.m.arg(call, 0)) or "")
+                  else "bedrock" if last in ("ChatBedrock", "ChatBedrockConverse", "BedrockModel")
+                  else "gemini" if (top == "google" and q.endswith(("genai.Client", "GenerativeModel")))
+                  or last in ("ChatGoogleGenerativeAI", "ChatVertexAI", "GeminiModel") or (top == "vertexai" and last == "GenerativeModel")
+                  else None)
+        if native:
+            self._fact("llm_client", self.m.assigned_name(call) or last, native, call, provider=native, native=native)
+            if top == "google" and q.endswith("genai.Client"):
+                return
         # raw LLM clients and tool-calling calls
-        if (top, last) in LLM_CLIENTS or (top == "google" and q.endswith("genai.Client")):
+        if (top, last) in LLM_CLIENTS:
             base = self.m.kw(call, "base_url", "azure_endpoint", "api_base")
             key = self.m.kw(call, "api_key")
             hard_base = self.m.string(base) if base is not None else None
             self._fact("llm_client", self.m.assigned_name(call) or last, top, call, provider=top,
                        hardcoded_base_url=hard_base if hard_base and hard_base.startswith("http") else None,
                        base_url_env=self.m.env_name(base) if base is not None else None,
-                       hardcoded_key=bool(self.m.string(key)) if key is not None else False)
+                       hardcoded_key=bool(self.m.string(key)) if key is not None else False,
+                       base_url_line=base.lineno if base is not None and hard_base else None)
             return
         if any(q.endswith(t) for t in RAW_CALL_TAILS) or q in ("litellm.completion", "litellm.acompletion"):
             client_type = vt or q

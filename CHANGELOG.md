@@ -24,6 +24,34 @@ All notable changes to AgentCrucible. Versions follow [Semantic Versioning](http
   conversations into draft scenarios.
 - **Named agents:** `agents:` in `crucible.yaml`, with `agent:` per suite or scenario.
 - Budget checks accept `{max: N, hard: false}`.
+- **Import, thorough mode:**
+  - **Before a scan:** a preview of what will be read and skipped, and which model will see the snippets
+    (`POST /api/discover/preview`).
+  - **Model step:** batched by module for large repositories, cached by content (`CRUCIBLE_CACHE_DIR`), with every
+    snippet sent listed in the review. A hosted model is optional.
+  - **What it finds:** monorepo services, agent memory, endpoints behind auth (with a question for a test-token
+    variable), prompts loaded from a prompt service, Django and Drizzle tables, queues (Celery, Kafka, SQS,
+    RabbitMQ, RQ, BullMQ), README examples, and native Gemini and Bedrock clients.
+  - **Drafted checks:**
+    - tools that write get `state.sql` and `http.called` (with `body_contains`) checks
+    - tools that use files get a fresh workspace
+    - RAG agents get grounded-answer and "doesn't know" scenarios against a mocked retriever
+    - budgets are set from the smoke run
+  - **Review:**
+    - per-tool "mock in tests"
+    - edit a draft's YAML in place
+    - suggested one-line code changes (e.g. a hard-coded model URL), applied only when accepted
+    - a coverage bar
+    - system-map nodes open their cards
+  - **Apply:** a connection check before the smoke run. The reality report flags a different model, quotes the error
+    from crashed agents' logs, and lists results per scenario (`GET /api/discover/{job}/reality`).
+  - **CLI:** `crucible discover --apply --use-draft` applies a reviewed draft. `--check --report FILE` writes the drift
+    report, and the `prosws2210/AgentCrucible/discover` action posts it as a pull-request comment. Removed tools mark
+    their scenarios stale.
+
+### Fixed
+- Re-scans no longer read the generated `agent-tests/` folder as part of the user's code.
+- Workspace copies skip virtualenvs and `node_modules`.
 
 ## [0.2.0] - 2026-10-28
 

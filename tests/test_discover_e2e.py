@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 import uvicorn
+import yaml
 from fastapi import FastAPI, Request
 
 from agentcrucible.discover import apply, build_plan, discover
@@ -129,9 +130,12 @@ def test_apply_and_smoke_run(tmp_path):
     out = repo / "agent-tests"
     assert (out / "crucible.yaml").exists() and (out / "discovery.json").exists()
     assert result["validate"]["agents"] == ["run-agent"]
+    assert {c["id"]: c["ok"] for c in result["connection"]} == {"model": True, "mcp:knowledge_base": True, "agent:run-agent": True}
+    budgets = yaml.safe_load((out / "scenarios" / "run-agent" / "run-agent-list-orders-uses.yaml").read_text(encoding="utf-8"))
+    assert any("budget.max_tokens" in c for c in budgets["checks"])  # set from what the smoke run used
     rep = result["reality"]
     assert rep["errors"] == 0, rep["findings"]
-    assert rep["passed"] == rep["episodes"], rep
+    assert rep["passed"] == rep["episodes"], [s for s in rep["scenarios"] if not s["passed"]]
     seen = rep["observed_tools"]["run-agent"]
     assert {"find_customer", "list_orders", "search_help_center", "issue_refund"} <= set(seen)
 

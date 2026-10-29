@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { CopyButton } from "./CopyButton";
 
-export function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <div className={`card ${className}`}>{children}</div>;
+export function Card({ children, className = "", id }: { children: React.ReactNode; className?: string; id?: string }) {
+  return <div id={id} className={`card scroll-mt-24 ${className}`}>{children}</div>;
 }
 
 export function CardHeader({ title, sub, action }: { title: React.ReactNode; sub?: React.ReactNode; action?: React.ReactNode }) {

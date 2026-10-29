@@ -1,11 +1,13 @@
 """Detectors for configuration and content files: MCP configs, CrewAI YAML, skills, prompts, env templates, how the
-app is started (Dockerfile, compose, Procfile, pyproject, package.json), SQL/Prisma schemas and eval datasets."""
+app is started (Dockerfile, compose, Procfile, pyproject, package.json), SQL/Prisma/Drizzle/Django schemas, queues,
+eval datasets and README examples."""
 
 from __future__ import annotations
 
 import json
 import re
 import tomllib
+from pathlib import PurePosixPath
 from typing import Any, Callable
 
 import yaml
@@ -43,6 +45,8 @@ def detect_configs(inv: Inventory, add: Callable[[Fact], str]) -> None:
     _start_commands(inv, add)
     _schemas(inv, add)
     _evals(inv, add)
+    _readme_examples(inv, add)
+    _queues(inv, add)
 
 
 def _mcp_configs(inv: Inventory, add: Callable[[Fact], str]) -> None:
@@ -179,6 +183,74 @@ def _schemas(inv: Inventory, add: Callable[[Fact], str]) -> None:
                             "url_env": (re.search(r'env\("(\w+)"\)', sf.text) or [None, None])[1]}))
     for sf in inv.named("**/alembic.ini", "**/migrations/env.py"):
         add(Fact(kind="datastore", name="migrations", framework="alembic", evidence=_ev(sf), attrs={"kind": "unknown", "schema_file": sf.rel}))
+    # Drizzle: export const orders = pgTable("orders", { id: serial("id"), status: text("status") })
+    for sf in inv.code("typescript", "javascript"):
+        for m in DRIZZLE_TABLE.finditer(sf.text):
+            cols = {c.group(1): DRIZZLE_TYPES.get(c.group(2), "TEXT") for c in re.finditer(r"(\w+)\s*:\s*(\w+)\(", m.group(3))}
+            add(Fact(kind="datastore", name="drizzle", framework="drizzle", evidence=_ev(sf, sf.text.count("\n", 0, m.start()) + 1),
+                     attrs={"kind": {"pg": "postgres", "sqlite": "sqlite", "mysql": "mysql"}[m.group(1)], "table": m.group(2),
+                            "columns": cols, "schema_file": sf.rel}))
+    # Django: class Order(models.Model) with `status = models.CharField(...)` fields; the table is <app>_<model>
+    for sf in inv.code("python"):
+        if "models.Model" not in sf.text:
+            continue
+        app = PurePosixPath(sf.rel).parent.name or "app"
+        for m in re.finditer(r"^class\s+(\w+)\((?:models\.)?Model\):\n((?:[ \t]+.*\n|\n)*)", sf.text, re.M):
+            cols = {"id": "INTEGER"}
+            for f in re.finditer(r"^\s+(\w+)\s*=\s*models\.(\w+)\(", m.group(2), re.M):
+                cols[f.group(1) + ("_id" if f.group(2) in ("ForeignKey", "OneToOneField") else "")] = DJANGO_TYPES.get(f.group(2), "TEXT")
+            add(Fact(kind="datastore", name="django", framework="django", evidence=_ev(sf, sf.text.count("\n", 0, m.start()) + 1),
+                     attrs={"kind": "unknown", "table": f"{app}_{m.group(1).lower()}", "columns": cols, "schema_file": sf.rel}))
+
+
+DRIZZLE_TABLE = re.compile(r"\b(pg|sqlite|mysql)Table\(\s*[\"'`](\w+)[\"'`]\s*,\s*\{(.*?)\}\s*[,)]", re.S)
+DRIZZLE_TYPES = {"serial": "INTEGER", "integer": "INTEGER", "int": "INTEGER", "bigint": "INTEGER", "smallint": "INTEGER",
+                 "real": "REAL", "doublePrecision": "REAL", "numeric": "REAL", "decimal": "REAL", "boolean": "BOOLEAN",
+                 "timestamp": "TIMESTAMP", "date": "TIMESTAMP", "json": "JSON", "jsonb": "JSON"}
+DJANGO_TYPES = {"IntegerField": "INTEGER", "BigIntegerField": "INTEGER", "PositiveIntegerField": "INTEGER", "AutoField": "INTEGER",
+                "ForeignKey": "INTEGER", "OneToOneField": "INTEGER", "FloatField": "REAL", "DecimalField": "REAL",
+                "BooleanField": "BOOLEAN", "DateTimeField": "TIMESTAMP", "DateField": "TIMESTAMP", "JSONField": "JSON"}
+QUEUES = [  # (pattern, kind, how the broker address is set)
+    (re.compile(r"\bCelery\("), "celery", r"broker(?:_url)?\s*=\s*os\.(?:environ\.get|getenv)\(\s*[\"'](\w+)"),
+    (re.compile(r"\b(KafkaProducer|AIOKafkaProducer|confluent_kafka|from\s+[\"']kafkajs[\"'])"), "kafka", r"[\"'](\w*KAFKA\w*)[\"']"),
+    (re.compile(r"client\(\s*[\"']sqs[\"']|SQSClient|@aws-sdk/client-sqs"), "sqs", r"[\"'](\w*QUEUE_URL\w*)[\"']"),
+    (re.compile(r"\bpika\.(Blocking|Select)Connection|amqplib|aio_pika"), "rabbitmq", r"[\"'](\w*(?:AMQP|RABBIT)\w*)[\"']"),
+    (re.compile(r"from\s+rq\s+import|\brq\.Queue\("), "rq", r"[\"'](\w*REDIS\w*URL\w*)[\"']"),
+    (re.compile(r"from\s+[\"']bullmq[\"']|require\([\"']bullmq[\"']\)"), "bullmq", r"[\"'](\w*REDIS\w*)[\"']"),
+]
+
+
+def _queues(inv: Inventory, add: Callable[[Fact], str]) -> None:
+    seen: set[str] = set()
+    for sf in inv.code("python", "typescript", "javascript"):
+        for pat, kind, env_pat in QUEUES:
+            m = pat.search(sf.text)
+            if m and kind not in seen:
+                seen.add(kind)
+                env = re.search(env_pat, sf.text)
+                add(Fact(kind="external_api", name=kind, framework="queue", evidence=_ev(sf, sf.text.count("\n", 0, m.start()) + 1),
+                         attrs={"queue": kind, "sdk": kind, "base_url_env": env.group(1) if env else None}))
+
+
+README_INPUT = re.compile(r"[\"'](?:message|input|query|question|prompt|task)[\"']\s*:\s*\"([^\"\\]{8,300})\"")
+README_CALL = re.compile(r"\b(?:run_agent|agent\.run|agent\.invoke|ask|chat|kickoff|run)\(\s*[\"']([^\"'\\]{8,300})[\"']")
+
+
+def _readme_examples(inv: Inventory, add: Callable[[Fact], str]) -> None:
+    """Example requests in the README (curl bodies, `agent.run("...")` calls) become reusable tasks."""
+    n = 0
+    for sf in inv.named("README.md", "README.rst", "*/README.md", "docs/**/*.md"):
+        for block in re.finditer(r"```[\w-]*\n(.*?)```", sf.text, re.S):
+            for m in [*README_INPUT.finditer(block.group(1)), *README_CALL.finditer(block.group(1))]:
+                text = m.group(1).strip()
+                if not re.search(r"\s", text):  # a single word is a name, not a request
+                    continue
+                add(Fact(kind="test_case", name=text[:60], framework="readme",
+                         evidence=_ev(sf, sf.text.count("\n", 0, block.start() + m.start()) + 2),
+                         attrs={"file": sf.rel, "input": redact(text)[:500], "expected": None}))
+                n += 1
+                if n >= 5:
+                    return
 
 
 def _evals(inv: Inventory, add: Callable[[Fact], str]) -> None:

@@ -382,7 +382,8 @@ class Runner:
         else:
             if ws.ref:
                 raise ValueError("workspace.ref needs `path` to be a git repository")
-            shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".crucible", "__pycache__", ".pytest_cache"))
+            shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".crucible", "__pycache__", ".pytest_cache", ".venv", "venv",
+                                                                    "node_modules", ".mypy_cache", ".ruff_cache"))
             git(dst, "init", "--quiet")
             git(dst, "config", "core.autocrlf", "false")
             git(dst, "add", "-A")

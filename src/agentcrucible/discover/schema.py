@@ -77,6 +77,9 @@ class Agent(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     include: bool = True
     notes: list[str] = Field(default_factory=list)
+    memory: str | None = None  # how it keeps state between turns or sessions (a checkpointer, a session store...)
+    service: str | None = None  # in a monorepo: the folder of the service it belongs to
+    auth_env: str | None = None  # its HTTP endpoint needs a token: the variable that holds a test token
 
 
 class Tool(BaseModel):
@@ -87,6 +90,9 @@ class Tool(BaseModel):
     params: dict[str, str] = Field(default_factory=dict)
     effects: list[Effect] = Field(default_factory=list)
     touches: list[str] = Field(default_factory=list)  # "datastore:<id>", "api:<id>"
+    sql_writes: list[str] = Field(default_factory=list)  # INSERT/UPDATE/DELETE statements in its body (for state checks)
+    files: list[Literal["read", "write"]] = Field(default_factory=list)  # reads or writes files on disk
+    mock: bool | None = None  # replace it with a canned reply in tests; None = mock it when it's destructive
     agents: list[str] = Field(default_factory=list)
     confidence: Confidence = "medium"
     evidence: list[str] = Field(default_factory=list)
@@ -118,12 +124,14 @@ class ExternalApi(BaseModel):
     base_url_env: str | None = None
     paths: list[str] = Field(default_factory=list)  # "POST /v1/charges"
     evidence: list[str] = Field(default_factory=list)
+    kind: Literal["http", "queue"] = "http"  # a queue (Celery, Kafka, SQS...) is reported, not mocked over HTTP
 
 
 class VectorStore(BaseModel):
     id: str
     kind: str
     evidence: list[str] = Field(default_factory=list)
+    test_with: Literal["mock", "live"] = "mock"  # tests mock the retriever with fixed passages, or read the live store
 
 
 class Skill(BaseModel):
@@ -151,6 +159,20 @@ class DraftScenario(BaseModel):
     reason: str
     yaml: str
     include: bool = True
+    edited: bool = False  # the reviewer changed the YAML; re-drafting keeps their version
+
+
+class CodeFix(BaseModel):
+    """A one-line change to the user's code, suggested by the planner and applied only if the reviewer accepts it."""
+
+    id: str
+    file: str
+    line: int
+    old: str  # the exact line as it is now
+    new: str  # the line after the change
+    add_import: str | None = None  # e.g. "import os", added at the top when missing
+    why: str
+    accept: bool = False
 
 
 class ConnectionPlan(BaseModel):
@@ -164,6 +186,7 @@ class ConnectionPlan(BaseModel):
     env_needed: list[str] = Field(default_factory=list)
     env_map: dict[str, str] = Field(default_factory=dict)  # app setting -> AgentCrucible variable
     warnings: list[str] = Field(default_factory=list)
+    fixes: list[CodeFix] = Field(default_factory=list)
 
 
 class RepoInfo(BaseModel):
@@ -193,7 +216,8 @@ class Discovery(BaseModel):
     plans: list[ConnectionPlan] = Field(default_factory=list)
     scenarios: list[DraftScenario] = Field(default_factory=list)
     facts: dict[str, Fact] = Field(default_factory=dict)
-    synthesis: dict[str, Any] = Field(default_factory=dict)  # which model enriched it, if any
+    synthesis: dict[str, Any] = Field(default_factory=dict)  # which model enriched it, if any, and what it was sent
+    generator: dict[str, str] = Field(default_factory=dict)  # AgentCrucible and detector versions (audit trail)
     approved: bool = False
 
     def agent(self, agent_id: str) -> Agent | None:

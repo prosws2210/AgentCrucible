@@ -41,6 +41,11 @@ def test_scan_review_apply(tmp_path, monkeypatch):
         assert roots["roots"] == [str((tmp_path / "code").resolve())]
         assert str(repo) in roots["suggestions"]
 
+        pre = c.post("/api/discover/preview", json={"path": str(repo), "use_llm": False}).json()
+        assert pre["files"] >= 10 and pre["languages"]["python"] >= 5 and pre["model"] is None
+        assert pre["secrets_skipped"] == 0 and isinstance(pre["skipped"], dict)
+        assert c.post("/api/discover/preview", json={"path": str(tmp_path)}).status_code == 403
+
         r = c.post("/api/discover", json={"path": str(repo), "use_llm": False})
         assert r.status_code == 202, r.text
         j = wait(c, r.json()["id"], ("review", "failed"))
@@ -59,6 +64,22 @@ def test_scan_review_apply(tmp_path, monkeypatch):
         d = r.json()["discovery"]
         assert d["agents"][0]["name"] == "Support agent"
         assert next(s for s in d["scenarios"] if s["id"] == drop)["include"] is False
+
+        # run cancel_order for real in tests: its drafts then check the database afterwards
+        d = c.patch(f"/api/discover/{j['id']}", json={"tools": {"cancel_order": {"mock": False}}}).json()["discovery"]
+        asks = next(s for s in d["scenarios"] if s["id"].endswith("cancel-order-asks-first"))
+        assert "state.sql" in asks["yaml"] and "cancel_order:" not in asks["yaml"].split("checks:")[0]
+
+        # edit a draft's YAML; an invalid one is refused, a valid one survives re-planning
+        sid = next(s["id"] for s in d["scenarios"] if s["id"].endswith("find-customer-uses"))
+        bad = c.patch(f"/api/discover/{j['id']}", json={"scenarios": {sid: {"yaml": "id: x\ntask: 1\nchecks: nope"}}})
+        assert bad.status_code == 422
+        edited = f"id: {sid}\nagent: run-agent\ntask: Look up alex@example.com, please.\nchecks:\n- trajectory.tool_called: find_customer\n"
+        d = c.patch(f"/api/discover/{j['id']}", json={"scenarios": {sid: {"yaml": edited}}}).json()["discovery"]
+        d = c.patch(f"/api/discover/{j['id']}", json={"agents": {"run-agent": {"purpose": "Helps customers."}}}).json()["discovery"]
+        s = next(s for s in d["scenarios"] if s["id"] == sid)
+        assert s["yaml"] == edited and s["edited"] is True
+        assert c.get(f"/api/discover/{j['id']}/reality").status_code == 404  # no smoke run yet
 
         r = c.post(f"/api/discover/{j['id']}/apply", json={"smoke": False})
         assert r.status_code == 202, r.text

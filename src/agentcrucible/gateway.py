@@ -185,6 +185,7 @@ class EpisodeRoutes:
     http_mocks: dict[str, list[MockRoute]] = field(default_factory=dict)
     llm_n: int = 0  # LLM calls made so far in this episode
     llm_seq: list[dict[str, str]] = field(default_factory=list)  # cache keys in call order (read_write)
+    requested_model: str | None = None  # the model named in the latest call, before --model overrides it
 
 
 class Gateway:
@@ -270,6 +271,7 @@ class Gateway:
     async def _llm(self, ep: EpisodeRoutes, api: Api, body: dict[str, Any], headers: Any) -> Response:
         rec = ep.rec
         stream = bool(body.get("stream"))
+        ep.requested_model = body.get("model")  # what the agent's own code asked for
         if self.force_model:
             body["model"] = self.force_model
         if api == "openai" and stream:
@@ -296,7 +298,7 @@ class Gateway:
             data = json.loads(cache_file.read_text(encoding="utf-8"))
             if self.llm.cache == "read_write":
                 self._remember(ep, seq_file, api, key)
-            self._record(rec, api, body, data, start, hit, stream)
+            self._record(rec, api, body, data, start, hit, stream, ep.requested_model)
             if stream:
                 return StreamingResponse(as_sse(api, data), media_type="text/event-stream")
             return JSONResponse(data)
@@ -324,7 +326,7 @@ class Gateway:
             self._store(cache_file, data)
             if self.llm.cache == "read_write":
                 self._remember(ep, seq_file, api, key)
-            self._record(rec, api, body, data, start, cache_state, False)
+            self._record(rec, api, body, data, start, cache_state, False, ep.requested_model)
             return JSONResponse(data)
 
         # Real streaming: pass bytes through as they arrive, rebuild the full response alongside.
@@ -347,7 +349,7 @@ class Gateway:
                 self._store(cache_file, data)
                 if self.llm.cache == "read_write":
                     self._remember(ep, seq_file, api, key)
-                self._record(rec, api, body, data, start, cache_state, True)
+                self._record(rec, api, body, data, start, cache_state, True, ep.requested_model)
 
         return StreamingResponse(relay(), media_type=upstream.headers.get("content-type", "text/event-stream"))
 
@@ -388,7 +390,7 @@ class Gateway:
             cache_file.write_text(json.dumps(data), encoding="utf-8")
 
     def _record(self, rec: Recorder, api: Api, body: dict, data: dict, start: float, cache_state: str,
-                streamed: bool) -> None:
+                streamed: bool, requested_model: str | None = None) -> None:
         s = summarize(api, data)
         rec.add(
             "llm_call",
@@ -406,4 +408,5 @@ class Gateway:
             content=clip(s.content),
             tool_calls=s.tool_calls,
             tool_requests=s.tool_requests,
+            requested_model=requested_model,
         )

@@ -1,0 +1,65 @@
+name: AgentCrucible agent map drift
+description: Re-scan the repository and comment on the pull request when a new agent or an untested destructive tool appears.
+author: Shakti Swaroop Sahu
+branding:
+  icon: search
+  color: purple
+
+inputs:
+  path:
+    description: Repository folder to scan (the one that contains agent-tests/discovery.json)
+    default: "."
+  comment:
+    description: Upsert a PR comment with the drift report
+    default: "true"
+  fail-on-drift:
+    description: Fail the check on a new agent, or a new or changed destructive tool without tests
+    default: "true"
+
+outputs:
+  drift:
+    description: "true when the scan found risky drift"
+    value: ${{ steps.check.outputs.drift }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with: { python-version: "3.12" }
+
+    - name: Install AgentCrucible
+      shell: bash
+      run: pip install --quiet "${{ github.action_path }}/.."
+
+    - name: Check the agent map
+      id: check
+      shell: bash
+      run: |
+        set +e
+        crucible discover "${{ inputs.path }}" --check --no-llm --report "$RUNNER_TEMP/crucible-discover.md"
+        code=$?
+        set -e
+        if [ "$code" -gt 1 ]; then exit "$code"; fi
+        echo "drift=$([ $code -eq 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+    - name: Comment on PR
+      if: github.event_name == 'pull_request' && inputs.comment == 'true'
+      shell: bash
+      env: { GH_TOKEN: "${{ github.token }}" }
+      run: |
+        body_file="$RUNNER_TEMP/crucible-discover.md"
+        pr="${{ github.event.pull_request.number }}"
+        existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$pr/comments" --paginate \
+                    -q '.[] | select(.body | contains("<!-- crucible-discover -->")) | .id' | head -1)
+        if [ -n "$existing" ]; then
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@"$body_file" >/dev/null
+        else
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$pr/comments" -F body=@"$body_file" >/dev/null
+        fi
+
+    - name: Gate
+      if: inputs.fail-on-drift == 'true' && steps.check.outputs.drift == 'true'
+      shell: bash
+      run: |
+        echo "::error::New agents or untested destructive tools since the approved agent map. See the PR comment."
+        exit 1

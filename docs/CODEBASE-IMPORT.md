@@ -2,19 +2,29 @@
 
 > Status: **implemented** (unreleased, targeting 0.3) · Owner: Shakti Swaroop Sahu
 >
-> Built: all three phases below, except the items listed under "Not built yet". Try it with
+> Built: all three phases below, except the items under "Not built yet". Try it with
 > `crucible discover examples/import-demo` or **Import codebase** in the dashboard.
 >
-> **Measured so far:** on a 22-repository labelled corpus (`tests/discover_corpus`), agents and tools were found with
-> 100% recall and precision, MCP servers 100%, side-effect badges 98%. The detectors were tuned on this corpus, so
-> expect lower numbers on unseen code. The "10 open-source repositories in under 10 minutes" target has not been
-> measured yet.
+> **Measured so far:** on a 22-repository labelled corpus (`tests/discover_corpus`, run in CI), agents and tools were
+> found with 100% recall and precision, MCP servers 100%, side-effect badges 98%. The detectors were tuned on this
+> corpus, so expect lower numbers on unseen code. The "10 open-source repositories in under 10 minutes" target has not
+> been measured yet.
 >
-> **Not built yet:** pull-request comments from `--check` (it prints markdown and exits non-zero); a published
-> TypeScript adapter package (TypeScript agents get a generated `tsx` adapter instead); ready-made Go and Java
-> adapters (they get an HTTP bridge or a scaffold); vector-store snapshots. The LangGraph, OpenAI Agents SDK and
-> PydanticAI adapters are tested end to end with the real libraries; the CrewAI, LlamaIndex and LangChain
-> `AgentExecutor` adapters have no tests yet.
+> **Different from the text below:**
+> - Detectors live in `discover/pyfacts.py` (Python AST), `codefacts.py` (tree-sitter: TypeScript/JavaScript, Go,
+>   Java) and `configs.py`; the reality report is in `apply.py`.
+> - The draft is `agent-tests/discovery.draft.json` and the approved map `agent-tests/discovery.json`, not
+>   `.crucible/`. `crucible discover` prints the map and saves the draft. Review happens in the dashboard or by
+>   editing the draft and running `crucible discover --apply --use-draft`.
+> - Vector stores: tests mock the retriever with fixed passages, or read the live store (the reviewer chooses).
+>   There is no snapshot index.
+>
+> **Not built yet:**
+> - Opening a pull request instead of writing `agent-tests/`.
+> - A published TypeScript adapter package. TypeScript agents get a generated `tsx` adapter instead.
+> - Ready-made Go and Java adapters. They get an HTTP bridge or a scaffold to fill in.
+> - The CrewAI, LlamaIndex and LangChain `AgentExecutor` adapters have no tests yet. LangGraph, OpenAI Agents SDK and
+>   PydanticAI are tested end to end with the real libraries.
 
 Point AgentCrucible at a repository. It reads the code (without running it), finds every agent, tool, MCP server,
 skill, prompt and model, drafts a complete test setup, and shows it to you for review. When you approve, it writes

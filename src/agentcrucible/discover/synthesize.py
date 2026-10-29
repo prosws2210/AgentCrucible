@@ -7,13 +7,16 @@ says that doesn't cite a fact is dropped.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable
 
 import httpx
 
+from .. import __version__
 from .codefacts import detect_code
 from .configs import detect_configs
 from .effects import BUILTIN_EFFECTS, merge_effects
@@ -74,10 +77,16 @@ class Collector:
         return [f for f in self.facts.values() if f.kind == kind]
 
 
+DETECTORS_VERSION = "2026.10.2"  # bump when detector output changes, so drift reports can tell scans apart
+
+
 def collect(root: Path, include: list[str] | None = None, progress: Progress | None = None) -> tuple[Inventory, Collector]:
     say = progress or (lambda _m: None)
     inv = scan(root, include)
     say(f"Scanned {len(inv.files)} files ({', '.join(f'{n} {lang}' for lang, n in inv.languages().items()) or 'no code'})")
+    if inv.skip_reasons or inv.skipped_secret:
+        reasons = [f"{n} {why}" for why, n in sorted(inv.skip_reasons.items(), key=lambda kv: -kv[1])]
+        say("Skipped " + ", ".join(reasons + ([f"{len(inv.skipped_secret)} secret files (.env, keys)"] if inv.skipped_secret else [])))
     c = Collector()
     detect_python(inv, c.add)
     detect_code(inv, c.add)
@@ -93,14 +102,16 @@ def assemble(inv: Inventory, c: Collector, source: str | None = None) -> Discove
     d = Discovery(repo=RepoInfo(root=str(inv.root), name=inv.root.name, commit=git_commit(inv.root),
                                 languages=inv.languages(), files_scanned=len(inv.files),
                                 files_skipped=inv.skipped + len(inv.skipped_secret), source=source),
-                  facts=c.facts)
+                  facts=c.facts, generator={"agentcrucible": __version__, "detectors": DETECTORS_VERSION})
     meta: dict[str, dict[str, Any]] = {}  # agent id -> its fact and http entry points (not serialized)
     _tools(d, c)
     _mcp(d, c)
     _agents(d, c, meta)
     _data(d, c)
+    _code_access(d)
     _link_tools(d, c, meta)
     _entrypoints(d, c, meta)
+    _agent_context(d, meta)
     _questions(d, c, meta)
     d.skills = [Skill(name=f.name, description=f.attrs.get("description", ""), file=f.attrs["file"], evidence=[f.id])
                 for f in c.of("skill")]
@@ -310,14 +321,17 @@ def _data(d: Discovery, c: Collector) -> None:
         a = f.attrs
         host = a.get("base_url") and re.sub(r"^https?://", "", a["base_url"]).split("/")[0]
         env = a.get("base_url_env")
-        if host:
+        if a.get("queue"):  # named after the queue system, not its broker setting
+            aid = a["queue"]
+        elif host:
             parts = [p for p in host.split(".") if p not in ("api", "www", "com", "io", "co", "net", "org", "dev", "app", "v1")]
             aid = slug(parts[0] if parts else host).replace("-", "_")
         elif env:
             aid = slug(re.sub(r"_(API_)?(BASE(_URL)?|URL|HOST|ENDPOINT)$", "", env)).replace("-", "_")
         else:
             aid = slug(a.get("sdk") or f.name).replace("-", "_")
-        api = apis.setdefault(aid, ExternalApi(id=aid, base_url=a.get("base_url"), base_url_env=env))
+        api = apis.setdefault(aid, ExternalApi(id=aid, base_url=a.get("base_url"), base_url_env=env,
+                                               kind="queue" if a.get("queue") else "http"))
         api.base_url = api.base_url or a.get("base_url")
         api.base_url_env = api.base_url_env or env
         if a.get("path") and a["path"] not in api.paths:
@@ -333,6 +347,75 @@ def _data(d: Discovery, c: Collector) -> None:
 
 def _file_of(d: Discovery, fids: list[str]) -> set[str]:
     return {e.file for i in fids if i in d.facts for e in d.facts[i].evidence}
+
+
+SQL_WRITE_STMT = re.compile(r"\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|REPLACE\s+INTO)\s+[\"`]?(\w+)[^\"\n]*", re.I)
+SQL_READ_TABLE = re.compile(r"\b(?:FROM|JOIN)\s+[\"`]?(\w+)", re.I)
+FILE_READ = re.compile(r"\bopen\([^)]*\)|\.read_text\(|\.read_bytes\(|os\.listdir\(|\.glob\(|\.iterdir\(|readFile(Sync)?\(|fs\.readdir")
+FILE_WRITE = re.compile(r"\bopen\([^)]*[\"'][wa]b?\+?[\"']|\.write_text\(|\.write_bytes\(|writeFile(Sync)?\(|appendFile(Sync)?\(")
+
+
+def _impl_text(d: Discovery, t: Tool, cache: dict[str, list[str]]) -> str:
+    """The source of a tool's implementation: the block under each place it was found (a def, a decorator, a branch)."""
+    out: list[str] = []
+    for fid in t.evidence:
+        f = d.facts.get(fid)
+        for e in (f.evidence if f else []):
+            if e.file not in cache:
+                try:
+                    cache[e.file] = (Path(d.repo.root) / e.file).read_text(encoding="utf-8", errors="replace").splitlines()
+                except OSError:
+                    cache[e.file] = []
+            lines = cache[e.file][e.line - 1:e.line + 150]
+            if not lines:
+                continue
+            indent = len(lines[0]) - len(lines[0].lstrip())
+            block = [lines[0]]
+            for ln in lines[1:]:
+                if ln.strip() and len(ln) - len(ln.lstrip()) <= indent and not ln.lstrip().startswith(("@", ")", "}", "]")):
+                    break
+                block.append(ln)
+            out.append("\n".join(block))
+    joined = "\n".join(out)
+    if not re.search(rf"\b(def|function)\s+{re.escape(t.name)}\b|\b{re.escape(t.name)}\s*=\s*(async\s*)?\(", joined):
+        # only the schema or registration was recorded: find the implementation by name in the same files
+        for file in {e.file for fid in t.evidence if fid in d.facts for e in d.facts[fid].evidence}:
+            lines = cache.get(file) or []
+            for i, ln in enumerate(lines):
+                if re.match(rf"\s*(async\s+)?(def|function)\s+{re.escape(t.name)}\b|\s*(export\s+)?const\s+{re.escape(t.name)}\s*=", ln):
+                    indent = len(ln) - len(ln.lstrip())
+                    block = [ln]
+                    for nxt in lines[i + 1:i + 150]:
+                        if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= indent and not nxt.lstrip().startswith((")", "}", "]")):
+                            break
+                        block.append(nxt)
+                    joined += "\n" + "\n".join(block)
+                    break
+    return joined
+
+
+def _code_access(d: Discovery) -> None:
+    """Which tables each tool writes (for drafted state checks) and whether it touches files on disk."""
+    tables = {tb.lower(): s.id for s in d.datastores for tb in s.tables}
+    cache: dict[str, list[str]] = {}
+    for t in d.tools:
+        if t.kind != "in-process":
+            continue
+        text = _impl_text(d, t, cache)
+        if not text:
+            continue
+        for m in SQL_WRITE_STMT.finditer(text):
+            stmt = " ".join(m.group(0).split()).rstrip("'`,;")
+            if m.group(1).lower() in tables and stmt not in t.sql_writes and len(t.sql_writes) < 5:
+                t.sql_writes.append(stmt)
+        for name in {m.group(1).lower() for m in SQL_WRITE_STMT.finditer(text)} | {m.group(1).lower() for m in SQL_READ_TABLE.finditer(text)}:
+            if name in tables and f"datastore:{tables[name]}" not in t.touches:
+                t.touches.append(f"datastore:{tables[name]}")
+        t.files = (["read"] if FILE_READ.search(text) else []) + (["write"] if FILE_WRITE.search(text) else [])
+        for v in d.vector_stores:
+            if re.search(rf"(?i)\b{re.escape(v.kind)}\b|similarity_search|as_retriever|\.retrieve\(|vector_?store", text) \
+                    and f"vector:{v.id}" not in t.touches:
+                t.touches.append(f"vector:{v.id}")
 
 
 def _link_tools(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> None:
@@ -378,7 +461,7 @@ def _link_tools(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> 
         t.agents = [a.id for a in d.agents if t.name in a.tools]
         files = _file_of(d, t.evidence)
         for s in d.datastores:
-            if _file_of(d, s.evidence) & files and set(t.effects) & {"writes data", "destructive", "read-only"}:
+            if _file_of(d, s.evidence) & files and set(t.effects) & {"writes data", "destructive", "read-only"}                     and f"datastore:{s.id}" not in t.touches:
                 t.touches.append(f"datastore:{s.id}")
         for api in d.external_apis:
             if _file_of(d, api.evidence) & files and "external call" in t.effects:
@@ -387,11 +470,26 @@ def _link_tools(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> 
         tool_files = set().union(*[_file_of(d, t.evidence) for t in d.tools if t.name in ag.tools]) if ag.tools else set()
         files = _file_of(d, ag.evidence) | tool_files
         in_process = [t for t in d.tools if t.name in ag.tools and t.kind == "in-process"]
-        ag.datastores = [s.id for s in d.datastores if _file_of(d, s.evidence) & files] or \
+        by_tool = {x.split(":", 1)[1] for t in d.tools if t.name in ag.tools for x in t.touches if x.startswith("datastore:")}
+        ag.datastores = [s.id for s in d.datastores if _file_of(d, s.evidence) & files or s.id in by_tool] or \
             ([d.datastores[0].id] if len(d.datastores) == 1 and in_process else [])
         ag.external_apis = [api.id for api in d.external_apis if _file_of(d, api.evidence) & files]
         if not ag.purpose:
             ag.purpose = f"Uses {', '.join(ag.tools[:4])}{'…' if len(ag.tools) > 4 else ''}." if ag.tools else ""
+
+
+def _serves(d: Discovery, e: Fact, module: str | None) -> bool:
+    """A route serves an agent when it's in the agent's module or its file imports that module (two services that
+    both define `run` don't share each other's endpoints)."""
+    if not module or e.attrs.get("module") in (None, module):
+        return True
+    try:
+        src = (Path(d.repo.root) / e.evidence[0].file).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    leaf = module.rsplit(".", 1)[-1]
+    return bool(re.search(rf"^\s*(from\s+{re.escape(module)}\s+import|import\s+{re.escape(module)}\b|from\s+\S*\s+import\s+.*\b{re.escape(leaf)}\b)",
+                          src, re.M))
 
 
 def _entrypoints(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> None:
@@ -400,8 +498,9 @@ def _entrypoints(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) ->
         f = meta[ag.id]["fact"]
         a = f.attrs
         names = {x for x in (a.get("object"), a.get("compiled_as"), a.get("factory"), a.get("function"), a.get("method"), a.get("config_key")) if x}
-        http = [e for e in entries if e.attrs.get("kind") == "http" and e.attrs.get("route") and names & set(e.attrs.get("names_used") or [])]
         module = a.get("module")
+        http = [e for e in entries if e.attrs.get("kind") == "http" and e.attrs.get("route") and names & set(e.attrs.get("names_used") or [])
+                and _serves(d, e, module)]
         obj = a.get("compiled_as") or a.get("object")
         importable = bool(module) and (ag.language == "python" or a.get("exported"))
         if a.get("role") == "loop" or a.get("framework", "").startswith("raw") or a.get("function") and not obj:
@@ -425,6 +524,75 @@ def _entrypoints(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) ->
         if http:
             ag.notes.append("Also served over HTTP at " + ", ".join(sorted({x.name for x in http})) + ".")
             meta[ag.id]["http"] = [x.id for x in http]
+
+
+PROMPT_ANSWERS = ("yes, the live prompt", "no, a fixed copy")
+VECTOR_ANSWERS = ("mock the retriever with fixed passages", "use the live store (read-only)")
+MEMORY = re.compile(r"\b(MemorySaver|InMemorySaver|SqliteSaver|AsyncSqliteSaver|PostgresSaver|AsyncPostgresSaver|RedisSaver|"
+                    r"ConversationBufferMemory|ConversationSummaryMemory|ChatMessageHistory|RedisChatMessageHistory|"
+                    r"SQLiteSession|SQLAlchemySession|RedisSession|InMemoryStore|Mem0Memory|mem0|ZepMemory|"
+                    r"InMemorySessionService|DatabaseSessionService|checkpointer|chat_history|session_id)\b")
+AUTH = re.compile(r"Depends\(\s*\w*(auth|user|token|current|verify|login|api_key|bearer)\w*|login_required|requires_auth|"
+                  r"jwt_required|HTTPBearer|OAuth2PasswordBearer|APIKeyHeader|verify_token|[\"']authorization[\"']|"
+                  r"authenticate\(|requireAuth|withAuth|getServerSession|auth\(\)", re.I)
+PROMPT_SOURCE = re.compile(r"(langfuse\.\w*get_prompt|\.get_prompt\(|hub\.pull\(|promptlayer|humanloop|"
+                           r"SELECT\s[^\"']*\bFROM\s+prompts\b|prompts\.find|load_prompt\(|portkey\.prompts)", re.I)
+SERVICE_MARKERS = ("pyproject.toml", "package.json", "go.mod", "pom.xml", "build.gradle", "Dockerfile", "setup.py")
+
+
+def _agent_context(d: Discovery, meta: dict[str, dict[str, Any]]) -> None:
+    """Facts about an agent that need its whole file: memory, which service it belongs to, auth on its endpoint and
+    prompts loaded from outside the repository."""
+    root = Path(d.repo.root)
+    cache: dict[str, str] = {}
+
+    def text(file: str) -> str:
+        if file not in cache:
+            try:
+                cache[file] = (root / file).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                cache[file] = ""
+        return cache[file]
+
+    services: dict[str, str | None] = {}
+    for ag in d.agents:
+        files = sorted(_file_of(d, ag.evidence))
+        src = "\n".join(text(f) for f in files)
+        m = MEMORY.search(src)
+        if m:
+            ag.memory = m.group(1)
+            if ag.memory in ("checkpointer", "chat_history", "session_id"):
+                ag.memory = {"checkpointer": "a checkpointer", "chat_history": "chat history", "session_id": "sessions"}[ag.memory]
+        p = PROMPT_SOURCE.search(src)
+        if p:
+            meta[ag.id]["prompt_source"] = p.group(1).strip()[:60]
+            ag.notes.append(f"Its prompt is loaded at run time (`{meta[ag.id]['prompt_source']}`): test prompt changes with "
+                            "`crucible run -e <SETTING>=<value>` overrides.")
+        for fid in meta[ag.id].get("http", []):
+            e = d.facts[fid].evidence[0]
+            block = "\n".join(text(e.file).splitlines()[max(0, e.line - 4):e.line + 25])
+            if AUTH.search(block):
+                meta[ag.id]["auth"] = [fid]
+                break
+        if files:
+            folder = Path(files[0]).parent
+            if str(folder) not in services:
+                svc = None
+                for cand in [folder, *folder.parents]:
+                    if str(cand) in (".", "") or cand == Path("."):
+                        break
+                    if any((root / cand / mk).exists() for mk in SERVICE_MARKERS):
+                        svc = cand.as_posix()
+                        break
+                services[str(folder)] = svc
+            ag.service = services[str(folder)]
+    if len({a.service for a in d.agents}) < 2:  # one service: nothing to group
+        for a in d.agents:
+            a.service = None
+    names = [a.name for a in d.agents]
+    for a in d.agents:  # two services that both call it "Run": "Billing · Run"
+        if a.service and names.count(a.name) > 1:
+            a.name = f"{Path(a.service).name.replace('-', ' ').replace('_', ' ').title()} · {a.name}"
 
 
 def _questions(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> None:
@@ -455,8 +623,20 @@ def _questions(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> N
             q(f"Which setting holds the database URL for the tables {', '.join(list(s.tables)[:4])}?", f"datastore:{s.id}",
               s.evidence, "DATABASE_URL")
     for v in d.vector_stores:
-        q(f"How should tests get documents for the {v.kind} vector store?", f"vector:{v.id}", v.evidence, "mock",
-          ["mock the retriever with fixed passages", "build a small snapshot index", "use the live store (read-only)"])
+        q(f"How should tests get documents for the {v.kind} vector store?", f"vector:{v.id}", v.evidence,
+          VECTOR_ANSWERS[0], list(VECTOR_ANSWERS))
+    for s in d.datastores:
+        if not s.tables and not s.schema_files:
+            q(f"The database `{s.id}` has no schema files or models in the repository. Point to a schema dump or "
+              "migrations folder (a path in the repository) so tests can build it.", f"datastore:{s.id}", s.evidence, None)
+    for ag in d.agents:
+        m = meta[ag.id]
+        if ag.include and m.get("auth"):
+            q(f"The endpoint of `{ag.name}` needs a signed-in user. Which environment variable will hold a test token?",
+              f"auth:{ag.id}", m["auth"], "APP_TEST_TOKEN")
+        if ag.include and m.get("prompt_source"):
+            q(f"`{ag.name}` loads its prompt at run time (`{m['prompt_source']}`). Should tests use the live prompt?",
+              f"prompt:{ag.id}", ag.evidence, PROMPT_ANSWERS[0], list(PROMPT_ANSWERS))
     for s in d.mcp_servers:
         sdk = any(d.facts[i].attrs.get("sdk") for i in s.evidence if i in d.facts)
         if s.defined_here and not s.command and not sdk:
@@ -467,51 +647,104 @@ def _questions(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> N
 # ---------------------------------------------------------------- optional model pass
 
 
-def enrich(d: Discovery, base_url: str, model: str, api_key: str = "", timeout: float = 120.0) -> None:
-    """Ask a model for one-sentence purposes and extra questions. Only claims that cite a known fact survive."""
+ENRICH_PROMPT = (
+    "You review an automatically generated map of the AI agents in a code repository. "
+    "Return JSON only, with this shape:\n"
+    '{"agents": {"<id>": "<one sentence: what the agent does, for a reviewer>"}, '
+    '"tools": {"<name>": "<one sentence>"}, '
+    '"questions": [{"about": "agent:<id>|tool:<name>", "text": "<question>", "evidence": ["<fact id>"]}]}\n'
+    "Rules: only describe what the evidence shows; skip anything you are unsure about; at most 5 questions, each "
+    "citing at least one fact id from the input.\n\n"
+)
+BATCH_TOOLS, BATCH_AGENTS = 40, 12
+
+
+def _cache_dir() -> Path:
+    return Path(os.environ.get("CRUCIBLE_CACHE_DIR") or Path.home() / ".cache" / "agentcrucible") / "synthesis"
+
+
+def enrich_batches(d: Discovery) -> list[dict[str, Any]]:
+    """What will be sent: agents and tools with redacted snippets, grouped by module so each request stays small
+    (large repositories get several requests whose answers are merged)."""
+    def src(fid: str) -> dict[str, Any]:
+        e = d.facts[fid].evidence[0]
+        return {"fact": fid, "file": e.file, "line": e.line, "snippet": redact(e.snippet)[:300]}
+
     agents = [{"id": a.id, "name": a.name, "framework": a.framework, "tools": a.tools[:20], "current": a.purpose,
-               "evidence": [{"fact": fid, "file": d.facts[fid].evidence[0].file, "snippet": redact(d.facts[fid].evidence[0].snippet)[:300]}
-                            for fid in a.evidence[:2] if fid in d.facts]}
-              for a in d.agents][:30]
-    tools = [{"name": t.name, "current": t.description, "effects": t.effects, "evidence": t.evidence[:1],
-              "snippet": redact(d.facts[t.evidence[0]].evidence[0].snippet)[:200] if t.evidence and t.evidence[0] in d.facts else ""}
-             for t in d.tools][:60]
-    prompt = (
-        "You review an automatically generated map of the AI agents in a code repository. "
-        "Return JSON only, with this shape:\n"
-        '{"agents": {"<id>": "<one sentence: what the agent does, for a reviewer>"}, '
-        '"tools": {"<name>": "<one sentence>"}, '
-        '"questions": [{"about": "agent:<id>|tool:<name>", "text": "<question>", "evidence": ["<fact id>"]}]}\n'
-        "Rules: only describe what the evidence shows; skip anything you are unsure about; at most 5 questions, each "
-        "citing at least one fact id from the input.\n\n" + json.dumps({"agents": agents, "tools": tools})[:24000]
-    )
-    r = httpx.post(base_url.rstrip("/") + "/chat/completions", timeout=timeout,
-                   headers={"Authorization": f"Bearer {api_key or 'none'}"},
-                   json={"model": model, "temperature": 0, "response_format": {"type": "json_object"},
-                         "messages": [{"role": "user", "content": prompt}]})
-    r.raise_for_status()
-    text = r.json()["choices"][0]["message"]["content"] or "{}"
-    m = re.search(r"\{.*\}", text, re.S)
-    data = json.loads(m.group(0) if m else "{}")
+               "evidence": [src(fid) for fid in a.evidence[:2] if fid in d.facts]} for a in d.agents]
+    tools = [{"name": t.name, "current": t.description, "effects": t.effects,
+              "evidence": [src(t.evidence[0])] if t.evidence and t.evidence[0] in d.facts else []} for t in d.tools]
+    by_module: dict[str, list[dict[str, Any]]] = {}
+    for t in tools:
+        by_module.setdefault(t["evidence"][0]["file"] if t["evidence"] else "", []).append(t)
+    tool_batches: list[list[dict[str, Any]]] = [[]]
+    for group in by_module.values():
+        if tool_batches[-1] and len(tool_batches[-1]) + len(group) > BATCH_TOOLS:
+            tool_batches.append([])
+        tool_batches[-1] += group
+    agent_batches = [agents[i:i + BATCH_AGENTS] for i in range(0, len(agents), BATCH_AGENTS)] or [[]]
+    n = max(len(tool_batches), len(agent_batches))
+    return [{"agents": agent_batches[i] if i < len(agent_batches) else [],
+             "tools": tool_batches[i] if i < len(tool_batches) else []} for i in range(n)]
+
+
+def enrich(d: Discovery, base_url: str, model: str, api_key: str = "",
+           timeout: float = float(os.environ.get("CRUCIBLE_SYNTHESIS_TIMEOUT", "300")),  # local models on a laptop are slow
+           progress: Progress | None = None) -> None:
+    """Ask a model for one-sentence purposes and extra questions. Only claims that cite a known fact survive.
+    Answers are cached by a hash of the request, so re-scanning an unchanged repository costs nothing."""
+    say = progress or (lambda _m: None)
+    batches = enrich_batches(d)
+    cache = _cache_dir()
+    data: dict[str, Any] = {"agents": {}, "tools": {}, "questions": []}
+    hits = 0
+    for i, batch in enumerate(batches):
+        body = ENRICH_PROMPT + json.dumps(batch)[:24000]
+        key = hashlib.sha256(f"{model}\n{body}".encode()).hexdigest()
+        f = cache / f"{key}.json"
+        if f.is_file():
+            part, hits = json.loads(f.read_text(encoding="utf-8")), hits + 1
+        else:
+            if len(batches) > 1:
+                say(f"Model request {i + 1} of {len(batches)}")
+            r = httpx.post(base_url.rstrip("/") + "/chat/completions", timeout=timeout,
+                           headers={"Authorization": f"Bearer {api_key or 'none'}"},
+                           json={"model": model, "temperature": 0, "response_format": {"type": "json_object"},
+                                 "messages": [{"role": "user", "content": body}]})
+            r.raise_for_status()
+            text = r.json()["choices"][0]["message"]["content"] or "{}"
+            m = re.search(r"\{.*\}", text, re.S)
+            part = json.loads(m.group(0) if m else "{}")
+            try:
+                cache.mkdir(parents=True, exist_ok=True)
+                f.write_text(json.dumps(part), encoding="utf-8")
+            except OSError:
+                pass
+        data["agents"].update(part.get("agents") or {})
+        data["tools"].update(part.get("tools") or {})
+        data["questions"] += part.get("questions") or []
     changed = 0
-    for aid, purpose in (data.get("agents") or {}).items():
+    for aid, purpose in data["agents"].items():
         ag = d.agent(aid)
         if ag and isinstance(purpose, str) and purpose.strip():
             ag.purpose = _sentence(purpose, 240)
             changed += 1
-    for tname, desc in (data.get("tools") or {}).items():
+    for tname, desc in data["tools"].items():
         t = d.tool(tname)
         if t and isinstance(desc, str) and desc.strip() and not t.description:
             t.description = _sentence(desc, 240)
             changed += 1
-    for item in (data.get("questions") or [])[:5]:
+    for item in data["questions"][:5]:
         ev = [e for e in (item.get("evidence") or []) if e in d.facts]
         text = str(item.get("text") or "").strip()
         about = str(item.get("about") or "")
         if ev and text and re.match(r"^(agent|tool):", about):
             d.questions.append(Question(id=f"q{len(d.questions) + 1}", text=text[:300], about=about, evidence=ev))
             changed += 1
-    d.synthesis = {"model": model, "base_url": base_url, "used": True, "changes": changed}
+    sent = [{"fact": e["fact"], "file": e["file"], "line": e["line"]}
+            for b in batches for x in b["agents"] + b["tools"] for e in x["evidence"]]
+    d.synthesis = {"model": model, "base_url": base_url, "used": True, "changes": changed, "requests": len(batches),
+                   "cached": hits, "sent": sent, "chars": sum(len(json.dumps(b)) for b in batches)}
 
 
 def discover(root: Path, *, include: list[str] | None = None, llm_base_url: str | None = None, llm_model: str | None = None,
@@ -520,9 +753,14 @@ def discover(root: Path, *, include: list[str] | None = None, llm_base_url: str 
     inv, c = collect(root, include, say)
     d = assemble(inv, c, source)
     if llm_base_url and llm_model:
-        say(f"Asking {llm_model} to describe {len(d.agents)} agents and {len(d.tools)} tools")
+        batches = enrich_batches(d)
+        size = sum(len(json.dumps(b)) for b in batches)
+        say(f"Asking {llm_model} to describe {len(d.agents)} agents and {len(d.tools)} tools "
+            f"({size // 1000 + 1} KB of redacted snippets, {len(batches)} request{'s' if len(batches) > 1 else ''})")
         try:
-            enrich(d, llm_base_url, llm_model, llm_api_key)
+            enrich(d, llm_base_url, llm_model, llm_api_key, progress=say)
+            if d.synthesis.get("cached"):
+                say(f"Reused {d.synthesis['cached']} cached model answers (the code hasn't changed)")
         except Exception as e:  # noqa: BLE001 - the deterministic map stands on its own
             d.synthesis = {"model": llm_model, "used": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
             say(f"Model step skipped: {d.synthesis['error']}")

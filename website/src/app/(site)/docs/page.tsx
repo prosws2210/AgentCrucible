@@ -67,6 +67,7 @@ crucible open latest        # HTML report with every trajectory`} />
 crucible discover ./my-repo --apply --yes    # write agent-tests/ and smoke-run it
 crucible discover . --check                  # in CI: fail on a new agent or an untested destructive tool
 crucible import-traces traces.json --agent support   # production conversations become scenarios`} />
+          <Code title=".github/workflows/agent-map.yml" code={`- uses: prosws2210/AgentCrucible/discover@main   # comments on the PR when the agent map drifts`} />
           <P>In the dashboard, open <b className="text-fg">Import codebase</b>: pick a folder or a Git URL, review the system map,
             tools and draft tests, answer any questions, and approve. With Docker Compose, mount the code with
             <code className="font-mono text-[14px] text-fg"> CRUCIBLE_IMPORT_DIR=/path/to/code</code>.</P>
@@ -220,7 +221,7 @@ CRUCIBLE_VIEWER_TOKEN=<another one>         # optional: read-only`} />
             ["crucible serve", "API for the dashboard (DATABASE_URL for Postgres, SQLite by default)"],
             ["crucible mcp-audit", "--command, or --url with -H \"Authorization: …\" and --sse"],
             ["crucible label · calibrate", "Human labels → judge agreement (κ)"],
-            ["crucible discover", "Find agents in a repository and draft their tests: --apply, --check, --update, --json, --no-llm"],
+            ["crucible discover", "Find agents in a repository and draft their tests: --apply, --use-draft, --check --report, --update, --json, --no-llm"],
             ["crucible import-traces", "OpenTelemetry, LangSmith or JSONL conversations → draft scenarios"],
           ]} />
 
@@ -233,6 +234,7 @@ CRUCIBLE_VIEWER_TOKEN=<another one>         # optional: read-only`} />
             ["DATABASE_URL", "Run history for crucible serve (Postgres); SQLite if unset"],
             ["CRUCIBLE_DISCOVER_ROOTS", "Folders the dashboard's codebase import may read (default: home folder)"],
             ["CRUCIBLE_IMPORT_DIR", "Docker Compose: host folder mounted at /import for the codebase import"],
+            ["CRUCIBLE_SYNTHESIS_TIMEOUT · CRUCIBLE_CACHE_DIR", "Codebase import: seconds per model request (300); where model answers are cached"],
           ]} />
 
           <H2 id="limits">Limitations</H2>
@@ -245,7 +247,7 @@ CRUCIBLE_VIEWER_TOKEN=<another one>         # optional: read-only`} />
 
           <H2 id="roadmap">Roadmap</H2>
           <ul className="mt-4 list-disc space-y-2 pl-5 text-[15px] leading-relaxed text-mute">
-            <li>Codebase import: pull-request comments from <code className="font-mono text-[13.5px] text-fg">--check</code>, and adapters for Go and Java agents.</li>
+            <li>Codebase import: ready-made adapters for Go and Java agents, and opening a pull request instead of writing <code className="font-mono text-[13.5px] text-fg">agent-tests/</code>.</li>
             <li>MCP Python SDK 2.x and the stateless 2026 spec revision.</li>
             <li>Docker-per-episode and Kubernetes Job-per-episode executors for agents with system dependencies.</li>
           </ul>
