@@ -7,6 +7,7 @@
     GET    /api/agents/{name}           one agent: connection, tools, scenarios with results, recent runs
     POST   /api/agents                  add an agent by hand to the current project, or start a project in a codebase
     DELETE /api/agents/{name}           remove an agent (found ones are switched off, hand-added ones deleted)
+    GET    /api/graph[.html]            the project's knowledge graph (JSON, or the viewer); also saved in the repository
 
 Adding an agent by hand writes files only inside the project folder (and `agent-tests/` of the chosen codebase), and
 only folders under CRUCIBLE_DISCOVER_ROOTS can be chosen, like for imports.
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ValidationError
 
 from .add_agent import NewAgent, add_to_config, add_to_discovery, remove_agent
@@ -246,3 +248,51 @@ def register(app: FastAPI, ws: Workspace, store: Store, current: Callable[[Reque
             finally:
                 p.invalidate()
         return {"ok": True, "agent": name, "result": what}
+
+    # ---------------------------------------------------------------- knowledge graph
+
+    graphs: dict[str, tuple[tuple, dict[str, Any]]] = {}
+
+    def project_graph(p: Project, refresh: bool = False) -> dict[str, Any]:
+        """The project's knowledge graph, rebuilt when its discovery.json or crucible.yaml changes (or on refresh)."""
+        from .discover import build_plan, discover
+        from .discover.graph import build_graph, write_graph
+        d = _discovery(p)
+        stamp = tuple(f.stat().st_mtime_ns for f in (p.discovery_file, p.path) if f.exists())
+        cached = graphs.get(p.id)
+        if cached and cached[0] == stamp and not refresh:
+            return cached[1]
+        if d is not None:
+            codebase = Path(p.codebase) if p.codebase else Path(d.repo.root)
+        else:  # a hand-written project: read its code (no model) to map it
+            codebase = Path(p.codebase) if p.codebase else p.root
+            d = discover(codebase)
+            build_plan(d, codebase)
+        g = build_graph(d, codebase if codebase.is_dir() else None)
+        # which of the project's agents each agent node is, so the viewer can open its page
+        cfg = p.cfg
+        named = cfg.agents or ({"agent": cfg.agent} if cfg.agent else {})
+        for n in g["nodes"]:
+            if n["kind"] != "agent":
+                continue
+            if n["id"].removeprefix("agent:") in named:
+                n["project_agent"] = n["id"].removeprefix("agent:")
+                continue
+            base = Path(n.get("file") or "").name
+            hit = next((name for name, spec in named.items() if base and base in (spec.command or "")), None)
+            n["project_agent"] = hit or (next(iter(named)) if len(named) == 1 and n.get("included", True) else None)
+        try:  # keep a copy in the repository, next to the tests
+            write_graph(d, codebase, p.root)
+        except OSError:
+            pass
+        graphs[p.id] = (stamp, g)
+        return g
+
+    @app.get("/api/graph")
+    async def get_graph(refresh: bool = False, p: Project = Depends(current)) -> dict[str, Any]:
+        return await asyncio.to_thread(project_graph, p, refresh)
+
+    @app.get("/api/graph.html")
+    async def get_graph_html(refresh: bool = False, p: Project = Depends(current)) -> HTMLResponse:
+        from .discover.graph import viewer_html
+        return HTMLResponse(viewer_html(await asyncio.to_thread(project_graph, p, refresh)))

@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 import yaml
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .config import ProjectConfig, Scenario
@@ -264,6 +265,20 @@ def register(app: FastAPI, ws: Workspace, lock: asyncio.Lock, index_runs: Callab
     @app.get("/api/discover/{jid}")
     async def get_discover(jid: str) -> dict[str, Any]:
         return view(job(jid))
+
+    @app.get("/api/discover/{jid}/graph")
+    async def discover_graph(jid: str) -> dict[str, Any]:
+        """The knowledge graph of what the scan found (before anything is written)."""
+        from .discover.graph import build_graph
+        j = job(jid)
+        if j.get("discovery") is None:
+            raise HTTPException(409, "the scan hasn't finished")
+        return await asyncio.to_thread(build_graph, j["discovery"], Path(j["root"]) if j.get("root") else None)
+
+    @app.get("/api/discover/{jid}/graph.html")
+    async def discover_graph_html(jid: str) -> HTMLResponse:
+        from .discover.graph import viewer_html
+        return HTMLResponse(viewer_html(await discover_graph(jid)))
 
     @app.get("/api/discover/{jid}/reality")
     async def discover_reality(jid: str) -> dict[str, Any]:

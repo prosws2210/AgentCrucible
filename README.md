@@ -145,6 +145,7 @@ crucible discover ./my-repo --apply --yes    # write agent-tests/ (config, adapt
 crucible discover ./my-repo --apply --use-draft   # apply agent-tests/discovery.draft.json after editing it
 crucible discover ./my-repo --apply --pr     # also commit the tests to a new branch, push it and open a pull request
 crucible discover . --check                  # in CI: fails when a new agent or an untested destructive tool appears
+crucible graph ./my-repo                     # rebuild agent-tests/knowledge-graph.html (--rescan to read the code again)
 crucible import-traces traces.json --agent support   # OpenTelemetry / LangSmith / JSONL conversations -> scenarios
 ```
 
@@ -154,6 +155,13 @@ Agent SDK, MCP servers and raw OpenAI/Anthropic tool loops in Python; Vercel AI 
 LangChain JS and MCP in TypeScript; and Spring AI, LangChain4j and Go SDK agents. Every finding cites its file and line,
 destructive tools are mocked in the drafted tests, and a smoke run compares what was found with what the agents
 actually did. The approved project then appears in the dashboard's project switcher with all its agents.
+
+**Knowledge graph.** Every import also writes `agent-tests/knowledge-graph.json` and `knowledge-graph.html`: the files,
+how they import each other, and every agent, tool, MCP server, prompt, database and API, with which agent uses what.
+Click an agent or MCP server to light up everywhere it's used, each linked to its file and line. The HTML file opens in
+any browser with no server or network, so the map stays in the repository with the code. The dashboard shows the same
+graph under **Knowledge graph** (and as a tab while you review an import); the API serves it at `/api/graph` and
+`/api/graph.html`.
 
 Agents are driven through small runtimes with the same features in every language (stdio protocol, tool tracing,
 mocks, blocked tools, injected text, document snapshots for RAG): `agentcrucible.adapters` for Python (plain
@@ -305,6 +313,7 @@ The chart runs the suite as an **Indexed Job** (one shard per pod via `JOB_COMPL
 | `crucible mcp-audit` | Audit an MCP server (`--command`, or `--url` with `-H "Authorization: Bearer …"` / `--sse`) |
 | `crucible label` / `calibrate` | Human labels → judge agreement (κ) |
 | `crucible discover` | Find the agents in a repository and draft their tests (`--apply`, `--use-draft`, `--check --report`, `--update`, `--json`, `--no-llm`) |
+| `crucible graph` | Write the codebase knowledge graph (`agent-tests/knowledge-graph.json` + `.html`; `--rescan`, `--out`) |
 | `crucible import-traces` | Production traces → draft scenarios |
 
 ## Development

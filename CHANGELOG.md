@@ -5,6 +5,11 @@ All notable changes to AgentCrucible. Versions follow [Semantic Versioning](http
 ## [Unreleased]
 
 ### Added
+- **Knowledge graph:** every import writes `agent-tests/knowledge-graph.json` and a self-contained
+  `knowledge-graph.html` (no server or network): files and their imports, agents, tools, MCP servers, prompts, databases,
+  APIs and vector stores, and what uses what, each with its file and line. Click an agent or MCP server to see everywhere
+  it's used. `crucible graph [path] [--rescan]` rebuilds it; the dashboard has a **Knowledge graph** page and an import
+  review tab, served by `GET /api/graph`, `/api/graph.html` and `/api/discover/{id}/graph[.html]`.
 - **Codebase import:** `crucible discover <path | git URL>` reads a repository without running it and finds agents,
   tools (with side effects), MCP servers, sub-agents, prompts, databases, external APIs, vector stores, entry points and
   existing eval sets, across Python, TypeScript/JavaScript, Go and Java. Every finding cites its file and line; anything

@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Knowledge graph · AgentCrucible</title>
+<style>
+:root {
+  --bg: #0b0a09; --panel: #141210; --panel-2: #1b1815; --fg: #f3eee8; --mute: #b0a69c; --dim: #7d746b; --line: #2a2520;
+  --ember: #ff6b35; --agent: #ff6b35; --tool: #5aa9ff; --mcp: #b38cff; --file: #6f665d; --datastore: #3ecf8e;
+  color-scheme: dark;
+  --api: #f2c14e; --vector: #2dd4bf; --prompt: #f472b6; --skill: #a3e635; --entry: #e5e7eb; --bad: #f87171;
+}
+@media (prefers-color-scheme: light) { :root {
+  color-scheme: light;
+  --bg: #f7f5f2; --panel: #ffffff; --panel-2: #f0ece7; --fg: #1d1915; --mute: #5f574f; --dim: #8a8178; --line: #e2dcd5;
+  --ember: #c2410c; --agent: #c2410c; --tool: #2563eb; --mcp: #7c3aed; --file: #a8a29e; --datastore: #059669;
+  --api: #b45309; --vector: #0d9488; --prompt: #db2777; --skill: #4d7c0f; --entry: #44403c; } }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+button, input { font: inherit; color: inherit; }
+.app { display: grid; grid-template-rows: auto 1fr; height: 100%; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { margin: 0; font-size: 14px; font-weight: 650; }
+header .sub { color: var(--dim); font-size: 12px; }
+.grow { flex: 1; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--panel-2); border-radius: 999px; padding: 3px 10px; cursor: pointer; font-size: 12px; color: var(--mute); }
+.chip[aria-pressed="false"] { opacity: .45; }
+.chip.on { border-color: var(--ember); color: var(--fg); }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+input[type=search] { width: 220px; max-width: 100%; border: 1px solid var(--line); background: var(--panel-2); border-radius: 8px; padding: 5px 10px; outline: none; }
+input[type=search]:focus { border-color: var(--ember); }
+.btn { border: 1px solid var(--line); background: var(--panel-2); border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+.btn:hover { border-color: var(--ember); }
+main { position: relative; display: grid; grid-template-columns: 1fr 330px; min-height: 0; }
+#stage { position: relative; min-height: 0; overflow: hidden; }
+svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+svg.dragging { cursor: grabbing; }
+.edge { stroke: var(--line); stroke-width: 1; }
+.edge.hot { stroke: var(--ember); stroke-width: 1.6; }
+.edge.dim, .node.dim { opacity: .12; }
+.node { cursor: pointer; }
+.node text { fill: var(--mute); font-size: 10px; pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
+.node.hot text, .node.sel text { fill: var(--fg); font-weight: 600; }
+.node.sel .shape { stroke: var(--fg); stroke-width: 2.5; }
+.node .shape { stroke: var(--bg); stroke-width: 1.5; }
+aside { border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 14px; }
+aside h2 { margin: 0 0 2px; font-size: 15px; word-break: break-word; }
+aside .kind { font: 11px ui-monospace, Consolas, monospace; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+aside dl { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; margin: 12px 0; font-size: 12px; }
+aside dt { color: var(--dim); }
+aside dd { margin: 0; word-break: break-word; }
+code { font: 11.5px ui-monospace, Consolas, monospace; background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; padding: 0 4px; }
+.group { margin-top: 12px; }
+.group h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: 600; }
+.link { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: 0; background: none; padding: 3px 4px; border-radius: 6px; cursor: pointer; }
+.link:hover { background: var(--panel-2); }
+.empty { color: var(--dim); }
+.legend { position: absolute; left: 10px; bottom: 10px; background: color-mix(in srgb, var(--panel) 85%, transparent); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 11px; color: var(--mute); max-width: calc(100% - 20px); }
+.legend span { margin-right: 10px; white-space: nowrap; }
+.hint { position: absolute; right: 10px; top: 10px; color: var(--dim); font-size: 11px; background: color-mix(in srgb, var(--panel) 85%, transparent); border-radius: 8px; padding: 4px 8px; }
+#list { display: none; overflow-y: auto; padding: 8px 14px; }
+#list table { width: 100%; border-collapse: collapse; font-size: 12px; }
+#list td, #list th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: left; vertical-align: top; }
+#list th { color: var(--dim); font-weight: 500; }
+body.listview #stage { display: none; } body.listview #list { display: block; }
+@media (max-width: 760px) {
+  main { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+  aside { border-left: 0; border-top: 1px solid var(--line); max-height: 42vh; }
+  input[type=search] { width: 100%; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1 id="title">Knowledge graph</h1>
+      <div class="sub" id="subtitle"></div>
+    </div>
+    <div class="grow"></div>
+    <input type="search" id="search" placeholder="Search files, agents, tools…" aria-label="Search the graph">
+    <button class="btn" id="focus" aria-pressed="false" title="Only agents, MCP servers, tools, services and the files they live in">Agents &amp; MCP only</button>
+    <button class="btn" id="view" title="Switch between the graph and a list">List</button>
+    <button class="btn" id="reset" title="Fit to screen and clear the selection">Reset</button>
+    <div class="chips" id="chips" role="group" aria-label="Show kinds"></div>
+  </header>
+  <main>
+    <div id="stage">
+      <svg id="svg" role="img" aria-label="Graph of the codebase"><g id="viewport"><g id="edges"></g><g id="nodes"></g></g></svg>
+      <div class="hint" id="hint"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div id="list"></div>
+    <aside id="panel" aria-live="polite"></aside>
+  </main>
+</div>
+<script>
+const GRAPH = /*__GRAPH__*/null;
+const KINDS = {
+  agent: ["Agents", "--agent"], mcp_server: ["MCP servers", "--mcp"], tool: ["Tools", "--tool"], file: ["Files", "--file"],
+  datastore: ["Databases", "--datastore"], api: ["APIs", "--api"], vector_store: ["Vector stores", "--vector"],
+  prompt: ["Prompts", "--prompt"], skill: ["Skills", "--skill"], entrypoint: ["Entry points", "--entry"],
+};
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const NS = "http://www.w3.org/2000/svg";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function start(g) {
+  const nodes = g.nodes.map((n) => ({ ...n }));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const edges = g.edges.filter((e) => byId.has(e.source) && byId.has(e.target)).map((e) => ({ ...e, s: byId.get(e.source), t: byId.get(e.target) }));
+  const adj = new Map(nodes.map((n) => [n.id, []]));
+  for (const e of edges) { adj.get(e.source).push(e); adj.get(e.target).push(e); }
+  for (const n of nodes) n.deg = adj.get(n.id).length;
+
+  $("title").textContent = `Knowledge graph · ${g.repo?.name ?? ""}`;
+  const c = g.counts || {};
+  $("subtitle").textContent = `${c.agent || 0} agents · ${c.mcp_server || 0} MCP servers · ${c.tool || 0} tools · ${c.file || 0} files` +
+    (g.repo?.commit ? ` · ${g.repo.commit}` : "");
+
+  // ---- filters
+  const shown = new Set(Object.keys(KINDS));
+  let focusMode = false, query = "", selected = null;
+  for (const [k, [label, color]] of Object.entries(KINDS)) {
+    if (!c[k]) continue;
+    const b = document.createElement("button");
+    b.className = "chip"; b.setAttribute("aria-pressed", "true");
+    b.innerHTML = `<span class="dot" style="background:var(${color})"></span>${label} <b>${c[k]}</b>`;
+    b.onclick = () => { shown.has(k) ? shown.delete(k) : shown.add(k); b.setAttribute("aria-pressed", String(shown.has(k))); render(); };
+    $("chips").appendChild(b);
+  }
+  $("legend").innerHTML = Object.entries(KINDS).filter(([k]) => c[k]).map(([, [l, col]]) => `<span><span class="dot" style="background:var(${col})"></span> ${l}</span>`).join("");
+
+  // files that matter for agents and MCP: where they're defined, what they use, who imports them
+  const core = new Set();
+  for (const n of nodes) if (n.kind !== "file") core.add(n.id);
+  for (const e of edges) {
+    if (e.kind === "defines" || e.kind === "configures") core.add(e.source);
+    if (e.kind === "imports" && (core.has(e.target) && e.t.kind === "file" && adj.get(e.target).some((x) => x.kind === "defines" && ["agent", "mcp_server"].includes(x.t.kind)))) core.add(e.source);
+  }
+
+  // ---- layout: a small force simulation, run in frames so the page stays responsive
+  const W = () => $("stage").clientWidth || 800, H = () => $("stage").clientHeight || 600;
+  const rings = { agent: 0.15, mcp_server: 0.25, tool: 0.35, entrypoint: 0.3, prompt: 0.4, skill: 0.45, datastore: 0.5, api: 0.5, vector_store: 0.5, file: 0.8 };
+  nodes.forEach((n, i) => {
+    const r = (rings[n.kind] ?? 0.7) * Math.min(W(), H()) * 0.5, a = (i * 2.399963) % (2 * Math.PI);
+    n.x = W() / 2 + r * Math.cos(a); n.y = H() / 2 + r * Math.sin(a); n.vx = 0; n.vy = 0;
+  });
+  const radius = (n) => n.kind === "agent" ? 11 + Math.min(n.deg, 10) * 0.6 : n.kind === "mcp_server" ? 10 : n.kind === "file" ? 4 + Math.min(n.deg, 8) * 0.4 : 7;
+  let alpha = 1;
+  function tick() {
+    const cx = W() / 2, cy = H() / 2, k = Math.sqrt((W() * H()) / Math.max(nodes.length, 1));
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j];
+        let dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy + 0.01;
+        if (d2 > 90000) continue;
+        const f = (k * k * 0.06) / d2;
+        dx *= f; dy *= f; a.vx += dx; a.vy += dy; b.vx -= dx; b.vy -= dy;
+      }
+    }
+    for (const e of edges) {
+      const dx = e.t.x - e.s.x, dy = e.t.y - e.s.y, d = Math.sqrt(dx * dx + dy * dy) + 0.01;
+      const want = e.kind === "imports" ? k * 0.9 : k * 0.55, f = ((d - want) / d) * 0.06;
+      e.s.vx += dx * f; e.s.vy += dy * f; e.t.vx -= dx * f; e.t.vy -= dy * f;
+    }
+    for (const n of nodes) {
+      if (n.fixed) { n.vx = n.vy = 0; continue; }
+      const pull = n.deg <= 1 ? 0.03 : 0.012;  // loosely connected nodes would drift off and shrink everything else
+      n.vx += (cx - n.x) * pull; n.vy += (cy - n.y) * pull;
+      n.x += Math.max(-15, Math.min(15, n.vx * alpha)); n.y += Math.max(-15, Math.min(15, n.vy * alpha));
+      n.vx *= 0.55; n.vy *= 0.55;
+    }
+    alpha *= 0.982;
+  }
+  function settle() {  // run the layout to the end before showing it, so the first frame is already fitted
+    const steps = nodes.length > 600 ? 90 : nodes.length > 250 ? 160 : 300;
+    for (let i = 0; i < steps && alpha > 0.005; i++) tick();
+    place();
+  }
+
+  // ---- drawing
+  const edgeEls = edges.map((e) => { const l = document.createElementNS(NS, "line"); l.setAttribute("class", "edge"); $("edges").appendChild(l); return l; });
+  const nodeEls = nodes.map((n) => {
+    const gEl = document.createElementNS(NS, "g"); gEl.setAttribute("class", "node"); gEl.setAttribute("tabindex", "0");
+    gEl.setAttribute("aria-label", `${KINDS[n.kind]?.[0] ?? n.kind}: ${n.label}`);
+    const r = radius(n);
+    let shape;
+    if (n.kind === "mcp_server") { shape = document.createElementNS(NS, "rect"); shape.setAttribute("x", -r); shape.setAttribute("y", -r); shape.setAttribute("width", 2 * r); shape.setAttribute("height", 2 * r); shape.setAttribute("rx", 3); }
+    else if (n.kind === "tool") { shape = document.createElementNS(NS, "path"); shape.setAttribute("d", `M0 ${-r} L${r} 0 L0 ${r} L${-r} 0 Z`); }
+    else { shape = document.createElementNS(NS, "circle"); shape.setAttribute("r", r); }
+    shape.setAttribute("class", "shape"); shape.setAttribute("fill", css(KINDS[n.kind]?.[1] ?? "--file"));
+    if (n.kind === "agent" && n.included === false) shape.setAttribute("fill-opacity", "0.45");
+    const t = document.createElementNS(NS, "text"); t.setAttribute("x", r + 3); t.setAttribute("y", 3); t.textContent = n.label;
+    gEl.append(shape, t);
+    gEl.addEventListener("click", (ev) => { ev.stopPropagation(); if (!moved) select(n.id); });
+    gEl.addEventListener("keydown", (ev) => { if (ev.key === "Enter") select(n.id); });
+    gEl.addEventListener("pointerdown", (ev) => startDrag(ev, n));
+    $("nodes").appendChild(gEl);
+    return gEl;
+  });
+  function place() {
+    edges.forEach((e, i) => { const l = edgeEls[i]; l.setAttribute("x1", e.s.x); l.setAttribute("y1", e.s.y); l.setAttribute("x2", e.t.x); l.setAttribute("y2", e.t.y); });
+    nodes.forEach((n, i) => nodeEls[i].setAttribute("transform", `translate(${n.x},${n.y})`));
+  }
+
+  // ---- zoom and pan
+  let view = { x: 0, y: 0, s: 1 };
+  const applyView = () => $("viewport").setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.s})`);
+  function fit(only) {
+    const vis = nodes.filter((n, i) => nodeEls[i].style.display !== "none" && (!only || only.has(n.id)));
+    if (!vis.length) return;
+    const xs = vis.map((n) => n.x), ys = vis.map((n) => n.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const s = Math.min(1.6, 0.85 * Math.min(W() / (maxX - minX + 160), (H() - 60) / (maxY - minY + 120)));
+    view = { s, x: W() / 2 - s * (minX + maxX) / 2, y: (H() - 40) / 2 - s * (minY + maxY) / 2 };  // clear of the legend
+    applyView();
+  }
+  $("svg").addEventListener("wheel", (ev) => {
+    if (!ev.ctrlKey && !ev.metaKey) {  // a plain scroll moves the page; ctrl+scroll (or a trackpad pinch) zooms
+      $("hint").textContent = "Hold Ctrl and scroll to zoom";
+      clearTimeout(hintTimer); hintTimer = setTimeout(() => { $("hint").textContent = HINT; }, 1800);
+      return;
+    }
+    ev.preventDefault();
+    const f = Math.exp(-ev.deltaY * 0.0015), r = $("svg").getBoundingClientRect(), px = ev.clientX - r.left, py = ev.clientY - r.top;
+    view.x = px - (px - view.x) * f; view.y = py - (py - view.y) * f; view.s *= f; applyView();
+  }, { passive: false });
+  let pan = null, drag = null, hintTimer = 0, moved = false, down = null;  // moved: the press was a drag, not a click
+  const HINT = "Click a node to see where it's used · drag to move · Ctrl+scroll to zoom";
+  $("hint").textContent = HINT;
+  $("svg").addEventListener("pointerdown", (ev) => {
+    moved = false; down = { x: ev.clientX, y: ev.clientY };
+    if (drag) return;
+    pan = { x: ev.clientX - view.x, y: ev.clientY - view.y }; $("svg").classList.add("dragging");
+  });
+  window.addEventListener("pointermove", (ev) => {
+    if (down && !moved && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) < 4) return;  // a small wobble is still a click
+    if (down) moved = true;
+    if (drag) { const r = $("svg").getBoundingClientRect(); drag.n.x = (ev.clientX - r.left - view.x) / view.s; drag.n.y = (ev.clientY - r.top - view.y) / view.s; drag.moved = true; place(); }
+    else if (pan) { view.x = ev.clientX - pan.x; view.y = ev.clientY - pan.y; applyView(); }
+  });
+  window.addEventListener("pointerup", () => { if (drag) drag.n.fixed = drag.moved; drag = null; pan = null; down = null; $("svg").classList.remove("dragging"); });
+  function startDrag(ev, n) { ev.stopPropagation(); moved = false; down = { x: ev.clientX, y: ev.clientY }; drag = { n, moved: false }; }
+  $("svg").addEventListener("click", () => { if (!moved && selected) { selected = null; render(); } });  // clear, but keep the view
+
+  // ---- what's connected: "where used" for agents and MCP servers follows uses/provides/touches/defines/imports
+  function reach(id) {
+    const out = new Set([id]), n = byId.get(id);
+    const deep = n && ["agent", "mcp_server"].includes(n.kind);
+    const queue = [[id, 0]];
+    while (queue.length) {
+      const [cur, depth] = queue.shift();
+      for (const e of adj.get(cur)) {
+        const other = e.source === cur ? e.target : e.source;
+        if (out.has(other)) continue;
+        const forward = e.source === cur;
+        const follow = depth === 0 || (deep && ((forward && ["uses", "provides", "touches", "reads/writes", "calls", "hands off to", "connects to", "loads prompt"].includes(e.kind))
+          || (!forward && ["defines", "configures", "runs", "imports"].includes(e.kind) && depth < 3)));
+        if (follow) { out.add(other); if (deep) queue.push([other, depth + 1]); }
+      }
+    }
+    return out;
+  }
+
+  function visible(n) {
+    if (!shown.has(n.kind)) return false;
+    if (focusMode && !core.has(n.id)) return false;
+    if (query && !(`${n.label} ${n.file ?? ""} ${n.framework ?? ""}`.toLowerCase().includes(query))) return selected ? reach(selected).has(n.id) : false;
+    return true;
+  }
+  function render() {
+    const hot = selected ? reach(selected) : null;
+    nodes.forEach((n, i) => {
+      const el = nodeEls[i], vis = visible(n) || (hot && hot.has(n.id) && shown.has(n.kind));
+      el.style.display = vis ? "" : "none";
+      el.classList.toggle("dim", !!hot && !hot.has(n.id));
+      el.classList.toggle("hot", !!hot && hot.has(n.id));
+      el.classList.toggle("sel", n.id === selected);
+    });
+    edges.forEach((e, i) => {
+      const vis = nodeEls[nodes.indexOf(e.s)].style.display !== "none" && nodeEls[nodes.indexOf(e.t)].style.display !== "none";
+      edgeEls[i].style.display = vis ? "" : "none";
+      const isHot = hot && hot.has(e.source) && hot.has(e.target);
+      edgeEls[i].classList.toggle("hot", !!isHot);
+      edgeEls[i].classList.toggle("dim", !!hot && !isHot);
+    });
+    panel();
+    renderList();
+  }
+
+  // ---- details panel
+  const META = { framework: "Framework", purpose: "Purpose", model: "Model", service: "Service", memory: "Memory", effects: "Side effects",
+    description: "Description", tool_kind: "Kind", server: "MCP server", command: "Command", url: "URL", store_kind: "Kind",
+    tables: "Tables", url_env: "Setting", base_url: "Base URL", base_url_env: "Setting", paths: "Endpoints", entry_kind: "Kind", path: "Path" };
+  function panel() {
+    const p = $("panel");
+    if (!selected) {
+      const agents = nodes.filter((n) => n.kind === "agent"), mcps = nodes.filter((n) => n.kind === "mcp_server");
+      p.innerHTML = `<div class="kind">Codebase</div><h2>${esc(g.repo?.name ?? "")}</h2>
+        <p class="empty">Pick an agent or MCP server to light up every file, tool and service it touches.</p>
+        <div class="group"><h3>Agents</h3>${agents.map(link).join("") || '<div class="empty">none found</div>'}</div>
+        <div class="group"><h3>MCP servers</h3>${mcps.map(link).join("") || '<div class="empty">none found</div>'}</div>`;
+      bindLinks(); return;
+    }
+    const n = byId.get(selected), hot = reach(selected);
+    const rows = Object.entries(META).filter(([k]) => n[k] !== undefined && n[k] !== null && n[k] !== "")
+      .map(([k, l]) => `<dt>${l}</dt><dd>${esc(Array.isArray(n[k]) ? n[k].join(", ") : n[k])}</dd>`).join("");
+    const groups = {};
+    for (const e of adj.get(n.id)) {
+      const out = e.source === n.id, other = out ? e.t : e.s, key = out ? e.kind : `${e.kind} (from)`;
+      (groups[key] ||= []).push(other);
+    }
+    const where = ["agent", "mcp_server"].includes(n.kind)
+      ? `<div class="group"><h3>Where it's used · ${hot.size - 1} connected</h3>${[...hot].filter((id) => id !== n.id && byId.get(id).kind === "file").map((id) => link(byId.get(id))).join("") || '<div class="empty">no files</div>'}</div>` : "";
+    const canOpen = window.parent !== window && (n.kind === "agent" ? !!n.project_agent : ["tool", "mcp_server"].includes(n.kind));
+    p.innerHTML = `<div class="kind">${esc(KINDS[n.kind]?.[0] ?? n.kind)}${n.kind === "agent" && n.included === false ? " · not tested" : ""}</div>
+      <h2>${esc(n.label)}</h2>
+      ${n.file ? `<div><code>${esc(n.file)}${n.line ? ":" + n.line : ""}</code></div>` : ""}
+      <dl>${rows}</dl>
+      ${canOpen ? `<button class="btn" id="open">Open in the dashboard</button>` : ""}
+      ${where}
+      ${Object.entries(groups).map(([k, list]) => `<div class="group"><h3>${esc(k)}</h3>${list.map(link).join("")}</div>`).join("")}`;
+    bindLinks();
+    if (canOpen) $("open").onclick = () => window.parent.postMessage({ type: "crucible:open", kind: n.kind, id: n.id, label: n.label, agent: n.project_agent }, "*");
+  }
+  function link(n) { return `<button class="link" data-id="${esc(n.id)}"><span class="dot" style="background:var(${KINDS[n.kind]?.[1] ?? "--file"})"></span>${esc(n.label)}${n.kind === "file" && n.file !== n.label ? ` <span class="empty">${esc(n.file)}</span>` : ""}</button>`; }
+  function bindLinks() { for (const b of document.querySelectorAll("[data-id]")) b.onclick = () => select(b.dataset.id); }
+  function select(id) { selected = id; render(); fit(id ? reach(id) : null); }
+
+  // ---- list view (phones, screen readers)
+  function renderList() {
+    if (!document.body.classList.contains("listview")) return;
+    const rows = nodes.filter((n) => visible(n)).sort((a, b) => (a.kind > b.kind ? 1 : a.kind < b.kind ? -1 : a.label.localeCompare(b.label)));
+    $("list").innerHTML = `<table><thead><tr><th>Kind</th><th>Name</th><th>Where</th><th>Connections</th></tr></thead><tbody>${rows.map((n) =>
+      `<tr><td>${esc(KINDS[n.kind]?.[0] ?? n.kind)}</td><td><button class="link" data-id="${esc(n.id)}">${esc(n.label)}</button></td><td>${n.file ? `<code>${esc(n.file)}${n.line ? ":" + n.line : ""}</code>` : ""}</td><td>${n.deg}</td></tr>`).join("")}</tbody></table>`;
+    bindLinks();
+  }
+
+  $("search").addEventListener("input", (e) => { query = e.target.value.trim().toLowerCase(); render(); });
+  $("focus").onclick = () => { focusMode = !focusMode; $("focus").setAttribute("aria-pressed", String(focusMode)); $("focus").classList.toggle("on", focusMode); render(); setTimeout(fit, 0); };
+  $("view").onclick = () => { document.body.classList.toggle("listview"); $("view").textContent = document.body.classList.contains("listview") ? "Graph" : "List"; render(); };
+  $("reset").onclick = () => { selected = null; query = ""; $("search").value = ""; render(); fit(); };
+  window.addEventListener("message", (ev) => { if (ev.data?.type === "crucible:select" && byId.has(ev.data.id)) select(ev.data.id); });
+  if (nodes.length > 160 && core.size < nodes.length) { focusMode = true; $("focus").setAttribute("aria-pressed", "true"); $("focus").classList.add("on"); }
+  if (matchMedia("(max-width: 760px)").matches) { document.body.classList.add("listview"); $("view").textContent = "Graph"; }
+  const want = new URLSearchParams(location.search).get("select");
+  if (want && byId.has(want)) selected = want;
+  settle(); render(); fit(selected ? reach(selected) : null);
+  let lastSize = "";
+  new ResizeObserver(() => {  // shown later (a tab), or resized: frame it again
+    const size = `${W()}x${H()}`;
+    if (size !== lastSize) { lastSize = size; fit(selected ? reach(selected) : null); }
+  }).observe($("stage"));
+}
+
+if (GRAPH) start(GRAPH);
+else fetch("knowledge-graph.json").then((r) => r.json()).then(start).catch(() => {
+  document.body.innerHTML = '<p style="padding:20px">No graph data. Run <code>crucible graph .</code> in the repository.</p>';
+});
+</script>
+</body>
+</html>

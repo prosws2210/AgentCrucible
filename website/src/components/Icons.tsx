@@ -8,6 +8,7 @@ const base = (d: React.ReactNode, className = "h-4 w-4") => (
 
 export const IconOverview = ({ className }: P) => base(<><rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" /><rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" /></>, className);
 export const IconAgents = ({ className }: P) => base(<><rect x="5" y="8" width="14" height="11" rx="3" /><path d="M12 8V4.5M9.5 13h.01M14.5 13h.01M9.5 16h5" /><circle cx="12" cy="4" r="1" /></>, className);
+export const IconGraph = ({ className }: P) => base(<><circle cx="5" cy="6" r="2.2" /><circle cx="19" cy="6" r="2.2" /><circle cx="12" cy="18" r="2.2" /><circle cx="12" cy="10" r="1.6" /><path d="M7 6.8l3.6 2.4M17 6.8l-3.6 2.4M12 11.6v4.2" /></>, className);
 export const IconImport = ({ className }: P) => base(<><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5Z" /><path d="M12 11v5M9.5 13.5 12 16l2.5-2.5" /></>, className);
 export const IconRuns = ({ className }: P) => base(<><path d="M5 4.5v15l13-7.5Z" /></>, className);
 export const IconScenarios = ({ className }: P) => base(<><path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6h.01M4 12h.01M4 18h.01" /></>, className);

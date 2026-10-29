@@ -124,7 +124,9 @@ Accept, edit or delete each one. A coverage bar shows how many tools have at lea
 
 "Looks good" then:
 
-1. writes `crucible.yaml`, adapters, fixtures and scenarios into `agent-tests/` (or opens a pull request)
+1. writes `crucible.yaml`, adapters, fixtures and scenarios into `agent-tests/` (or opens a pull request), plus the
+   **knowledge graph** (`knowledge-graph.json` and a self-contained `knowledge-graph.html`): files and imports, every
+   agent, tool, MCP server and service, and which agent uses what, each with its file and line
 2. runs the connection check (model, every MCP server, every agent)
 3. runs a **smoke run**: one attempt per scenario
 4. shows the **discovery vs reality** report (section 9)
@@ -417,6 +419,8 @@ A green report means the import is trustworthy, and the user can start a baselin
 - On a pull request: "New tool `bulk_refund` (destructive) has no tests. Draft scenarios added for review."
 - Removed tools and agents mark their scenarios as stale.
 - The dashboard shows **coverage**: agents and tools with at least one approved scenario.
+- `crucible graph .` rebuilds the knowledge graph from the approved `discovery.json` (`--rescan` reads the code again);
+  the dashboard's **Knowledge graph** page rebuilds it for the current project.
 
 ---
 

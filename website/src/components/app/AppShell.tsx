@@ -9,7 +9,7 @@ import {
 } from "@/lib/api";
 import { GITHUB } from "@/lib/site";
 import { LogoMark } from "../Logo";
-import { IconAgents, IconBook, IconExternal, IconImport, IconOverview, IconPlus, IconRuns, IconScenarios, IconServer, IconSetup } from "../Icons";
+import { IconAgents, IconBook, IconGraph, IconExternal, IconImport, IconOverview, IconPlus, IconRuns, IconScenarios, IconServer, IconSetup } from "../Icons";
 import { Code, Spinner } from "../ui";
 
 type Ctx = {
@@ -35,6 +35,7 @@ export function useProject(): Ctx {
 const NAV = [
   { href: "/dashboard/", label: "Overview", icon: IconOverview, also: [] as string[] },
   { href: "/dashboard/agents/", label: "Agents", icon: IconAgents, also: ["/dashboard/agent/"] },
+  { href: "/dashboard/graph/", label: "Knowledge graph", icon: IconGraph, also: [] },
   { href: "/dashboard/runs/", label: "Runs", icon: IconRuns, also: ["/dashboard/run/"] },
   { href: "/dashboard/scenarios/", label: "Scenarios", icon: IconScenarios, also: [] },
   { href: "/dashboard/servers/", label: "MCP servers", icon: IconServer, also: [] },

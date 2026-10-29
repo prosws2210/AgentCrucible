@@ -35,6 +35,8 @@ def write_project(d: Discovery, root: Path, out: Path | None = None, model: str 
     d.approved = True
     (out / "discovery.json").write_text(d.model_dump_json(indent=2), encoding="utf-8")
     written.append("discovery.json")
+    from .graph import write_graph
+    written += write_graph(d, root, out)  # knowledge-graph.json + a viewer you can open from the repo
     gi = out / ".gitignore"
     if not gi.exists():
         gi.write_text(".crucible/\n", encoding="utf-8")

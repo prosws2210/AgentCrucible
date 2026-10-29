@@ -484,6 +484,35 @@ def discover(
     console.print(f"\nDone. Next: [bold]cd {out_dir} && crucible run --label baseline -k 3[/]")
 
 
+@app.command()
+def graph(
+    path: Path = typer.Argument(Path("."), help="Repository root"),
+    out: Optional[Path] = typer.Option(None, "--out", "-o", help="Where to write it (default: <repo>/agent-tests)"),
+    rescan: bool = typer.Option(False, "--rescan", help="Scan the code again instead of using agent-tests/discovery.json"),
+) -> None:
+    """Write the codebase's knowledge graph: files, agents, tools, MCP servers and what uses what (JSON + a viewer)."""
+    from .discover import build_plan, discover
+    from .discover.graph import write_graph
+    from .discover.plan import OUT_DIR
+    from .discover.schema import Discovery
+
+    root = path.resolve()
+    out_dir = out or root / OUT_DIR
+    saved = next((f for f in (out_dir / "discovery.json", out_dir / "discovery.draft.json") if f.is_file()), None)
+    if saved and not rescan:
+        d = Discovery.model_validate_json(saved.read_text(encoding="utf-8"))
+        console.print(f"[dim]From {saved.name} (use --rescan to read the code again)[/]")
+    else:
+        d = discover(root)
+        build_plan(d, root)
+    write_graph(d, root, out_dir)
+    g = json.loads((out_dir / "knowledge-graph.json").read_text(encoding="utf-8"))
+    c = g["counts"]
+    console.print(f"Knowledge graph: {c.get('agent', 0)} agents, {c.get('mcp_server', 0)} MCP servers, {c.get('tool', 0)} tools, "
+                  f"{c.get('file', 0)} files, {len(g['edges'])} connections")
+    console.print(f"Open [bold]{out_dir / 'knowledge-graph.html'}[/] in a browser.")
+
+
 def _print_reality(result: dict) -> None:
     rep = result.get("reality")
     if not rep:

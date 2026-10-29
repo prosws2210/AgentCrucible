@@ -3,16 +3,17 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader, useProject } from "@/components/app/AppShell";
+import { useGraphLinks } from "@/components/app/graph";
 import { IconArrow, IconCheck, IconGit, IconImport, IconRefresh, IconServer, IconShield, IconX } from "@/components/Icons";
 import { Badge, Button, Card, CardHeader, Code, Empty, Spinner } from "@/components/ui";
-import { api, type DAgent, type Discovery, type DTool, type Effect, type ImportJob, type ImportPreview } from "@/lib/api";
+import { API, api, type DAgent, type Discovery, type DTool, type Effect, type ImportJob, type ImportPreview } from "@/lib/api";
 
 const EFFECTS: Effect[] = ["read-only", "writes data", "destructive", "external call", "reads untrusted text"];
 const EFFECT_TONE: Record<Effect, "ok" | "warn" | "bad" | "info" | "ember"> = {
   "read-only": "ok", "writes data": "warn", destructive: "bad", "external call": "info", "reads untrusted text": "ember",
 };
 const STEPS = ["Connect", "Scan", "Review", "Approve", "Results"];
-type Tab = "map" | "agents" | "tools" | "questions" | "connection" | "tests";
+type Tab = "map" | "agents" | "tools" | "questions" | "connection" | "tests" | "graph";
 
 export default function ImportPage() {
   return (
@@ -419,6 +420,7 @@ function Review({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =>
   const tabs: [Tab, string, number | null][] = [
     ["map", "System map", null], ["agents", "Agents", d.agents.length], ["tools", "Tools", d.tools.length],
     ["questions", "Questions", open.length], ["connection", "How it runs", d.plans.length], ["tests", "Draft tests", scenarios.length],
+    ["graph", "Knowledge graph", null],
   ];
 
   return (
@@ -445,6 +447,7 @@ function Review({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =>
       {tab === "questions" && <Questions d={d} patch={patch} disabled={!canWrite || saving} />}
       {tab === "connection" && <Connection d={d} patch={patch} disabled={!canWrite || saving} />}
       {tab === "tests" && <Tests d={d} patch={patch} disabled={!canWrite || saving} />}
+      {tab === "graph" && <JobGraph jobId={job.id} />}
       <div className="sticky bottom-0 mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-ink/90 px-4 py-3 backdrop-blur">
         <div className="text-[13px] text-mute">
           {included.length} agent{included.length === 1 ? "" : "s"} · {scenarios.length} tests will be written to{" "}
@@ -880,6 +883,19 @@ function ScenarioYaml({ agent, s, patch, disabled }: {
 }
 
 // ---------------------------------------------------------------- 5. results
+
+function JobGraph({ jobId }: { jobId: string }) {
+  useGraphLinks();
+  return (
+    <div className="card overflow-hidden">
+      <p className="border-b border-line px-5 py-3 text-[13px] text-mute">
+        What the scan found, as a graph: files, how they import each other, and every agent, tool and MCP server. Click
+        one to see everywhere it&apos;s used. Approving writes it into the repository as <code className="font-mono text-[12px]">agent-tests/knowledge-graph.html</code>.
+      </p>
+      <iframe src={`${API}/api/discover/${jobId}/graph.html`} title="Knowledge graph of the scanned code" className="block h-[66vh] min-h-[420px] w-full border-0 bg-ink" />
+    </div>
+  );
+}
 
 function Results({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) => void }) {
   const r = job.result!;
