@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { IconCheck } from "@/components/Icons";
 import { StartPaths } from "@/components/StartPaths";
 
 export const metadata: Metadata = {
@@ -20,6 +21,11 @@ export default function StartPage() {
               Already have a codebase? Import it and AgentCrucible drafts tests for every agent in it. Or set up a single
               agent by hand. Either way, your agent&apos;s own code stays as it is.
             </p>
+            <ul className="mt-6 flex flex-wrap gap-x-5 gap-y-2 text-[13px] text-mute">
+              {["Reads your code, never runs it", "Free with a local model", "Python, TypeScript, Go and Java"].map((t) => (
+                <li key={t} className="flex items-center gap-2"><IconCheck className="h-3.5 w-3.5 text-ember" />{t}</li>
+              ))}
+            </ul>
           </div>
           <StartPaths />
         </div>

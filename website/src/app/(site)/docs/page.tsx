@@ -23,7 +23,7 @@ export default function Docs() {
     <div className="mx-auto w-full max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
       <div className="grid gap-12 lg:grid-cols-[220px_minmax(0,1fr)]">
         <aside className="hidden lg:block">
-          <div className="sticky top-24 max-h-[calc(100vh-7rem)] overflow-y-auto pb-6">
+          <div className="scroll-quiet sticky top-24 max-h-[calc(100vh-7rem)] overflow-y-auto pb-6 pr-2">
             <DocsToc groups={TOC} />
           </div>
         </aside>

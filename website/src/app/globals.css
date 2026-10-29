@@ -46,6 +46,30 @@ body {
   color: var(--color-fg);
 }
 
+/* thin, quiet scrollbars everywhere: a soft rounded thumb, no track, no arrow buttons.
+   Chrome, Edge and Safari use the ::-webkit-scrollbar rules (the standard properties would bring the arrows back
+   on Windows); Firefox only understands the standard ones. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: rgb(255 255 255 / 0.14) padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: rgb(255 255 255 / 0.28); }
+/* side rails: the scrollbar fades in while the pointer is over them. Chrome doesn't repaint a thumb on :hover, so the
+   thumb inherits the rail's background colour, which is clipped to the text (and hidden under it) and transitions. */
+.scroll-quiet {
+  background-color: rgb(255 255 255 / 0);
+  -webkit-background-clip: text;
+  background-clip: text;
+  transition: background-color 0.25s;
+}
+.scroll-quiet:hover, .scroll-quiet:focus-within { background-color: rgb(255 255 255 / 0.2); }
+.scroll-quiet::-webkit-scrollbar-thumb { background-color: inherit; }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: rgb(255 255 255 / 0.14) transparent; }
+  .scroll-quiet { scrollbar-color: transparent transparent; }
+  .scroll-quiet:hover, .scroll-quiet:focus-within { scrollbar-color: rgb(255 255 255 / 0.18) transparent; }
+}
+
 /* `clip` (unlike `hidden`) keeps the sticky nav working */
 html,
 body {
