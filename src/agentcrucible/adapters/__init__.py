@@ -232,6 +232,9 @@ def _wrap_callable(fn: Callable[..., Any], name: str) -> Callable[..., Any]:
             return True, text
         if mocked:
             ev["mocked"] = True
+            from ..snapshot import answer, is_snapshot_mock
+            if is_snapshot_mock(mock):  # a retriever answered from the document snapshot
+                mock = answer(mock, ev["args"])
             text = mock if isinstance(mock, str) else json.dumps(mock)
             emit(ev, {"type": "tool_result", "tool": name, "content": text})
             return True, mock
@@ -369,3 +372,80 @@ def emit_post_hoc(calls: list[tuple[str, dict[str, Any], Any]]) -> None:
         if result is not None:
             events.append({"type": "tool_result", "tool": name, "content": _short(result)})
     emit(*events)
+
+
+# ---------------------------------------------------------------- context and input objects
+
+
+def example_value(tp: Any, depth: int = 0) -> Any:
+    """A plausible test value for a type annotation (for fields a context or input object requires)."""
+    import typing
+    origin = typing.get_origin(tp)
+    args = typing.get_args(tp)
+    if tp is None or tp is type(None) or depth > 4:
+        return None
+    if origin is typing.Union or str(origin) == "<class 'types.UnionType'>":
+        return None if type(None) in args else example_value(args[0], depth + 1)
+    if origin is typing.Annotated:
+        return example_value(args[0], depth + 1)
+    if origin is typing.Literal:
+        return args[0] if args else None
+    if origin in (list, set, tuple) or tp in (list, set, tuple):
+        return []
+    if origin is dict or tp is dict:
+        return {}
+    if tp is str:
+        return "test"
+    if tp is bool:
+        return False
+    if tp is int:
+        return 1
+    if tp is float:
+        return 1.0
+    if isinstance(tp, type):
+        return example_instance(tp, depth=depth + 1)
+    return None
+
+
+def example_instance(cls: Any, overrides: dict[str, Any] | None = None, depth: int = 0) -> Any:
+    """An instance of a dataclass, pydantic model or TypedDict with its defaults, and test values for required
+    fields: a graph's runtime context, an agent's typed context, or a graph input that isn't a chat."""
+    import dataclasses
+    import typing
+    overrides = overrides or {}
+    try:
+        hints = typing.get_type_hints(cls, include_extras=True)
+    except Exception:  # noqa: BLE001 - unresolvable forward references
+        hints = getattr(cls, "__annotations__", {}) or {}
+    try:
+        if dataclasses.is_dataclass(cls):
+            values = {f.name: overrides.get(f.name, example_value(hints.get(f.name, f.type), depth))
+                      for f in dataclasses.fields(cls) if f.init and (f.name in overrides or (
+                          f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING))}
+            return cls(**values)
+        fields = getattr(cls, "model_fields", None)
+        if fields is not None:  # pydantic: built without validation, so unusual required types don't block it
+            values = {n: overrides.get(n, example_value(hints.get(n, f.annotation), depth))
+                      for n, f in fields.items() if n in overrides or f.is_required()}
+            return cls.model_construct(**values)
+        if typing.is_typeddict(cls):
+            required = getattr(cls, "__required_keys__", set(hints))
+            return {n: overrides.get(n, example_value(t, depth)) for n, t in hints.items() if n in required or n in overrides}
+        return cls(**overrides) if overrides else cls()
+    except Exception:  # noqa: BLE001 - a context we can't build: the agent runs without one, as before
+        return None
+
+
+def schema_fields(cls: Any) -> dict[str, Any]:
+    """field -> annotation for a dataclass, pydantic model or TypedDict."""
+    import dataclasses
+    import typing
+    try:
+        hints = typing.get_type_hints(cls, include_extras=True)
+    except Exception:  # noqa: BLE001
+        hints = getattr(cls, "__annotations__", {}) or {}
+    if dataclasses.is_dataclass(cls):
+        return {f.name: hints.get(f.name, f.type) for f in dataclasses.fields(cls)}
+    if getattr(cls, "model_fields", None) is not None:
+        return {n: hints.get(n, f.annotation) for n, f in cls.model_fields.items()}
+    return dict(hints)

@@ -29,6 +29,11 @@ class AgentSpec(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)  # http: e.g. an auth token for a staging service
     turn_timeout_s: float = 180.0
     ready_timeout_s: float = 60.0
+    # the model forced on this agent's calls (default: the project's `model`); `crucible run --model` overrides both
+    model: str | None = None
+    # for agents that call several models (a router and a worker, a fallback): requested model -> model to use;
+    # models not listed get `model`
+    model_map: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check(self) -> "AgentSpec":
@@ -329,6 +334,9 @@ def load_scenarios(cfg: ProjectConfig, suite: str | None = None, ids: list[str] 
                 continue
             seen.add(sc.id)
             sc.agent = sc.agent or spec.agent
+            if sc.environment.mocks:  # snapshot mocks name a file next to crucible.yaml
+                from .snapshot import resolve
+                sc.environment.mocks = resolve(sc.environment.mocks, cfg.root)
             if sc.agent and sc.agent not in cfg.agents:
                 raise ValueError(f"{f}: agent {sc.agent!r} is not in `agents`")
             out.append((sc, sc.runs or spec.runs))

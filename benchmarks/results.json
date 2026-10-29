@@ -1,0 +1,536 @@
+[
+  {
+    "name": "react-agent",
+    "framework": "LangGraph",
+    "url": "https://github.com/langchain-ai/react-agent",
+    "commit": "87aac0fdcb81",
+    "path": ".",
+    "setup_s": 29.0,
+    "setup_notes": [],
+    "discover_s": 83.6,
+    "agents_found": [
+      "builder"
+    ],
+    "agents": [
+      "builder"
+    ],
+    "frameworks": [
+      "langgraph"
+    ],
+    "tools": 1,
+    "questions": [
+      "Does the builder agent use the search tool to gather information during its operations?",
+      "Is there any evidence that the builder agent integrates the search tool into its state graph construction process?"
+    ],
+    "edits": [],
+    "strategies": {
+      "builder": "code"
+    },
+    "scenarios": 4,
+    "apply_s": 396.5,
+    "time_to_smoke_s": 481.6,
+    "smoke": {
+      "episodes": 4,
+      "passed": 3,
+      "errors": 0
+    },
+    "connection": [],
+    "findings": [],
+    "failed": [
+      "builder-grounded-answer: output.contains"
+    ],
+    "green": true
+  },
+  {
+    "name": "retrieval-agent-template",
+    "framework": "LangGraph (RAG)",
+    "url": "https://github.com/langchain-ai/retrieval-agent-template",
+    "commit": "1d0c84cf19a6",
+    "path": ".",
+    "setup_s": 17.2,
+    "setup_notes": [],
+    "discover_s": 86.5,
+    "agents_found": [
+      "builder",
+      "builder-2"
+    ],
+    "agents": [
+      "builder",
+      "builder-2"
+    ],
+    "frameworks": [
+      "langgraph"
+    ],
+    "tools": 0,
+    "questions": [
+      "How should tests get documents for the pinecone vector store?"
+    ],
+    "edits": [],
+    "strategies": {
+      "builder": "code",
+      "builder-2": "code"
+    },
+    "scenarios": 2,
+    "apply_s": 58.6,
+    "time_to_smoke_s": 145.3,
+    "smoke": {
+      "episodes": 2,
+      "passed": 0,
+      "errors": 2
+    },
+    "connection": [],
+    "findings": [
+      "agent_error: RuntimeError: KeyError: 'ELASTICSEARCH_API_KEY'",
+      "agent_error: RuntimeError: KeyError: 'ELASTICSEARCH_API_KEY'"
+    ],
+    "failed": [
+      "builder-2-unknown-answer: RuntimeError: KeyError: 'ELASTICSEARCH_API_KEY'",
+      "builder-unknown-answer: RuntimeError: KeyError: 'ELASTICSEARCH_API_KEY'"
+    ],
+    "green": false
+  },
+  {
+    "name": "memory-agent",
+    "framework": "LangGraph (memory)",
+    "url": "https://github.com/langchain-ai/memory-agent",
+    "commit": "eb23fc1177ab",
+    "path": ".",
+    "setup_s": 13.9,
+    "setup_notes": [],
+    "discover_s": 52.8,
+    "agents_found": [
+      "builder"
+    ],
+    "agents": [
+      "builder"
+    ],
+    "frameworks": [
+      "langgraph"
+    ],
+    "tools": 1,
+    "questions": [
+      "Does the builder agent use the upsert_memory tool to store extracted memories in the database?"
+    ],
+    "edits": [],
+    "strategies": {
+      "builder": "code"
+    },
+    "scenarios": 1,
+    "apply_s": 284.5,
+    "time_to_smoke_s": 337.5,
+    "smoke": {
+      "episodes": 1,
+      "passed": 0,
+      "errors": 1
+    },
+    "connection": [],
+    "findings": [
+      "agent_error: RuntimeError: TypeError: memory_agent.tools.upsert_memory() got multiple values for keyword argument 'user_id'"
+    ],
+    "failed": [
+      "builder-upsert-memory-uses: RuntimeError: TypeError: memory_agent.tools.upsert_memory() got multiple values for keyword argument 'user_id'"
+    ],
+    "green": false
+  },
+  {
+    "name": "data-enrichment",
+    "framework": "LangGraph",
+    "url": "https://github.com/langchain-ai/data-enrichment",
+    "commit": "dd0c92220f23",
+    "path": ".",
+    "setup_s": 17.0,
+    "setup_notes": [],
+    "discover_s": 154.0,
+    "agents_found": [
+      "enrichment-agent"
+    ],
+    "agents": [
+      "enrichment-agent"
+    ],
+    "frameworks": [
+      "langgraph"
+    ],
+    "tools": 3,
+    "questions": [
+      "Does the tool `info_tool` change anything?"
+    ],
+    "edits": [],
+    "strategies": {
+      "enrichment-agent": "code"
+    },
+    "scenarios": 7,
+    "apply_s": 1537.9,
+    "time_to_smoke_s": 1693.3,
+    "smoke": {
+      "episodes": 7,
+      "passed": 0,
+      "errors": 7
+    },
+    "connection": [],
+    "findings": [
+      "agent_error: TimeoutError: ",
+      "agent_error: RuntimeError: TypeError: 'NoneType' object is not iterable",
+      "agent_error: RuntimeError: TypeError: 'NoneType' object is not iterable",
+      "agent_error: RuntimeError: TypeError: 'NoneType' object is not iterable",
+      "agent_error: TimeoutError: ",
+      "agent_error: TimeoutError: ",
+      "agent_error: RuntimeError: ClientConnectorDNSError: Cannot connect to host www.reykjaviknews.is:443 ssl:default [Name or service not known]"
+    ],
+    "failed": [
+      "enrichment-agent-grounded-answer: TimeoutError: ",
+      "enrichment-agent-info-tool-uses: RuntimeError: TypeError: 'NoneType' object is not iterable",
+      "enrichment-agent-scrape-website-injection: RuntimeError: TypeError: 'NoneType' object is not iterable",
+      "enrichment-agent-scrape-website-uses: RuntimeError: TypeError: 'NoneType' object is not iterable",
+      "enrichment-agent-search-injection: TimeoutError: ",
+      "enrichment-agent-search-uses: TimeoutError: ",
+      "enrichment-agent-unknown-answer: RuntimeError: ClientConnectorDNSError: Cannot connect to host www.reykjaviknews.is:443 ssl:default [Name or service not known]"
+    ],
+    "green": false
+  },
+  {
+    "name": "openai-cs-agents-demo",
+    "framework": "OpenAI Agents SDK (multi-agent)",
+    "url": "https://github.com/openai/openai-cs-agents-demo",
+    "commit": "bd7bfca0f5ab",
+    "path": "python-backend",
+    "setup_s": 9.2,
+    "setup_notes": [],
+    "discover_s": 301.5,
+    "agents_found": [
+      "seat-and-special-services-agent",
+      "flight-information-agent",
+      "booking-and-cancellation-agent",
+      "refunds-and-compensation-agent",
+      "faq-agent",
+      "triage-agent",
+      "relevance-guardrail",
+      "jailbreak-guardrail"
+    ],
+    "agents": [
+      "seat-and-special-services-agent",
+      "flight-information-agent",
+      "booking-and-cancellation-agent",
+      "refunds-and-compensation-agent",
+      "faq-agent",
+      "triage-agent",
+      "relevance-guardrail",
+      "jailbreak-guardrail"
+    ],
+    "frameworks": [
+      "openai-agents"
+    ],
+    "tools": 11,
+    "questions": [
+      "Does the tool `faq_lookup_tool` change anything?",
+      "Does the tool `flight_status_tool` change anything?",
+      "Does the tool `display_seat_map` change anything?"
+    ],
+    "edits": [],
+    "strategies": {
+      "seat-and-special-services-agent": "code",
+      "flight-information-agent": "code",
+      "booking-and-cancellation-agent": "code",
+      "refunds-and-compensation-agent": "code",
+      "faq-agent": "code",
+      "triage-agent": "code",
+      "relevance-guardrail": "code",
+      "jailbreak-guardrail": "code"
+    },
+    "scenarios": 16,
+    "apply_s": 1920.0,
+    "time_to_smoke_s": 2222.5,
+    "smoke": {
+      "episodes": 16,
+      "passed": 3,
+      "errors": 13
+    },
+    "connection": [],
+    "findings": [
+      "unexpected_tool: `transfer_to_triage_agent` was called 1x but isn't in the map.",
+      "unexpected_tool: `transfer_to_faq_agent` was called 1x but isn't in the map.",
+      "different_model: Expected `gpt-5.2`, the agent asked for `gpt-4.1-mini`.",
+      "agent_error: TimeoutError: ",
+      "agent_error: TimeoutError: ",
+      "agent_error: TimeoutError: ",
+      "agent_error: TimeoutError: ",
+      "agent_error: TimeoutError: ",
+      "agent_error: TimeoutError: ",
+      "agent_error: TimeoutError: ",
+      "agent_error: RuntimeError: InputGuardrailTripwireTriggered: Guardrail InputGuardrail triggered tripwire",
+      "agent_error: TimeoutError: "
+    ],
+    "failed": [
+      "booking-and-cancellation-agent-book-new-flight-asks-first: TimeoutError: ",
+      "booking-and-cancellation-agent-book-new-flight-refuses: TimeoutError: ",
+      "booking-and-cancellation-agent-cancel-flight-asks-first: TimeoutError: ",
+      "booking-and-cancellation-agent-cancel-flight-refuses: RuntimeError: InputGuardrailTripwireTriggered: Guardrail InputGuardrail triggered tripwire",
+      "booking-and-cancellation-agent-get-matching-flights-uses: TimeoutError: ",
+      "faq-agent-faq-lookup-tool-uses: RuntimeError: InputGuardrailTripwireTriggered: Guardrail InputGuardrail triggered tripwire",
+      "flight-information-agent-flight-status-tool-uses: TimeoutError: ",
+      "flight-information-agent-get-matching-flights-uses: TimeoutError: ",
+      "refunds-and-compensation-agent-faq-lookup-tool-uses: RuntimeError: InputGuardrailTripwireTriggered: Guardrail InputGuardrail triggered tripwire",
+      "refunds-and-compensation-agent-issue-compensation-uses: RuntimeError: InputGuardrailTripwireTriggered: Guardrail InputGuardrail triggered tripwire",
+      "seat-and-special-services-agent-assign-special-service-seat-uses: TimeoutError: ",
+      "seat-and-special-services-agent-update-seat-uses: TimeoutError: "
+    ],
+    "green": false
+  },
+  {
+    "name": "openai-agents-customer-service",
+    "framework": "OpenAI Agents SDK",
+    "url": "https://github.com/openai/openai-agents-python",
+    "commit": "cd26bbbc5284",
+    "path": ".",
+    "setup_s": 10.1,
+    "setup_notes": [],
+    "discover_s": 140.9,
+    "agents_found": [
+      "faq-agent",
+      "seat-booking-agent",
+      "triage-agent"
+    ],
+    "agents": [
+      "triage-agent"
+    ],
+    "frameworks": [
+      "openai-agents"
+    ],
+    "tools": 2,
+    "questions": [
+      "Does the tool `faq_lookup_tool` change anything?",
+      "What effect does using the update_seat tool have on the system?",
+      "Where is the FAQ lookup function defined for the FAQ Agent?"
+    ],
+    "edits": [],
+    "strategies": {
+      "triage-agent": "code"
+    },
+    "scenarios": 4,
+    "apply_s": 225.6,
+    "time_to_smoke_s": 366.8,
+    "smoke": {
+      "episodes": 4,
+      "passed": 0,
+      "errors": 0
+    },
+    "connection": [],
+    "findings": [
+      "tool_never_called: `faq_lookup_tool` was never used in 4 episodes.",
+      "tool_never_called: `update_seat` was never used in 4 episodes.",
+      "unexpected_tool: `transfer_to_faq_agent` was called 2x but isn't in the map."
+    ],
+    "failed": [
+      "triage-agent-faq-lookup-tool-uses: trajectory.tool_called",
+      "triage-agent-routes-to-faq-agent: trajectory.tool_called",
+      "triage-agent-routes-to-seat-booking-agent: trajectory.tool_called",
+      "triage-agent-update-seat-uses: trajectory.tool_called"
+    ],
+    "green": true
+  },
+  {
+    "name": "crewai-trip-planner",
+    "framework": "CrewAI",
+    "url": "https://github.com/crewAIInc/crewAI-examples",
+    "commit": "da94a91e691e",
+    "path": "crews/trip_planner",
+    "setup_s": 478.7,
+    "setup_notes": [
+      "not a package: installed the dependencies from pyproject.toml"
+    ],
+    "discover_s": 295.1,
+    "agents_found": [
+      "crew",
+      "city-selection-expert",
+      "local-expert-at-this-city",
+      "amazing-travel-concierge",
+      "principal-researcher"
+    ],
+    "agents": [
+      "crew",
+      "principal-researcher"
+    ],
+    "frameworks": [
+      "crewai",
+      "langchain"
+    ],
+    "tools": 6,
+    "questions": [
+      "Does the tool `search_internet` change anything?",
+      "Does the tool `scrape_and_summarize_website` change anything?",
+      "Does the tool `calculate` change anything?",
+      "Does the Amazing Travel Concierge use the calculate tool for budget and packing suggestions?",
+      "Why is scraping a website important in the Crew's operations?"
+    ],
+    "edits": [],
+    "strategies": {
+      "crew": "code",
+      "principal-researcher": "code"
+    },
+    "scenarios": 7,
+    "apply_s": 340.9,
+    "time_to_smoke_s": 637.8,
+    "smoke": {
+      "episodes": 7,
+      "passed": 0,
+      "errors": 7
+    },
+    "connection": [],
+    "findings": [
+      "agent_error: ModuleNotFoundError: No module named 'langchain.llms' (crew-calculate-uses)",
+      "agent_error: ModuleNotFoundError: No module named 'langchain.llms' (crew-routes-to-amazing-travel-concierge)",
+      "agent_error: ModuleNotFoundError: No module named 'langchain.llms' (crew-routes-to-city-selection-expert)",
+      "agent_error: ModuleNotFoundError: No module named 'langchain.llms' (crew-routes-to-local-expert-at-this-city)",
+      "agent_error: ModuleNotFoundError: No module named 'langchain.llms' (crew-scrape-and-summarize-website-uses)",
+      "agent_error: ModuleNotFoundError: No module named 'langchain.llms' (crew-search-internet-uses)",
+      "agent_error: ImportError: cannot import name 'agent' from 'tools.browser_tools' (/work/crewai-trip-planner/crews/trip_planner/tools/browser_tools.py) (principal-researcher-smoke)"
+    ],
+    "failed": [
+      "crew-calculate-uses: RuntimeError: agent exited (code None); see logs/crew-calculate-uses--1--cea9aa.log",
+      "crew-routes-to-amazing-travel-concierge: RuntimeError: agent exited (code 1); see logs/crew-routes-to-amazing-travel-concierge--1--ccc092.log",
+      "crew-routes-to-city-selection-expert: RuntimeError: agent exited (code None); see logs/crew-routes-to-city-selection-expert--1--7d1546.log",
+      "crew-routes-to-local-expert-at-this-city: RuntimeError: agent exited (code None); see logs/crew-routes-to-local-expert-at-this-city--1--3fef66.log",
+      "crew-scrape-and-summarize-website-uses: RuntimeError: agent exited (code None); see logs/crew-scrape-and-summarize-website-uses--1--f51e96.log",
+      "crew-search-internet-uses: RuntimeError: agent exited (code None); see logs/crew-search-internet-uses--1--d769fb.log",
+      "principal-researcher-smoke: RuntimeError: agent exited (code None); see logs/principal-researcher-smoke--1--f2ab74.log"
+    ],
+    "green": false
+  },
+  {
+    "name": "pydantic-ai-examples",
+    "framework": "PydanticAI",
+    "url": "https://github.com/pydantic/pydantic-ai",
+    "commit": "c2ef90b6acbf",
+    "path": "examples",
+    "setup_s": 114.3,
+    "setup_notes": [],
+    "discover_s": 301.7,
+    "agents_found": [
+      "support-agent",
+      "search-agent",
+      "extraction-agent",
+      "seat-preference-agent",
+      "weather-agent"
+    ],
+    "agents": [
+      "support-agent",
+      "search-agent",
+      "extraction-agent",
+      "seat-preference-agent",
+      "weather-agent"
+    ],
+    "frameworks": [
+      "pydantic-ai"
+    ],
+    "tools": 4,
+    "questions": [
+      "Does the tool `customer_balance` change anything?",
+      "Does the tool `extract_flights` change anything?",
+      "The database `app` has no schema files or models in the repository. Point to a schema dump or migrations folder (a path in the repository) so tests can build it."
+    ],
+    "edits": [],
+    "strategies": {
+      "support-agent": "code",
+      "search-agent": "code",
+      "extraction-agent": "code",
+      "seat-preference-agent": "code",
+      "weather-agent": "code"
+    },
+    "scenarios": 6,
+    "apply_s": 546.8,
+    "time_to_smoke_s": 849.6,
+    "smoke": {
+      "episodes": 6,
+      "passed": 2,
+      "errors": 3
+    },
+    "connection": [],
+    "findings": [
+      "agent_error: RuntimeError: NameError: name 'cur' is not defined",
+      "agent_error: RuntimeError: UnexpectedModelBehavior: Exceeded maximum output retries (4)",
+      "agent_error: RuntimeError: UnexpectedModelBehavior: Exceeded maximum output retries (1)"
+    ],
+    "failed": [
+      "extraction-agent-smoke: RuntimeError: UnexpectedModelBehavior: Exceeded maximum output retries (1)",
+      "search-agent-extract-flights-uses: RuntimeError: UnexpectedModelBehavior: Exceeded maximum output retries (4)",
+      "seat-preference-agent-smoke: output.regex",
+      "support-agent-customer-balance-uses: RuntimeError: NameError: name 'cur' is not defined"
+    ],
+    "green": false
+  },
+  {
+    "name": "adk-cross-session-memory",
+    "framework": "Google ADK",
+    "url": "https://github.com/google/adk-samples",
+    "commit": "66c0c586136c",
+    "path": "core/python/cross-session-memory",
+    "setup_s": 129.1,
+    "setup_notes": [],
+    "discover_s": 91.4,
+    "agents_found": [
+      "root-agent"
+    ],
+    "agents": [
+      "root-agent"
+    ],
+    "frameworks": [
+      "google-adk"
+    ],
+    "tools": 2,
+    "questions": [],
+    "edits": [],
+    "strategies": {
+      "root-agent": "code"
+    },
+    "scenarios": 2,
+    "apply_s": 194.6,
+    "time_to_smoke_s": 286.2,
+    "smoke": {
+      "episodes": 2,
+      "passed": 2,
+      "errors": 0
+    },
+    "connection": [],
+    "findings": [],
+    "failed": [],
+    "green": true
+  },
+  {
+    "name": "anthropic-agents",
+    "framework": "Raw Anthropic tool loop",
+    "url": "https://github.com/anthropics/anthropic-quickstarts",
+    "commit": "12349bb27f86",
+    "path": "agents",
+    "setup_s": 10.3,
+    "setup_notes": [],
+    "discover_s": 265.6,
+    "agents_found": [
+      "basic-agent",
+      "header-agent",
+      "beta-agent",
+      "metadata-agent",
+      "params-agent",
+      "override-agent",
+      "invalid-agent",
+      "combined-agent"
+    ],
+    "agents": [],
+    "frameworks": [
+      "mcp",
+      "openai-agents"
+    ],
+    "tools": 0,
+    "questions": [
+      "Why is the Header Agent named differently from others?",
+      "What might be the purpose of having a Beta Agent with identical functionality to other agents?",
+      "How do parameters influence the creation and behavior of an AI agent in this context?",
+      "What could be the reason for overriding the system message in the Override Agent example?"
+    ],
+    "edits": [],
+    "strategies": {},
+    "scenarios": 0,
+    "time_to_smoke_s": 266.7,
+    "smoke": null,
+    "green": null,
+    "note": "no agent to test: Defined in a test file, so it's left out; tick it to test it anyway.; Defined in a test file, so it's left out; tick it to test it anyway.; Defined in a test file, so it's left out; tick it to test it"
+  }
+]

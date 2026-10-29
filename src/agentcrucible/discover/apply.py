@@ -217,11 +217,16 @@ def reality(d: Discovery, run: dict[str, Any], run_dir: Path) -> dict[str, Any]:
                                  "detail": f"`{t}` was never used in {n_eps} episodes.",
                                  "action": "Add or fix a scenario that needs it, or mark it unused."})
         asked = requested.get(ag.id, set())
-        if ag.model.value and not ag.model.env and asked and ag.model.value not in asked:
+        bare = lambda m: re.sub(r"^[\w-]+[:/]", "", m or "")  # noqa: E731 - "openai:gpt-5" asks for "gpt-5"
+        if ag.model.value and not ag.model.env and asked and bare(ag.model.value) not in {bare(x) for x in asked}:
             findings.append({"kind": "different_model", "agent": ag.id,
                              "detail": f"Expected `{ag.model.value}`, the agent asked for `{', '.join(sorted(asked))}`.",
                              "action": "Check the model setting. Tests use the forced test model either way."})
+        handoffs = {"transfer_to_" + re.sub(r"[^a-z0-9]+", "_", (d.agent(s).name if d.agent(s) else s).lower()).strip("_")
+                    for s in ag.subagents}
         for t, n in seen.items():
+            if t.startswith("transfer_to_") and (t in handoffs or ag.subagents) or t.startswith("final_result"):
+                continue  # tools a framework makes itself: a handoff, PydanticAI's structured output
             if t not in ag.tools and not any(t in (d.agent(s).tools if d.agent(s) else []) for s in ag.subagents):
                 findings.append({"kind": "unexpected_tool", "agent": ag.id, "tool": t,
                                  "detail": f"`{t}` was called {n}x but isn't in the map.", "action": "Add it to the agent's tools."})
@@ -251,6 +256,9 @@ def apply(d: Discovery, root: Path, out: Path | None = None, *, model: str = "qw
           upstream: str = "http://localhost:11434/v1", smoke: bool = True, cache: str | None = None,
           progress: Progress | None = None, on_episode: Callable[[Any], None] | None = None) -> dict[str, Any]:
     say = progress or (lambda _m: None)
+    if not any(a.include for a in d.agents):
+        raise ValueError("No agent is ticked, so there's nothing to test: include at least one agent"
+                         + (" (the ones found are left out, e.g. defined in tests)" if d.agents else ""))
     fixed = apply_fixes(d, root)
     if fixed:
         say(f"Applied {len(fixed)} accepted code changes: {', '.join(fixed)}")

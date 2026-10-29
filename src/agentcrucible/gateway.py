@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import socket
 import sys
 import time
@@ -43,6 +44,8 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from .config import Environment, LLMSettings, McpServerSpec, MockRoute
 from .llm import Api, accumulator, as_sse, summarize
+from .snapshot import answer as snapshot_answer
+from .snapshot import is_snapshot_mock
 from .trajectory import Recorder, clip
 
 
@@ -57,6 +60,9 @@ def split_command(command: str) -> list[str]:
     parts = shlex.split(command, posix=True)
     if parts and parts[0] in ("python", "python3"):
         parts[0] = sys.executable
+    elif parts and os.name == "nt" and not any(c in parts[0] for c in "/\\"):
+        # Windows can't start `npx`, `go` or `mvn` by bare name when they are .cmd/.exe files found through PATH
+        parts[0] = shutil.which(parts[0]) or parts[0]
     return parts
 
 
@@ -155,6 +161,8 @@ class McpProxy:
         if tool in env.mocks:
             call["mocked"] = True
             mock = env.mocks[tool]
+            if is_snapshot_mock(mock):  # a retriever answered from the document snapshot
+                mock = snapshot_answer(mock, args)
             return self._result(tool, mock if isinstance(mock, str) else json.dumps(mock), False, start)
         try:
             res = await self.session.call_tool(tool, args)
@@ -186,6 +194,8 @@ class EpisodeRoutes:
     llm_n: int = 0  # LLM calls made so far in this episode
     llm_seq: list[dict[str, str]] = field(default_factory=list)  # cache keys in call order (read_write)
     requested_model: str | None = None  # the model named in the latest call, before --model overrides it
+    model: str | None = None  # this episode's agent forces its own model (agents.<name>.model)
+    model_map: dict[str, str] = field(default_factory=dict)  # requested model -> model to use (agents.<name>.model_map)
 
 
 class Gateway:
@@ -272,8 +282,9 @@ class Gateway:
         rec = ep.rec
         stream = bool(body.get("stream"))
         ep.requested_model = body.get("model")  # what the agent's own code asked for
-        if self.force_model:
-            body["model"] = self.force_model
+        forced = ep.model_map.get(ep.requested_model or "") or ep.model or self.force_model
+        if forced:
+            body["model"] = forced
         if api == "openai" and stream:
             body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
         # streamed and non-streamed calls with the same content share a cache entry

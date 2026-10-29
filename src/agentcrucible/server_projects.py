@@ -135,6 +135,8 @@ def register(app: FastAPI, ws: Workspace, store: Store, current: Callable[[Reque
                 "connection": {"strategy": plan.strategy, "why": plan.why, "adapter_file": plan.adapter_file,
                                "env_needed": plan.env_needed, "warnings": plan.warnings} if plan else None,
                 "model": (ag.model.value or ag.model.env) if ag else None,
+                "test_model": (spec.model if spec and spec.model else None) or cfg.model,
+                "model_map": dict(spec.model_map) if spec else {},
                 "memory": ag.memory if ag else None,
                 "subagents": ag.subagents if ag else [],
                 "mcp_servers": ag.mcp_servers if ag else [],

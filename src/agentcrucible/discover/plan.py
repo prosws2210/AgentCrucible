@@ -5,6 +5,7 @@ Everything here is a draft for review: each plan says why it was chosen, each sc
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -12,11 +13,11 @@ from typing import Any
 
 import yaml
 
-from .schema import Agent, CodeFix, ConnectionPlan, Discovery, DraftScenario, Tool
+from .schema import Agent, CodeFix, ConnectionPlan, Discovery, DraftScenario, Entrypoint, Tool
 
 OUT_DIR = "agent-tests"
 PY_ADAPTERS = {"langgraph": "langgraph", "openai-agents": "openai_agents", "pydantic-ai": "pydantic_ai",
-               "crewai": "crewai", "llamaindex": "llamaindex"}
+               "crewai": "crewai", "llamaindex": "llamaindex", "google-adk": "google_adk"}
 PROVIDED_ENV = re.compile(r"^(OPENAI_(API_KEY|BASE_URL|API_BASE)|ANTHROPIC_(API_KEY|BASE_URL)|CRUCIBLE_.*)$")
 EXAMPLES = [
     (r"email", "alex@example.com"), (r"(order|invoice|booking|ticket|account|customer|user)_?id$", "A-1001"),
@@ -231,6 +232,10 @@ def _plan_agent(d: Discovery, ag: Agent, root: Path, fixes: list[CodeFix]) -> Co
             obj_expr = f"{obj}.compile()"
         else:
             obj_expr = obj
+        if adapter == "google_adk":
+            warnings.append("ADK calls Gemini directly; the adapter routes its model through AgentCrucible with ADK's "
+                            "LiteLlm, so the agent's environment needs litellm (pip install \"litellm<1.80\"; newer releases "
+                            "need mcp 2, which AgentCrucible doesn't support yet).")
         code = _py_adapter(adapter, ep.module, obj, obj_expr, env_map, tool_modules, tool_names, dispatch, sys_path,
                            workspace=any(t.files for t in tools if t))
         why = {
@@ -245,6 +250,39 @@ def _plan_agent(d: Discovery, ag: Agent, root: Path, fixes: list[CodeFix]) -> Co
         return ConnectionPlan(agent=ag.id, strategy="code", adapter_file=rel + ".ts", adapter_code=code,
                               command=f"npx tsx {rel}.ts", env_needed=env_needed, env_map=env_map, warnings=warnings,
                               why=f"`{ep.object}` is exported from {ep.module}; the adapter imports it and runs one turn per message (needs `tsx`).")
+
+    if ag.language == "go" and ep.kind != "http":
+        target = _go_target(d, ag, root)
+        if isinstance(target, tuple):
+            gdir = f"{OUT_DIR}/adapters/{ag.id.replace('-', '_')}"
+            return ConnectionPlan(agent=ag.id, strategy="code", adapter_file=gdir + "/main.go",
+                                  adapter_code=_go_adapter(ag, *target), command=f"go run ./{gdir}", env_needed=env_needed,
+                                  env_map=env_map, warnings=warnings,
+                                  why=f"`{target[2]}` in {target[0]} runs the agent; the Go adapter calls it once per message (needs Go).")
+        warnings = [*warnings, target]
+
+    if ag.language == "java" and ep.kind != "http":
+        target = _java_target(d, ag, root)
+        if isinstance(target, tuple):
+            fqcn, method, spring = target
+            jdir = f"{OUT_DIR}/adapters/{ag.id.replace('-', '_')}"
+            cp, build = _java_classpath(root)
+            return ConnectionPlan(agent=ag.id, strategy="code", adapter_file=jdir + "/AgentCrucible.java",
+                                  adapter_code=runtime_file("AgentCrucible.java"),
+                                  command=f"java {jdir}/AgentCrucible.java --classpath {cp} {fqcn} {method}"
+                                          + (f" --spring {spring}" if spring else ""),
+                                  env_needed=env_needed, env_map=env_map, warnings=[*warnings, build],
+                                  why=f"`{fqcn}.{method}(String)` answers a message"
+                                      + (f"; the adapter starts {spring.rsplit('.', 1)[-1]} without its web server and "
+                                         "calls the bean" if spring else "; the Java adapter calls it once per message")
+                                      + " (needs a JDK 17+).")
+        f0 = d.facts.get(ag.evidence[0]) if ag.evidence else None
+        route = next((f for f in d.facts.values() if f.kind == "entrypoint" and f.attrs.get("route") and f0
+                      and f.attrs.get("file") == f0.attrs.get("file")), None)
+        if route:  # a controller in the same file: drive the web endpoint instead
+            ep = Entrypoint(kind="http", route=f"{route.attrs.get('method', 'POST')} {route.attrs['route']}")
+        else:
+            warnings = [*warnings, target]
 
     if ep.kind == "http" and ep.route and ep.route.split(" ", 1)[0].upper() in ("WEBSOCKET", "WS"):
         return ConnectionPlan(agent=ag.id, strategy="manual", adapter_file=rel + ".py", adapter_code=_manual_py(ag, None, None),
@@ -393,38 +431,110 @@ serve(turn)
 '''
 
 
+RUNTIME_DIR = Path(__file__).resolve().parent.parent / "adapters" / "runtime"
+
+
+def runtime_file(name: str) -> str:
+    """A language runtime shipped with AgentCrucible (copied next to generated adapters so nothing needs installing)."""
+    return (RUNTIME_DIR / name).read_text(encoding="utf-8")
+
+
+def go_runtime() -> str:
+    """The Go runtime as package main, to sit next to a generated adapter."""
+    return re.sub(r"(?m)^package agentcrucible$", "package main", runtime_file("crucible.go"), count=1)
+
+
+def _go_target(d: Discovery, ag: Agent, root: Path) -> tuple[str, str, str] | str:
+    """(import path, package name, function) for a Go agent function, or why it can't be imported."""
+    f = d.facts.get(ag.evidence[0]) if ag.evidence else None
+    file = (f.attrs.get("file") if f else None) or ""
+    fn = ag.entrypoint.object or (f.attrs.get("function") if f else None)
+    if not file and ag.added_by_hand and ag.entrypoint.module:  # a package folder, e.g. internal/agent
+        first = next(iter(sorted((root / ag.entrypoint.module.strip("/")).glob("*.go"))), None)
+        file = first.relative_to(root).as_posix() if first else ""
+    gomod = root / "go.mod"
+    if not file or not fn:
+        return "AgentCrucible couldn't find the Go function that runs the agent."
+    if not gomod.is_file():
+        return "There's no go.mod at the repository root, so the adapter can't import the agent's package."
+    mod = re.search(r"(?m)^module\s+(\S+)", gomod.read_text(encoding="utf-8", errors="replace"))
+    pkg = re.search(r"(?m)^package\s+(\w+)", (root / file).read_text(encoding="utf-8", errors="replace"))
+    if not mod or not pkg:
+        return "Couldn't read the module path or package name."
+    if pkg.group(1) == "main":
+        return f"`{fn}` is in package main, which can't be imported; move it to a package (e.g. internal/agent)."
+    if not fn[:1].isupper():
+        return f"`{fn}` isn't exported; the adapter can only call exported functions (rename it {fn[:1].upper() + fn[1:]})."
+    rel = Path(file).parent.as_posix()
+    return (mod.group(1) + ("" if rel == "." else "/" + rel), pkg.group(1), fn)
+
+
+def _go_adapter(ag: Agent, import_path: str, pkg: str, fn: str) -> str:
+    return f'''// Generated by `crucible discover` for {ag.name} ({ag.framework}). Run from the repository root:
+//   go run ./{OUT_DIR}/adapters/{ag.id.replace("-", "_")}
+// crucible.go next to this file is the AgentCrucible Go runtime (the stdio protocol, tool tracing, mocks).
+// Wrap tool handlers with TraceTool(name, handler) to trace them and let scenarios mock or block them.
+package main
+
+import {pkg} "{import_path}"
+
+func main() {{ Serve(Func({pkg}.{fn})) }}
+'''
+
+
+JAVA_METHOD = re.compile(r"public\s+(?:static\s+)?String\s+(\w+)\s*\(\s*(?:final\s+)?String\s+\w+\s*\)")
+
+
+def _java_target(d: Discovery, ag: Agent, root: Path) -> tuple[str, str, str | None] | str:
+    """(class, method, Spring Boot application class or None) for a Java agent, or why there's none."""
+    ep = ag.entrypoint
+    if ep.kind == "code" and ep.module and ep.object:  # added by hand: com.acme.Agent + method
+        return ep.module, ep.object, None
+    f = d.facts.get(ag.evidence[0]) if ag.evidence else None
+    file = root / f.attrs["file"] if f and f.attrs.get("file") else None
+    if not file or not file.is_file():
+        return "AgentCrucible couldn't find the Java class that holds the agent."
+    text = file.read_text(encoding="utf-8", errors="replace")
+    pkg = re.search(r"(?m)^package\s+([\w.]+)\s*;", text)
+    cls = re.search(r"\bclass\s+(\w+)", text)
+    methods = JAVA_METHOD.findall(text)
+    if not cls or not methods:
+        return (f"{file.name} has no `public String method(String message)` to call. Add one that sends the message to "
+                "the agent and returns its reply, or add the agent by hand with that method.")
+    method = next((m for m in methods if re.search(r"(?i)chat|ask|answer|reply|run|handle|respond", m)), methods[0])
+    fqcn = (pkg.group(1) + "." if pkg else "") + cls.group(1)
+    spring = None
+    if re.search(r"@(Service|Component|RestController|Controller)\b", text) or "org.springframework" in text:
+        for app in sorted(root.rglob("*.java"))[:2000]:
+            t = app.read_text(encoding="utf-8", errors="replace")
+            if "@SpringBootApplication" in t:
+                ap = re.search(r"(?m)^package\s+([\w.]+)\s*;", t)
+                ac = re.search(r"\bclass\s+(\w+)", t)
+                if ac:
+                    spring = (ap.group(1) + "." if ap else "") + ac.group(1)
+                break
+    return fqcn, method, spring
+
+
+def _java_classpath(root: Path) -> tuple[str, str]:
+    if (root / "build.gradle").is_file() or (root / "build.gradle.kts").is_file():
+        return ("build/classes/java/main,build/resources/main,build/dependency",
+                "Build it first: gradle classes, and copy the runtime dependencies to build/dependency.")
+    return ("target/classes,target/dependency",
+            "Build it first: mvn -q -DskipTests package dependency:copy-dependencies (the adapter loads target/classes "
+            "and target/dependency).")
+
+
 def _ts_adapter(ag: Agent, module: str, obj: str) -> str:
-    rel = "../../" + module
-    call = {
-        "mastra": f"const r = await {obj}.generate(history); return r.text;",
-        "openai-agents-js": f"const {{ run }} = await import('@openai/agents'); const r = await run({obj}, history); return String(r.finalOutput ?? '');",
-        "langgraph-js": f"const r = await {obj}.invoke({{ messages: history }}); const m = r.messages[r.messages.length - 1]; return typeof m.content === 'string' ? m.content : JSON.stringify(m.content);",
-    }.get(ag.framework, f"const r = await {obj}(history[history.length - 1].content, history); return typeof r === 'string' ? r : (r?.text ?? r?.content ?? JSON.stringify(r));")
+    fw = ag.framework if ag.framework in ("mastra", "openai-agents-js", "langgraph-js") else "generic"
     return f'''// Generated by `crucible discover` for {ag.name} ({ag.framework}). Run with: npx tsx <this file>
-import * as readline from "node:readline";
-import {{ {obj} }} from "{rel}";
+// ./crucible.ts is the @agentcrucible/adapters runtime: the stdio protocol, plus tracing, mocks and blocked tools
+// for the tools this module exports.
+import {{ instrumentModule, serveAgent }} from "./crucible";
+import * as mod from "../../{module}";
 
-type Msg = {{ role: "user" | "assistant"; content: string }};
-const history: Msg[] = [];
-
-async function turn(history: Msg[]): Promise<string> {{
-  {call}
-}}
-
-const rl = readline.createInterface({{ input: process.stdin }});
-const log = console.log;
-console.log = (...a: unknown[]) => console.error(...a); // keep stdout for the protocol
-for await (const line of rl) {{
-  let msg: {{ type?: string; content?: string }};
-  try {{ msg = JSON.parse(line); }} catch {{ continue; }}
-  if (msg.type === "end") break;
-  if (msg.type !== "user") continue;
-  history.push({{ role: "user", content: String(msg.content ?? "") }});
-  let reply: string;
-  try {{ reply = await turn([...history]); }} catch (e) {{ reply = `[agent error] ${{e}}`; }}
-  history.push({{ role: "assistant", content: reply }});
-  log(JSON.stringify({{ type: "assistant", content: reply }}));
-}}
+instrumentModule(mod);
+serveAgent(mod.{obj}, "{fw}");
 '''
 
 
@@ -436,6 +546,61 @@ def _task_for(t: Tool) -> str:
     desc = desc[0].lower() + desc[1:] if desc else t.name
     details = ", ".join(f"{p}: {_example(p, t.params[p])}" for p in list(t.params)[:4])
     return f"Hi, I need you to {desc}." + (f" Details: {details}." if details else "")
+
+
+DOC_DIRS = re.compile(r"(?i)^(docs?|data|knowledge|kb|corpus|documents|content|faqs?|articles|handbook|policies|wiki)$")
+DOC_SUFFIXES = {".md", ".mdx", ".txt", ".rst"}
+SNAPSHOT_FILE = "fixtures/documents-snapshot.json"
+# planted in every snapshot so the grounded-answer test has one fact that exists nowhere else
+PLANTED = ("agentcrucible/kb-118.md", "Policy KB-118: orders over 200 EUR ship free when the customer quotes code "
+           "HARBOR-7 at checkout.")
+
+
+def sample_documents(root: Path, limit: int = 40, max_bytes: int = 400_000) -> list[str]:
+    """Documents a RAG agent could have indexed: text files in docs/, data/, knowledge/... (repo-relative paths)."""
+    from .scan import ALWAYS_SKIP_DIRS, SECRET_FILE
+    out: list[str] = []
+    total = 0
+    stack = [(root, 0)]
+    while stack and len(out) < limit:
+        d, depth = stack.pop()
+        try:
+            entries = sorted(d.iterdir(), key=lambda p: p.name)
+        except OSError:
+            continue
+        for p in entries:
+            if p.is_dir():
+                if p.name in ALWAYS_SKIP_DIRS or p.name.startswith(".") or depth >= 4:
+                    continue
+                stack.append((p, depth + 1))
+            elif p.suffix.lower() in DOC_SUFFIXES and not SECRET_FILE.search(p.name) \
+                    and any(DOC_DIRS.match(part) for part in p.relative_to(root).parts[:-1]):
+                size = p.stat().st_size
+                if size == 0 or total + size > max_bytes:
+                    continue
+                total += size
+                out.append(p.relative_to(root).as_posix())
+                if len(out) >= limit:
+                    break
+    return sorted(out)
+
+
+def snapshot_json(d: Discovery, root: Path) -> str:
+    from ..snapshot import build
+    from .scan import redact
+    docs = [(rel, redact((root / rel).read_text(encoding="utf-8", errors="replace"))) for rel in d.documents
+            if (root / rel).is_file()]
+    return json.dumps(build([*docs, PLANTED]), indent=1)
+
+
+def rag_mode(d: Discovery, tool: Tool | None) -> str:
+    """snapshot | mock | live for a retriever (by the vector store it touches, else the first one)."""
+    ids = [x.split(":", 1)[1] for x in (tool.touches if tool else []) if x.startswith("vector:")]
+    store = next((v for v in d.vector_stores if v.id in ids), d.vector_stores[0] if d.vector_stores else None)
+    chosen = store.test_with if store else None
+    if chosen == "snapshot" and not d.documents:
+        return "mock"
+    return chosen or ("snapshot" if d.documents else "mock")
 
 
 RETRIEVAL = re.compile(r"(^|_)(search|retrieve|retriever|rag|knowledge|kb|docs|faq|help|lookup_docs|semantic)(_|$)", re.I)
@@ -557,17 +722,21 @@ def draft_scenarios(d: Discovery, ag: Agent, mocked: set[str]) -> list[DraftScen
         dont_know = {"output.regex": {"pattern": r"(?i)(don't|do not|can't|cannot|not sure|no information|unable|couldn't find|not (able|available))",
                                       "hard": False}}
         if retriever:
-            # the retriever is mocked with a passage holding a fact that exists nowhere else
-            passage = ("Policy KB-118: orders over 200 EUR ship free when the customer quotes code HARBOR-7 at checkout.")
+            snap = rag_mode(d, retriever) == "snapshot"
+            # a fact that exists nowhere else: in a fixed passage, or planted in the snapshot of the repo's documents
+            found = {"snapshot": SNAPSHOT_FILE, "k": 3} if snap else PLANTED[1]
+            empty = {"snapshot": SNAPSHOT_FILE, "k": 3} if snap else "No results."
+            what = (f"the snapshot of {len(d.documents)} documents from this repo (plus one planted passage)" if snap
+                    else "a fixed passage")
             words = retriever.name.lower().replace("-", "_").split("_")
             source = " ".join(words[1:] if len(words) > 1 and words[0] in ("search", "query", "lookup", "retrieve", "get", "find") else words)
-            add(f"{ag.id}-grounded-answer", f"RAG: the answer must come from what `{retriever.name}` returns (a fixed passage), not from the model's memory.",
+            add(f"{ag.id}-grounded-answer", f"RAG: the answer must come from what `{retriever.name}` returns ({what}), not from the model's memory.",
                 {"task": f"Can you check the {source} for me: is there a code for free shipping on big orders?", "environment": env({"mocks": {
-                    **env().get("mocks", {}), retriever.name: passage}}),
+                    **env().get("mocks", {}), retriever.name: found}}),
                  "checks": [{"trajectory.tool_called": retriever.name}, {"output.contains": "HARBOR-7"}, budget]})
-            add(f"{ag.id}-unknown-answer", f"RAG: when `{retriever.name}` finds nothing, the agent should say it doesn't know rather than invent an answer.",
+            add(f"{ag.id}-unknown-answer", f"RAG: when `{retriever.name}` finds nothing relevant, the agent should say it doesn't know rather than invent an answer.",
                 {"task": "What was the exact attendance at the 1987 company picnic in Reykjavik?", "environment": env({"mocks": {
-                    **env().get("mocks", {}), retriever.name: "No results."}}),
+                    **env().get("mocks", {}), retriever.name: empty}}),
                  "checks": [dont_know, {"output.not_contains": "1987 picnic attendance was"}, budget]})
         else:
             add(f"{ag.id}-unknown-answer", "RAG: when nothing relevant is retrieved, the agent should say it doesn't know rather than invent an answer.",
@@ -594,6 +763,7 @@ def draft_scenarios(d: Discovery, ag: Agent, mocked: set[str]) -> list[DraftScen
 
 def build_plan(d: Discovery, root: Path) -> None:
     """Fill `d.plans` and `d.scenarios` for every included agent (keeps the user's include toggles)."""
+    d.documents = sample_documents(root) if d.vector_stores or any(RETRIEVAL.search(t.name) for t in d.tools) else []
     keep = {s.id: s.include for s in d.scenarios}
     accepted = {fx.id for p in d.plans for fx in p.fixes if fx.accept}
     d.plans = [plan_agent(d, ag, root) for ag in d.agents if ag.include]
@@ -628,10 +798,14 @@ def project_files(d: Discovery, root: Path, model: str = "qwen2.5:7b",
             continue
         env = {"PYTHONPATH": os.pathsep.join(["."] + (["src"] if (root / "src").is_dir() else []))}
         env.update(p.env)
-        agents[p.agent] = {"transport": "stdio", "command": p.command, "cwd": "..", "env": env, "turn_timeout_s": 300}
+        agents[p.agent] = {"transport": "stdio", "command": p.command, "cwd": "..", "env": env, "turn_timeout_s": 600}  # local models can take minutes for a multi-step turn
         suites[p.agent] = {"path": f"scenarios/{p.agent}", "runs": 3, "agent": p.agent}
         if p.adapter_file and p.adapter_code:
             files[p.adapter_file.removeprefix(OUT_DIR + "/")] = p.adapter_code
+            if p.adapter_file.endswith(".ts"):
+                files["adapters/crucible.ts"] = runtime_file("crucible.ts")
+            if p.adapter_file.endswith(".go"):
+                files[str(Path(p.adapter_file).parent.relative_to(OUT_DIR).as_posix()) + "/crucible.go"] = go_runtime()
     mcp: dict[str, Any] = {}
     for s in d.mcp_servers:
         if not s.include:
@@ -672,6 +846,8 @@ def project_files(d: Discovery, root: Path, model: str = "qwen2.5:7b",
     for sc in d.scenarios:
         if sc.include and any(p.agent == sc.agent and p.command for p in d.plans):
             files[f"scenarios/{sc.agent}/{sc.id}.yaml"] = sc.yaml
+    if any(SNAPSHOT_FILE in f for name, f in files.items() if name.startswith("scenarios/")):
+        files[SNAPSHOT_FILE] = snapshot_json(d, root)
     files["README.md"] = _readme(d)
     return files
 

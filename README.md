@@ -143,6 +143,7 @@ Already have agents? Point AgentCrucible at the repository instead of writing th
 crucible discover ./my-repo                  # read the code (never run it); draft agent-tests/discovery.draft.json
 crucible discover ./my-repo --apply --yes    # write agent-tests/ (config, adapters, fixtures, scenarios) and smoke-run it
 crucible discover ./my-repo --apply --use-draft   # apply agent-tests/discovery.draft.json after editing it
+crucible discover ./my-repo --apply --pr     # also commit the tests to a new branch, push it and open a pull request
 crucible discover . --check                  # in CI: fails when a new agent or an untested destructive tool appears
 crucible import-traces traces.json --agent support   # OpenTelemetry / LangSmith / JSONL conversations -> scenarios
 ```
@@ -152,7 +153,16 @@ draft tests, then approve. It finds LangGraph, LangChain, OpenAI Agents SDK, Cre
 Agent SDK, MCP servers and raw OpenAI/Anthropic tool loops in Python; Vercel AI SDK, Mastra, OpenAI Agents JS,
 LangChain JS and MCP in TypeScript; and Spring AI, LangChain4j and Go SDK agents. Every finding cites its file and line,
 destructive tools are mocked in the drafted tests, and a smoke run compares what was found with what the agents
-actually did. The approved project then appears in the dashboard's project switcher with all its agents. Try it on
+actually did. The approved project then appears in the dashboard's project switcher with all its agents.
+
+Agents are driven through small runtimes with the same features in every language (stdio protocol, tool tracing,
+mocks, blocked tools, injected text, document snapshots for RAG): `agentcrucible.adapters` for Python (plain
+functions, LangGraph, LangChain, OpenAI Agents SDK, PydanticAI, CrewAI, LlamaIndex),
+[`@agentcrucible/adapters`](packages/adapters-js) for TypeScript (Vercel AI SDK, Mastra, OpenAI Agents JS,
+LangGraph JS), [a Go module](packages/adapters-go) and [one Java file](packages/adapters-java) (plain classes and
+Spring beans), plus Google ADK. Generated adapters carry a copy, so nothing extra needs installing. Each is tested end
+to end with the real libraries. Measured on 10 open-source agent repositories in
+[benchmarks/RESULTS.md](benchmarks/RESULTS.md). Try it on
 [examples/import-demo](examples/import-demo). Design: [docs/CODEBASE-IMPORT.md](docs/CODEBASE-IMPORT.md).
 
 In CI, the drift check can comment on pull requests:
@@ -346,7 +356,8 @@ the repository variable `PUBLISH_PYPI=true`).
 
 ## Roadmap
 
-- Codebase import: ready-made adapters for Go and Java agents; open a pull request instead of writing `agent-tests/`
+- Publish `@agentcrucible/adapters` to npm and the Java adapter to Maven Central (both build; generated adapters carry
+  a copy meanwhile)
 - MCP Python SDK 2.x and the stateless 2026 spec revision
 - Docker-per-episode executor (agents with system dependencies) and a Kubernetes Job-per-episode executor
 

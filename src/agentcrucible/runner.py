@@ -135,6 +135,7 @@ class Runner:
         if opts.cache:
             cfg.llm.cache = opts.cache  # type: ignore[assignment]
         self.model = opts.model or cfg.model
+        self.models_used: set[str] = set()
         self.out_root = opts.out_root or (cfg.root / ".crucible")
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         self.run_id = opts.run_id or f"run_{stamp}_{uuid.uuid4().hex[:4]}"
@@ -193,6 +194,7 @@ class Runner:
             "duration_s": round((dt.datetime.now(dt.timezone.utc) - started).total_seconds(), 1),
             "git": git_info(self.cfg.root),
             "model": self.model,
+            "models": sorted(self.models_used),  # differs from `model` when agents force their own
             "agent_env": self.opts.agent_env,
             "transport": self.cfg.agent.transport,
             "shard": list(self.opts.shard) if self.opts.shard else None,
@@ -236,7 +238,7 @@ class Runner:
         log_name = "agent-service.log" if name == "agent" else f"agent-service-{name}.log"
         log = open(log_dir / log_name, "w", encoding="utf-8")
         self._service_logs = [*getattr(self, "_service_logs", []), log]
-        env = {**os.environ, **agent.env, **self.opts.agent_env, "CRUCIBLE_MODEL": self.model,
+        env = {**os.environ, **agent.env, **self.opts.agent_env, "CRUCIBLE_MODEL": self.model_for(agent),
                "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
         cwd = str((self.cfg.root / agent.cwd).resolve()) if agent.cwd else str(self.cfg.root)
         proc = await asyncio.create_subprocess_exec(*split_command(agent.command or ""), cwd=cwd, env=env,
@@ -274,6 +276,10 @@ class Runner:
 
     # ------------------------------------------------------------ one episode
 
+    def model_for(self, agent: AgentSpec) -> str:
+        """The model forced on an agent's calls: `--model`, else the agent's own `model`, else the project's."""
+        return self.opts.model or agent.model or self.cfg.model
+
     async def run_episode(self, sc: Scenario, attempt: int) -> EpisodeResult:
         eid = f"{sc.id}--{attempt}--{uuid.uuid4().hex[:6]}"
         rec = Recorder(eid, sc.id, attempt)
@@ -281,7 +287,10 @@ class Runner:
         pg_created: list[str] = []
         error: str | None = None
         checks: list[CheckResult] = []
-        rec.add("episode_start", scenario=sc.id, attempt=attempt, model=self.model)
+        agent_spec = self.cfg.agent_for(sc.agent)
+        model = self.model_for(agent_spec)
+        self.models_used.add(model)
+        rec.add("episode_start", scenario=sc.id, attempt=attempt, model=model)
         try:
             dbs = await asyncio.to_thread(self._build_fixtures, sc, tmp, pg_created)
             workspace = await asyncio.to_thread(self._build_workspace, sc, tmp)
@@ -291,7 +300,8 @@ class Runner:
                 **{f"CRUCIBLE_HTTP_{n.upper()}_URL": f"{base}/http/{n}" for n in sc.environment.http_mocks},
             }
             async with AsyncExitStack() as stack:
-                routes = EpisodeRoutes(rec, http_mocks=sc.environment.http_mocks)
+                routes = EpisodeRoutes(rec, http_mocks=sc.environment.http_mocks, model=model,
+                                       model_map={} if self.opts.model else dict(agent_spec.model_map))
                 for name, spec in self.cfg.mcp_servers.items():
                     env = dict(shared_env)
                     if name in dbs:  # SQLite path or Postgres URL for this server's fresh database
@@ -410,6 +420,8 @@ class Runner:
             rec.add("user_message", content=text)
             reply = await send(text)
             rec.add("assistant_message", content=reply)
+            if reply.startswith("[agent error] "):  # the adapter caught an exception in the agent: that's not an answer
+                raise RuntimeError(reply.removeprefix("[agent error] "))
             return reply
 
         reply = await say(sc.task)
@@ -430,8 +442,9 @@ class Runner:
         env = {
             **os.environ, **agent.env, **self.opts.agent_env, **extra,
             "OPENAI_BASE_URL": f"{base}/v1", "OPENAI_API_KEY": "agentcrucible",
+            "OPENAI_API_BASE": f"{base}/v1",  # LlamaIndex, older LangChain and LiteLLM read this name
             "ANTHROPIC_BASE_URL": base, "ANTHROPIC_API_KEY": "agentcrucible",
-            "CRUCIBLE_MODEL": self.model, "CRUCIBLE_EPISODE_ID": eid, "CRUCIBLE_EVENTS_URL": f"{base}/events",
+            "CRUCIBLE_MODEL": self.model_for(agent), "CRUCIBLE_EPISODE_ID": eid, "CRUCIBLE_EVENTS_URL": f"{base}/events",
             "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
             **({"CRUCIBLE_WORKSPACE": str(workspace)} if workspace else {}),
             **{f"CRUCIBLE_HTTP_{n.upper()}_URL": url for n, url in http_urls.items()},
@@ -485,7 +498,7 @@ class Runner:
             "openai_base_url": f"{base}/v1",
             "anthropic_base_url": base,
             "api_key": "agentcrucible",
-            "model": self.model,
+            "model": self.model_for(agent),
             "mcp": mcp_urls,
             "workspace": str(workspace) if workspace else None,
             "http": http_urls,

@@ -1,0 +1,15 @@
+{
+  "name": "@agentcrucible/adapters",
+  "version": "0.3.0",
+  "description": "Drive TypeScript and JavaScript agents (Vercel AI SDK, Mastra, OpenAI Agents JS, LangGraph JS, plain functions) from AgentCrucible: stdio protocol, tool tracing, mocks and blocked tools.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "src", "README.md"],
+  "engines": { "node": ">=18" },
+  "repository": { "type": "git", "url": "git+https://github.com/prosws2210/AgentCrucible.git", "directory": "packages/adapters-js" },
+  "scripts": { "build": "tsc -p tsconfig.json", "prepublishOnly": "npm run build" },
+  "devDependencies": { "typescript": "^5.6.0", "@types/node": "^22.0.0" }
+}

@@ -133,7 +133,9 @@ class VectorStore(BaseModel):
     id: str
     kind: str
     evidence: list[str] = Field(default_factory=list)
-    test_with: Literal["mock", "live"] = "mock"  # tests mock the retriever with fixed passages, or read the live store
+    # tests answer from a snapshot of the repo's documents, a fixed passage, or the live store
+    # (None: a snapshot when the repo has documents, else a fixed passage)
+    test_with: Literal["snapshot", "mock", "live"] | None = None
 
 
 class Skill(BaseModel):
@@ -218,6 +220,7 @@ class Discovery(BaseModel):
     questions: list[Question] = Field(default_factory=list)
     plans: list[ConnectionPlan] = Field(default_factory=list)
     scenarios: list[DraftScenario] = Field(default_factory=list)
+    documents: list[str] = Field(default_factory=list)  # sample documents a RAG snapshot is built from
     facts: dict[str, Fact] = Field(default_factory=dict)
     synthesis: dict[str, Any] = Field(default_factory=dict)  # which model enriched it, if any, and what it was sent
     generator: dict[str, str] = Field(default_factory=dict)  # AgentCrucible and detector versions (audit trail)

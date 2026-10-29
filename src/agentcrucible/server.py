@@ -418,8 +418,8 @@ def create_app(config_path: Path | None = None) -> FastAPI:
                 p["failed"] += 0 if res.passed else 1
 
             try:
-                runner = Runner(load_config(p.path), RunOptions(
-                    label=req.label, parallel=req.parallel, model=model, agent_env=req.agent_env, run_id=run_id,
+                runner = Runner(load_config(p.path), RunOptions(  # no --model: each agent keeps its own
+                    label=req.label, parallel=req.parallel, model=req.model, agent_env=req.agent_env, run_id=run_id,
                 ), on_episode)
                 # Own thread + event loop: episodes spawn processes and grade synchronously in places,
                 # and must never stall API requests.

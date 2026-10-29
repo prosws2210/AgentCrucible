@@ -1,7 +1,8 @@
 """Serve an OpenAI Agents SDK `Agent` (`from agents import Agent`): `Runner.run(agent, input=history)`.
 
 The SDK's own trace export is turned off (it would try to upload to OpenAI); tool calls are reported to AgentCrucible
-from the run's items instead. Handoffs between agents work as in production.
+from the run's items instead. Handoffs between agents work as in production. An agent declared with a context type
+(`Agent[AirlineContext](...)`) gets one context per episode, built from that type's defaults, as an app would keep.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from . import History, as_text, emit_post_hoc
+from . import History, as_text, emit_post_hoc, example_instance
 from . import serve as _serve
 
 
@@ -21,9 +22,13 @@ def turn_for(agent_or_factory: Any, max_turns: int = 20):
     except ImportError:
         pass
     agent = agent_or_factory() if callable(agent_or_factory) and not hasattr(agent_or_factory, "instructions") else agent_or_factory
+    import typing
+    ctx_args = typing.get_args(getattr(agent, "__orig_class__", None))
+    context = example_instance(ctx_args[0]) if ctx_args and isinstance(ctx_args[0], type) else None
 
     async def turn(history: History) -> str:
-        result = await Runner.run(agent, input=[{"role": m["role"], "content": m["content"]} for m in history], max_turns=max_turns)
+        result = await Runner.run(agent, input=[{"role": m["role"], "content": m["content"]} for m in history],
+                                  max_turns=max_turns, **({"context": context} if context is not None else {}))
         calls: dict[str, list[Any]] = {}
         for item in getattr(result, "new_items", []) or []:
             raw = getattr(item, "raw_item", None)

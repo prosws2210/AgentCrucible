@@ -4,6 +4,8 @@
     GET   /api/discover/roots           folders the server may read, with suggestions
     GET   /api/discover/{job}           status, progress and the draft discovery.json
     PATCH /api/discover/{job}           the reviewer's edits and answers -> re-planned draft
+    POST  /api/discover/{job}/tools     {agent, tool}: add a tool the smoke run saw but discovery missed (one click),
+                                        then review and approve again to draft its tests
     POST  /api/discover/{job}/apply     write the test project, validate, smoke-run, compare with reality, and add it to
                                         the dashboard's projects (agents added by hand earlier are kept)
 
@@ -31,7 +33,7 @@ from .config import ProjectConfig, Scenario
 from .discover import apply, build_plan, clone, default_llm, discover, is_git_url
 from .discover.plan import OUT_DIR
 from .discover.scan import scan
-from .discover.schema import Discovery, Entrypoint
+from .discover.schema import Discovery, Entrypoint, Question, Tool
 from .discover.synthesize import dump
 from .projects import Workspace
 
@@ -54,9 +56,15 @@ class ReviewPatch(BaseModel):
     fixes: dict[str, bool] = Field(default_factory=dict)  # suggested code change id -> accept
 
 
+class AddTool(BaseModel):
+    agent: str
+    tool: str
+
+
 class ApplyRequest(BaseModel):
     smoke: bool = True
     model: str | None = None
+    pull_request: bool = False  # also put the tests on a new branch, push it and open a pull request
 
 
 EFFECTS = {"read-only", "writes data", "destructive", "external call", "reads untrusted text"}
@@ -106,7 +114,7 @@ def answer_questions(d: Discovery, answers: dict[str, str]) -> None:
         elif kind == "vector":
             v = next((x for x in d.vector_stores if x.id == key), None)
             if v:
-                v.test_with = "live" if "live" in a.lower() else "mock"
+                v.test_with = "live" if "live" in a.lower() else "snapshot" if "snapshot" in a.lower() else "mock"
         elif kind == "mcp":
             s = next((x for x in d.mcp_servers if x.name == key), None)
             if s and a:
@@ -317,6 +325,44 @@ def register(app: FastAPI, ws: Workspace, lock: asyncio.Lock, index_runs: Callab
         save(j)
         return view(j)
 
+    @app.post("/api/discover/{jid}/tools")
+    async def add_observed_tool(jid: str, body: AddTool) -> dict[str, Any]:
+        """Add a tool the smoke run saw an agent call but discovery didn't find; drafts its tests on the next approve."""
+        j = job(jid)
+        d: Discovery | None = j.get("discovery")
+        if d is None or j["status"] not in ("applied", "apply_failed"):
+            raise HTTPException(409, "add tools after a smoke run")
+        ag = d.agent(body.agent)
+        if ag is None:
+            raise HTTPException(404, f"no agent {body.agent!r}")
+        rep = (j.get("result") or {}).get("reality") or {}
+        finding = next((f for f in rep.get("findings", []) if f.get("kind") == "unexpected_tool"
+                        and f.get("agent") == body.agent and f.get("tool") == body.tool), None)
+        if finding is None:
+            raise HTTPException(400, "only tools the smoke run saw this agent call can be added this way")
+        server = next((m.name for m in d.mcp_servers if body.tool in m.tools), None)
+        t = d.tool(body.tool)
+        if t is None:
+            t = Tool(name=body.tool, kind="mcp" if server else "in-process", server=server, confidence="medium",
+                     description=f"Seen in the smoke run: {finding.get('detail', '')}".strip())
+            d.tools.append(t)
+        t.include = True
+        if ag.id not in t.agents:
+            t.agents.append(ag.id)
+        if body.tool not in ag.tools:
+            ag.tools.append(body.tool)
+        if not t.effects and not any(q.about == f"tool:{t.name}" for q in d.questions):
+            d.questions.append(Question(id=f"q{len(d.questions) + 1}", about=f"tool:{t.name}", suggested="read-only",
+                                        options=["read-only", "writes data", "destructive"],
+                                        text=f"`{t.name}` showed up in the smoke run. Does it change anything?"))
+        rep["findings"] = [f for f in rep.get("findings", []) if f is not finding]
+        build_plan(d, Path(j["root"]))
+        j["status"] = "review"
+        j["progress"].append({"t": round(time.time() - j["started"], 1),
+                              "message": f"Added `{t.name}` to {ag.name} from the smoke run; approve again to write its tests"})
+        save(j)
+        return view(j)
+
     @app.post("/api/discover/{jid}/apply", status_code=202)
     async def apply_discover(jid: str, req: ApplyRequest) -> dict[str, Any]:
         j = job(jid)
@@ -345,6 +391,16 @@ def register(app: FastAPI, ws: Workspace, lock: asyncio.Lock, index_runs: Callab
                     result = await asyncio.to_thread(
                         apply, d, root, None, model=req.model or cfg.model, upstream=cfg.llm.upstream_base_url,
                         smoke=req.smoke, progress=say, on_episode=on_episode)
+                    if req.pull_request:
+                        from .discover.pr import PullRequestError, for_apply
+                        try:
+                            pr = await asyncio.to_thread(for_apply, d, root, result)
+                            result["pull_request"] = pr
+                            say(f"Pull request: {pr['pr_url'] or pr['compare_url'] or 'branch ' + pr['branch']}"
+                                + (f" ({pr['note']})" if pr["note"] else ""))
+                        except PullRequestError as e:
+                            result["pull_request"] = {"error": str(e)}
+                            say(f"Pull request not opened: {e}")
                     proj = ws.register(Path(result["out"]), "import", codebase=str(root), job=jid)
                     await asyncio.to_thread(index_runs, proj)  # the smoke run shows up in the project's runs
                     result["project"] = proj.id

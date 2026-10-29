@@ -392,6 +392,8 @@ def discover(
     report: Optional[Path] = typer.Option(None, "--report", help="With --check: also write the markdown report here (for a PR comment)"),
     use_draft: bool = typer.Option(False, "--use-draft", help="With --apply: apply agent-tests/discovery.draft.json as you "
                                                               "edited it (toggles, answers, `accept: true` on code changes), without re-scanning"),
+    pr: bool = typer.Option(False, "--pr", help="With --apply: also commit the tests to a new branch, push it and open a pull "
+                                                "request (uses the GitHub CLI when it's logged in); your working tree is untouched"),
 ) -> None:
     """Find the agents, tools and MCP servers in a codebase and draft their tests (review, then --apply)."""
     from . import discover as disc
@@ -466,6 +468,19 @@ def discover(
         raise typer.Exit(1)
     result = disc.apply(d, root, out_dir, model=model, smoke=smoke, progress=lambda m: console.print(f"[dim]·[/] {m}"))
     _print_reality(result)
+    if pr:
+        from .discover.pr import PullRequestError, for_apply
+        try:
+            r = for_apply(d, root, result)
+        except PullRequestError as e:
+            console.print(f"[red]Pull request not opened:[/] {e}")
+            raise typer.Exit(1) from None
+        console.print(f"\nBranch [bold]{r['branch']}[/] ({len(r['files'])} files, commit {r['commit']})"
+                      + (" pushed" if r["pushed"] else ""))
+        if r["pr_url"] or r["compare_url"]:
+            console.print(f"Pull request: [bold]{r['pr_url'] or r['compare_url']}[/]")
+        if r["note"]:
+            console.print(f"[dim]{r['note']}[/]")
     console.print(f"\nDone. Next: [bold]cd {out_dir} && crucible run --label baseline -k 3[/]")
 
 

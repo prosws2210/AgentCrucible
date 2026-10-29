@@ -49,6 +49,31 @@ All notable changes to AgentCrucible. Versions follow [Semantic Versioning](http
     report, and the `prosws2210/AgentCrucible/discover` action posts it as a pull-request comment. Removed tools mark
     their scenarios stale.
 
+- **Import: everything in the plan built:**
+  - **Pull requests:** `crucible discover --apply --pr` (and "Also open a pull request" in the dashboard) commits
+    `agent-tests/` and accepted code changes to a new branch from HEAD with git plumbing (the working tree, index and
+    current branch are untouched), pushes it and opens the pull request with the GitHub CLI when it's logged in.
+  - **TypeScript, Go and Java runtimes:** `packages/adapters-js` (`@agentcrucible/adapters`), `packages/adapters-go`
+    and `packages/adapters-java` (one dependency-free file that also starts Spring Boot apps without their web
+    server and calls a bean). Generated adapters carry a copy. Tested end to end with the Vercel AI SDK, Mastra,
+    go-openai, a plain Java class and a Spring Boot bean.
+  - **Real-library tests for CrewAI, LlamaIndex and LangChain `AgentExecutor`**, next to LangGraph, OpenAI Agents SDK
+    and PydanticAI. **A Google ADK adapter** (`agentcrucible.adapters.google_adk`) routes ADK's Gemini calls through
+    the gateway with ADK's LiteLlm and reads tool calls from its event stream.
+  - **Import progress you can follow:** a live elapsed timer, the expected time ("usually 5–10 minutes on a local
+    model"), which test is running, a progress bar and the time left, and how long since the last update.
+  - **Document snapshots for RAG:** the import indexes the repo's documents (`docs/`, `data/`, `knowledge/`...) into
+    `fixtures/documents-snapshot.json`; a retriever mocked with `{snapshot: ..., k: 3}` answers each query with the
+    best-matching passages (BM25, same results in every runtime). The reviewer can still choose fixed passages or the
+    live store.
+  - **One-click "add it"** for tools the smoke run saw but discovery missed (`POST /api/discover/{job}/tools`); the
+    next approve drafts their tests.
+  - **Several models per agent:** `agents.<name>.model` and `model_map` (requested model -> model to use, for routers
+    and fallbacks), shown on the agent's page.
+  - **Benchmark on real repositories:** `benchmarks/import_bench.py` imports 10 pinned open-source agent repositories
+    in a throwaway container and measures questions, reviewer edits and time to a smoke run
+    ([results](benchmarks/RESULTS.md): 0 edits and 2.3 questions per repository; 3 of 10 smoke runs without agent
+    errors on a slow local model, so the Phase 1 target is not met yet).
 - **Projects and agents in the dashboard:**
   - One server shows several projects (one `crucible.yaml` with any number of agents each): the one it was started in,
     every approved import, and folders added by path. A switcher in the sidebar picks one; the list is kept in
@@ -65,6 +90,20 @@ All notable changes to AgentCrucible. Versions follow [Semantic Versioning](http
   - `/start/` offers importing a codebase first, and setting up one agent by hand second.
 
 ### Fixed
+- LlamaIndex (and older LangChain / LiteLLM) agents read `OPENAI_API_BASE`, so their calls skipped the gateway; it
+  is now set next to `OPENAI_BASE_URL`.
+- Agent commands like `npx`, `go` or `mvn` failed to start on Windows (`.cmd` files on PATH).
+- An agent that raised an exception (an "[agent error]" reply from an adapter, or an unfinished scaffold) counted as an
+  answer that failed its checks; it is now an agent error in the run and the reality report.
+- LangGraph graphs with a runtime context (`context_schema`) or an input that isn't a conversation, and OpenAI Agents
+  with a typed context (`Agent[Context]`), ran without a context and crashed; the adapters now build one from the
+  declared type (defaults, plus test values for required fields).
+- Found by the benchmark on real repositories: tool lists imported from another module (`ToolNode(TOOLS)`), tools bound
+  inside a graph node (`bind_tools([tools.x])`), generic agents (`Agent[Context](...)`), `handoff(agent=...)` calls,
+  crew members built by factory methods, agents named after a generic variable (`graph`, `agent`), agents defined in
+  test files (now left out), and questions the code already answers ("what is the purpose of...").
+- CrewAI: tools defined on a crew's members are now tested through the crew. LangChain: `langchain_classic` and
+  `AgentExecutor(agent=create_tool_calling_agent(...))` written inline are recognised.
 - An approved import didn't appear anywhere in the dashboard: it is now a project there.
 - Re-applying an import left the tests and adapters of removed agents or switched-off drafts on disk (unedited ones
   are now deleted).

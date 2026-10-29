@@ -251,7 +251,8 @@ export type Discovery = {
   skills: { name: string; description: string; file: string }[];
   datastores: { id: string; kind: string; url_env: string | null; tables: Record<string, Record<string, string>>; schema_files: string[] }[];
   external_apis: { id: string; base_url: string | null; base_url_env: string | null; paths: string[]; kind: "http" | "queue" }[];
-  vector_stores: { id: string; kind: string; test_with: "mock" | "live" }[];
+  vector_stores: { id: string; kind: string; test_with: "snapshot" | "mock" | "live" | null }[];
+  documents: string[];
   env_vars: string[]; test_cases: { input: string; expected: string | null; file: string }[];
   questions: DQuestion[]; plans: DPlan[]; scenarios: DScenario[]; facts: Record<string, Fact>;
   synthesis: { used?: boolean; model?: string; base_url?: string; error?: string; requests?: number; cached?: number; chars?: number;
@@ -273,6 +274,8 @@ export type ImportJob = {
   result: null | {
     out: string; files: string[]; validate: { agents: string[]; scenarios: number; suites: string[] };
     run_id?: string; code_changes?: string[]; project?: string;
+    pull_request?: { branch?: string; base?: string; commit?: string; files?: string[]; pushed?: boolean; pr_url?: string | null;
+      compare_url?: string | null; note?: string | null; error?: string };
     connection?: { id: string; ok: boolean; detail: string }[];
     reality?: { ok: boolean; episodes: number; passed: number; errors: number; observed_tools: Record<string, Record<string, number>>;
       models: Record<string, string[]>; requested_models?: Record<string, string[]>; findings: RealityFinding[]; scenarios?: ScenarioOutcome[] };
@@ -296,6 +299,8 @@ export type AgentRow = {
   env: Record<string, string>;
   connection: { strategy: string; why: string; adapter_file: string | null; env_needed: string[]; warnings: string[] } | null;
   model: string | null;
+  test_model: string;
+  model_map: Record<string, string>;
   memory: string | null;
   subagents: string[];
   mcp_servers: string[];
@@ -316,7 +321,7 @@ export type AgentDetail = AgentRow & {
 
 export type NewAgent = {
   name: string;
-  kind: "python" | "typescript" | "http" | "command";
+  kind: "python" | "typescript" | "java" | "go" | "http" | "command";
   purpose?: string;
   module?: string;
   object?: string;

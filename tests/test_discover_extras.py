@@ -212,3 +212,84 @@ def test_synthesis_is_cached_by_content(tmp_path, monkeypatch):
     sent = first.synthesis["sent"]
     assert sent and all({"fact", "file", "line"} <= set(s) for s in sent)  # what the model saw, for the review screen
     assert "sk-" not in json.dumps(calls)
+
+
+def test_langgraph_tools_from_other_modules_and_graph_names(tmp_path):
+    """Patterns from real LangGraph templates: a TOOLS list imported from tools.py, `bind_tools` inside a node with a
+    module-attribute tool, and the graph's name from compile(name=...) rather than the builder variable."""
+    root = tmp_path / "lg"
+    pkg = root / "src" / "notes_agent"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "tools.py").write_text('''async def search(query: str) -> str:
+    """Search the web."""
+    return requests.get("https://api.example.com/search", params={"q": query}).text
+
+
+async def save_note(text: str) -> str:
+    """Save a note for later."""
+    await store.aput(("notes",), "id", {"text": text})
+    return "saved"
+
+
+TOOLS = [search]
+''', encoding="utf-8")
+    (pkg / "graph.py").write_text('''from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph
+from langgraph.prebuilt import ToolNode
+
+from notes_agent import tools
+from notes_agent.tools import TOOLS
+
+
+async def call_model(state):
+    return {"messages": [await ChatOpenAI(model="gpt-4o-mini").bind_tools([tools.save_note]).ainvoke(state["messages"])]}
+
+
+builder = StateGraph(dict)
+builder.add_node(call_model)
+builder.add_node("tools", ToolNode(TOOLS))
+graph = builder.compile(name="Notes Agent")
+''', encoding="utf-8")
+    d = discover(root)
+    ag = next(a for a in d.agents if a.include)
+    assert ag.name == "Notes Agent" and sorted(ag.tools) == ["save_note", "search"]
+    effects = {t.name: t.effects for t in d.tools}
+    assert "writes data" in effects["save_note"] and "external call" in effects["search"]
+
+
+def test_openai_agents_generic_agents_and_handoff_calls(tmp_path):
+    """From the OpenAI Agents SDK customer-service example: Agent[Context](...) and handoffs=[handoff(agent=...)]."""
+    root = tmp_path / "cs"
+    root.mkdir()
+    (root / "main.py").write_text('''from agents import Agent, function_tool, handoff
+
+
+@function_tool
+def faq_lookup(question: str) -> str:
+    """Look up an FAQ answer."""
+    return "Bags up to 23kg are free."
+
+
+faq_agent = Agent[dict](name="FAQ Agent", instructions="Answer FAQs.", tools=[faq_lookup])
+triage_agent = Agent[dict](name="Triage Agent", instructions="Route the request.",
+                           handoffs=[handoff(agent=faq_agent, tool_name_override="transfer_to_faq")])
+''', encoding="utf-8")
+    d = discover(root)
+    included = [a for a in d.agents if a.include]
+    assert [(a.name, a.framework) for a in included] == [("Triage Agent", "openai-agents")]
+    assert included[0].subagents == ["faq-agent"] and included[0].tools == ["faq_lookup"]
+
+
+def test_apply_refuses_without_agents(tmp_path):
+    import pytest
+
+    from agentcrucible.discover import apply
+
+    root = monorepo(tmp_path)
+    d = discover(root)
+    build_plan(d, root)
+    for a in d.agents:
+        a.include = False
+    with pytest.raises(ValueError, match="nothing to test"):
+        apply(d, root, smoke=False)

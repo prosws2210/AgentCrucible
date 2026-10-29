@@ -13,13 +13,15 @@ type Kind = NewAgent["kind"];
 const KINDS: [Kind, string, string][] = [
   ["python", "Python function or agent", "A function that answers a message, or a LangGraph / OpenAI Agents / PydanticAI / CrewAI / LlamaIndex object"],
   ["typescript", "TypeScript or JavaScript", "An exported function or agent (Vercel AI SDK, Mastra, plain code)"],
+  ["java", "Java", "A method that takes the message and returns the reply (plain class or a Spring bean)"],
+  ["go", "Go", "An exported function: func(ctx, message) (string, error) or similar"],
   ["http", "A web service", "Any language: it takes a message over HTTP and answers"],
   ["command", "A command", "A program that already speaks AgentCrucible's one-JSON-line-per-turn protocol"],
 ];
 const FRAMEWORKS: [string, string][] = [
   ["generic", "Plain function: takes the message, returns the reply"], ["langgraph", "LangGraph graph"],
   ["openai-agents", "OpenAI Agents SDK Agent"], ["pydantic-ai", "PydanticAI Agent"], ["crewai", "CrewAI Crew"],
-  ["llamaindex", "LlamaIndex agent"],
+  ["llamaindex", "LlamaIndex agent"], ["google-adk", "Google ADK Agent"],
 ];
 
 export default function AddAgentsPage() {
@@ -89,7 +91,7 @@ function AddAgentForm() {
       name: f.name, kind, purpose: f.purpose, task: f.task, must_call: f.must_call, must_not_call: f.must_not_call,
       reply_mentions: f.reply_mentions, codebase: where === "other" ? codebase : null,
       ...(kind === "python" ? { module: f.module, object: f.object, framework: f.framework, factory: f.factory } : {}),
-      ...(kind === "typescript" ? { module: f.module, object: f.object } : {}),
+      ...(kind === "typescript" || kind === "java" || kind === "go" ? { module: f.module, object: f.object } : {}),
       ...(kind === "http" ? { app_url: f.app_url, route: f.route } : {}),
       ...(kind === "command" ? { command: f.command } : {}),
     };
@@ -151,6 +153,14 @@ function AddAgentForm() {
             {kind === "typescript" && <>
               <L label="File" hint="Relative to the repo root, without the extension"><input value={f.module} onChange={set("module")} placeholder="src/agent" className={mono} required /></L>
               <L label="Export" hint="The exported function or agent"><input value={f.object} onChange={set("object")} placeholder="runAgent" className={mono} required /></L>
+            </>}
+            {kind === "java" && <>
+              <L label="Class" hint="Fully qualified; built into target/classes"><input value={f.module} onChange={set("module")} placeholder="com.acme.SupportAgent" className={mono} required /></L>
+              <L label="Method" hint="public String method(String message)"><input value={f.object} onChange={set("object")} placeholder="answer" className={mono} required /></L>
+            </>}
+            {kind === "go" && <>
+              <L label="Package folder" hint="Relative to go.mod, e.g. internal/agent"><input value={f.module} onChange={set("module")} placeholder="internal/agent" className={mono} required /></L>
+              <L label="Function" hint="Exported"><input value={f.object} onChange={set("object")} placeholder="RunAgent" className={mono} required /></L>
             </>}
             {kind === "http" && <>
               <L label="Where it runs" hint="Start it yourself before a run"><input value={f.app_url} onChange={set("app_url")} className={mono} required /></L>

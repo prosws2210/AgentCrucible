@@ -21,16 +21,16 @@ from .discover.apply import write_project
 from .discover.plan import OUT_DIR, _dump, _python, build_plan, plan_agent
 from .discover.schema import Agent, Discovery, DraftScenario, Entrypoint, RepoInfo
 
-Kind = Literal["python", "typescript", "http", "command"]
-FRAMEWORKS = ("generic", "langgraph", "openai-agents", "pydantic-ai", "crewai", "llamaindex")
+Kind = Literal["python", "typescript", "java", "go", "http", "command"]
+FRAMEWORKS = ("generic", "langgraph", "openai-agents", "pydantic-ai", "crewai", "llamaindex", "google-adk")
 
 
 class NewAgent(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     kind: Kind
     purpose: str = ""
-    # python / typescript: the function or agent object to call
-    module: str | None = None  # app.agents.support
+    # python / typescript / java / go: what to call
+    module: str | None = None  # app.agents.support | src/agent | com.acme.SupportAgent | internal/agent
     object: str | None = None  # run, graph, build_agent
     framework: str = "generic"
     factory: bool = False  # `object` is a function that builds the agent
@@ -47,10 +47,12 @@ class NewAgent(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> "NewAgent":
-        if self.kind in ("python", "typescript"):
+        if self.kind in ("python", "typescript", "java", "go"):
             if not (self.module and re.fullmatch(r"[\w.\-/@]+", self.module)):
-                raise ValueError("give the module the agent is in, e.g. app.agents.support" if self.kind == "python"
-                                 else "give the file it's exported from, e.g. src/agent")
+                raise ValueError({"python": "give the module the agent is in, e.g. app.agents.support",
+                                  "typescript": "give the file it's exported from, e.g. src/agent",
+                                  "java": "give the class, e.g. com.acme.SupportAgent",
+                                  "go": "give the package folder, e.g. internal/agent"}[self.kind])
             if not (self.object and re.fullmatch(r"[A-Za-z_]\w*", self.object)):
                 raise ValueError("give the name of the function or object to call, e.g. run or graph")
             if self.framework not in FRAMEWORKS:
@@ -78,7 +80,7 @@ def _agent_id(name: str, taken: set[str]) -> str:
 
 def make_agent(spec: NewAgent, taken: set[str]) -> Agent:
     aid = _agent_id(spec.name, taken)
-    if spec.kind in ("python", "typescript"):
+    if spec.kind in ("python", "typescript", "java", "go"):
         ep = Entrypoint(kind="code", module=spec.module, object=spec.object, factory=spec.factory)
     elif spec.kind == "http":
         ep = Entrypoint(kind="http", route=spec.route.strip())
@@ -86,7 +88,8 @@ def make_agent(spec: NewAgent, taken: set[str]) -> Agent:
         ep = Entrypoint(kind="cli", command=spec.command.strip())  # type: ignore[union-attr]
     return Agent(id=aid, name=spec.name.strip(), purpose=spec.purpose.strip(),
                  framework=spec.framework if spec.kind == "python" else "generic",
-                 language="typescript" if spec.kind == "typescript" else "python", entrypoint=ep, confidence="high",
+                 language={"typescript": "typescript", "java": "java", "go": "go"}.get(spec.kind, "python"),
+                 entrypoint=ep, confidence="high",
                  added_by_hand=True, app_url=spec.app_url.rstrip("/") if spec.kind == "http" and spec.app_url else None)
 
 
@@ -118,6 +121,14 @@ def check_code(codebase: Path, spec: NewAgent) -> None:
         base = codebase / spec.module.removeprefix("./")  # type: ignore[union-attr]
         if not any(base.with_suffix(x).is_file() for x in (".ts", ".tsx", ".mts", ".js", ".mjs")) and not base.is_file():
             raise ValueError(f"no file {spec.module}.ts (or .js) in {codebase}")
+    elif spec.kind == "java":
+        rel = spec.module.replace(".", "/") + ".java"  # type: ignore[union-attr]
+        if not any((codebase / base / rel).is_file() for base in ("src/main/java", "src", ".")):
+            raise ValueError(f"no class {spec.module} in {codebase} (looked for src/main/java/{rel})")
+    elif spec.kind == "go":
+        pkg = codebase / spec.module.strip("/")  # type: ignore[union-attr]
+        if not pkg.is_dir() or not any(pkg.glob("*.go")):
+            raise ValueError(f"no Go package {spec.module} in {codebase}")
 
 
 def add_to_discovery(out: Path, codebase: Path, spec: NewAgent, model: str, upstream: str) -> str:
@@ -158,7 +169,7 @@ def add_to_config(cfg_path: Path, codebase: Path, spec: NewAgent) -> str:
         launcher = "npx tsx" if adapter.suffix == ".ts" else _python(codebase)
         env = {"PYTHONPATH": os.pathsep.join(["."] + (["src"] if (codebase / "src").is_dir() else [])), **plan.env}
         entry = {"transport": "stdio", "command": f"{launcher} {_rel(adapter, codebase)}", "cwd": _rel(codebase, root),
-                 "env": env, "turn_timeout_s": 300}
+                 "env": env, "turn_timeout_s": 600}
     agents[ag.id] = entry
     data["agents"] = agents
     suites = data.setdefault("suites", {})

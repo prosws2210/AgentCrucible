@@ -106,3 +106,35 @@ def test_refuses_folders_outside_roots_and_viewers(tmp_path, monkeypatch):
         assert c.post("/api/discover", json={"path": str(tmp_path / "code")},
                       headers={"Authorization": "Bearer view"}).status_code == 403
         assert c.get("/api/discover/unknown", headers=h).status_code == 404
+
+
+def test_add_a_tool_the_smoke_run_saw(tmp_path, monkeypatch):
+    import json
+
+    from agentcrucible.discover import build_plan, discover
+    from agentcrucible.discover.synthesize import dump
+
+    repo = tmp_path / "code" / "acme"
+    shutil.copytree(DEMO, repo, ignore=shutil.ignore_patterns("agent-tests"))
+    d = discover(repo)
+    build_plan(d, repo)
+    finding = {"kind": "unexpected_tool", "agent": "run-agent", "tool": "lookup_tax_rate",
+               "detail": "`lookup_tax_rate` was called 2x but isn't in the map.", "action": "Add it to the agent's tools."}
+    job = {
+        "id": "abcdef0123", "status": "applied", "source": str(repo), "root": str(repo), "progress": [], "error": None,
+        "started": 0, "discovery": dump(d), "result": {"out": str(repo / "agent-tests"), "files": [],
+                                                       "validate": {"agents": ["run-agent"], "scenarios": 1, "suites": []},
+                                                       "reality": {"findings": [finding]}}}
+    with client(tmp_path, monkeypatch) as c:
+        jobs = tmp_path / "project" / ".crucible" / "imports"
+        jobs.mkdir(parents=True, exist_ok=True)
+        (jobs / "abcdef0123.json").write_text(json.dumps(job), encoding="utf-8")
+        assert c.post("/api/discover/abcdef0123/tools", json={"agent": "run-agent", "tool": "made_up"}).status_code == 400
+        r = c.post("/api/discover/abcdef0123/tools", json={"agent": "run-agent", "tool": "lookup_tax_rate"})
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert j["status"] == "review" and j["result"]["reality"]["findings"] == []
+        d2 = j["discovery"]
+        assert "lookup_tax_rate" in d2["agents"][0]["tools"]
+        assert any(q["about"] == "tool:lookup_tax_rate" for q in d2["questions"])
+        assert any(s["id"].endswith("lookup-tax-rate-uses") for s in d2["scenarios"])  # its tests are drafted

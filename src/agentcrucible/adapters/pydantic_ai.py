@@ -1,19 +1,26 @@
-"""Serve a PydanticAI `Agent`: `agent.run(message, message_history=...)`, keeping the conversation between turns."""
+"""Serve a PydanticAI `Agent`: `agent.run(message, message_history=...)`, keeping the conversation between turns.
+
+An agent with `deps_type=...` gets one dependencies object per episode, built from that type (defaults, plus test
+values for required fields), as the app would pass to `agent.run(..., deps=...)`.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from . import History, as_text, emit_post_hoc
+from . import History, as_text, emit_post_hoc, example_instance
 from . import serve as _serve
 
 
 def turn_for(agent_or_factory: Any):
     agent = agent_or_factory() if callable(agent_or_factory) and not hasattr(agent_or_factory, "run") else agent_or_factory
     state: dict[str, Any] = {"messages": None}
+    deps_type = getattr(agent, "deps_type", None)
+    deps = example_instance(deps_type) if isinstance(deps_type, type) and deps_type is not type(None) else None
 
     async def turn(history: History) -> str:
-        result = await agent.run(history[-1]["content"], message_history=state["messages"])
+        result = await agent.run(history[-1]["content"], message_history=state["messages"],
+                                 **({"deps": deps} if deps is not None else {}))
         state["messages"] = result.all_messages()
         calls: dict[str, list[Any]] = {}
         for msg in result.new_messages():

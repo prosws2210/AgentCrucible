@@ -114,6 +114,9 @@ function Agent() {
             <dl className="space-y-3 px-5 py-4 text-[12.5px]">
               {a.connection?.why && <p className="text-mute">{a.connection.why}</p>}
               <Row k="Transport" v={a.transport ?? "–"} />
+              <Row k="Model in tests" v={<span><code className="font-mono text-[12px]">{a.test_model}</code>
+                {Object.keys(a.model_map).length > 0 && <span className="mt-0.5 block text-[11.5px] text-dim">
+                  {Object.entries(a.model_map).map(([k, v]) => `${k} → ${v}`).join(" · ")}</span>}</span>} />
               {a.command && <Row k="Command" v={<code className="break-all font-mono text-[12px]">{a.command}</code>} />}
               {a.url && <Row k="URL" v={<code className="break-all font-mono text-[12px]">{a.url}</code>} />}
               {a.cwd && <Row k="Runs in" v={<code className="break-all font-mono text-[12px]">{a.cwd}</code>} />}

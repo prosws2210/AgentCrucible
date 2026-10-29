@@ -66,6 +66,7 @@ crucible open latest        # HTML report with every trajectory`} />
           <Code title="terminal" code={`crucible discover ./my-repo                  # writes agent-tests/discovery.draft.json for review
 crucible discover ./my-repo --apply --yes    # write agent-tests/ and smoke-run it
 crucible discover . --check                  # in CI: fail on a new agent or an untested destructive tool
+crucible discover ./my-repo --apply --pr     # or put the tests on a branch and open a pull request
 crucible import-traces traces.json --agent support   # production conversations become scenarios`} />
           <Code title=".github/workflows/agent-map.yml" code={`- uses: prosws2210/AgentCrucible/discover@main   # comments on the PR when the agent map drifts`} />
           <P>In the dashboard, open <b className="text-fg">Add agents</b> and choose <b className="text-fg">Import a codebase</b>: pick a folder or a Git URL, review the system map,
@@ -74,7 +75,7 @@ crucible import-traces traces.json --agent support   # production conversations 
             With Docker Compose, mount the code with
             <code className="font-mono text-[14px] text-fg"> CRUCIBLE_IMPORT_DIR=/path/to/code</code>.</P>
           <ul className="mt-4 list-disc space-y-2 pl-5 text-[15px] leading-relaxed text-mute">
-            <li>Python: LangGraph, LangChain, OpenAI Agents SDK, CrewAI, PydanticAI, LlamaIndex, Claude Agent SDK, MCP servers and raw OpenAI / Anthropic tool loops. TypeScript: Vercel AI SDK, Mastra, OpenAI Agents JS, LangChain JS, MCP. Go and Java (Spring AI, LangChain4j) are detected and run through an HTTP bridge or a scaffold you fill in.</li>
+            <li>Python: LangGraph, LangChain, OpenAI Agents SDK, CrewAI, PydanticAI, LlamaIndex, Claude Agent SDK, MCP servers and raw OpenAI / Anthropic tool loops. TypeScript: Vercel AI SDK, Mastra, OpenAI Agents JS, LangChain JS, MCP. Go (go-openai, langchaingo) and Java (Spring AI, LangChain4j) run through their own adapters: an exported Go function, a Java method or Spring bean, or the web endpoint.</li>
             <li>Every finding links to the file and line it came from; anything it can&apos;t prove becomes a question. <code className="font-mono text-[13.5px] text-fg">.env</code> files and secrets are skipped.</li>
             <li>Destructive tools are mocked in the drafted tests until you change that, and external APIs become HTTP mocks.</li>
             <li>Adapters report in-process tool calls, so trajectories show arguments and results for ordinary functions too.</li>

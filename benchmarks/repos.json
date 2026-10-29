@@ -1,0 +1,12 @@
+[
+  {"name": "react-agent", "url": "https://github.com/langchain-ai/react-agent", "commit": "87aac0fdcb811d05457314a42418f3fbe139933a", "framework": "LangGraph"},
+  {"name": "retrieval-agent-template", "url": "https://github.com/langchain-ai/retrieval-agent-template", "commit": "1d0c84cf19a60278f2238ead42e5f9189191cfd4", "framework": "LangGraph (RAG)"},
+  {"name": "memory-agent", "url": "https://github.com/langchain-ai/memory-agent", "commit": "eb23fc1177ab7ba2191d7f26f95175647133d1b0", "framework": "LangGraph (memory)"},
+  {"name": "data-enrichment", "url": "https://github.com/langchain-ai/data-enrichment", "commit": "dd0c92220f23f52df42a4944ebacce80e0f0d669", "framework": "LangGraph"},
+  {"name": "openai-cs-agents-demo", "url": "https://github.com/openai/openai-cs-agents-demo", "commit": "bd7bfca0f5abf50529370814c3e7c88542011925", "path": "python-backend", "framework": "OpenAI Agents SDK (multi-agent)"},
+  {"name": "openai-agents-customer-service", "url": "https://github.com/openai/openai-agents-python", "commit": "cd26bbbc52847845fde73b9952b51e62e2bcbdc0", "include": ["examples/customer_service/**", "examples/auto_mode.py", "examples/__init__.py"], "framework": "OpenAI Agents SDK"},
+  {"name": "crewai-trip-planner", "url": "https://github.com/crewAIInc/crewAI-examples", "commit": "da94a91e691e1cf5b3151416bb15b5b62729bea8", "path": "crews/trip_planner", "python": "3.11", "install": ["langchain", "langchain-community"], "framework": "CrewAI", "note": "its code imports langchain without declaring it"},
+  {"name": "pydantic-ai-examples", "url": "https://github.com/pydantic/pydantic-ai", "commit": "c2ef90b6acbf2e5c3777e08cf538c858fe8d7ac1", "path": "examples", "include": ["pydantic_ai_examples/bank_support.py", "pydantic_ai_examples/weather_agent.py", "pydantic_ai_examples/flight_booking.py", "pydantic_ai_examples/__init__.py"], "framework": "PydanticAI", "note": "3 of its ~30 examples; all 30 timed out at 40 min in the first pass"},
+  {"name": "adk-cross-session-memory", "url": "https://github.com/google/adk-samples", "commit": "66c0c586136c6db459967983e91656a6df2b7e91", "path": "core/python/cross-session-memory", "install": ["litellm<1.80"], "framework": "Google ADK"},
+  {"name": "anthropic-agents", "url": "https://github.com/anthropics/anthropic-quickstarts", "commit": "12349bb27f860fa924780ba6c0d8c011dfecf540", "path": "agents", "install": ["anthropic", "mcp"], "framework": "Raw Anthropic tool loop"}
+]

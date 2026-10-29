@@ -16,10 +16,13 @@ from .effects import py_effects
 from .scan import Inventory, SourceFile, redact
 from .schema import Evidence, Fact
 
-LLM_PACKAGES = {"openai", "anthropic", "litellm", "langchain", "langchain_core", "langchain_openai", "langchain_anthropic",
+LLM_PACKAGES = {"openai", "anthropic", "litellm", "langchain", "langchain_classic", "langchain_core", "langchain_openai", "langchain_anthropic",
                 "langchain_community", "langgraph", "agents", "crewai", "pydantic_ai", "llama_index", "autogen",
                 "autogen_agentchat", "google", "dspy", "smolagents", "semantic_kernel", "claude_agent_sdk", "mistralai",
                 "cohere", "groq", "ollama", "instructor", "strands", "haystack", "mcp", "fastmcp"}
+
+# packages that moved: classic LangChain (AgentExecutor, create_*_agent) lives in langchain_classic since LangChain 1.0
+PACKAGE_ALIASES = {"langchain_classic": "langchain"}
 
 # (top-level package, called name) -> (framework, role)
 AGENT_CTORS: dict[tuple[str, str], tuple[str, str]] = {
@@ -150,6 +153,8 @@ class PyModule:
     def qual(self, node: ast.AST) -> str | None:
         """Dotted name of an expression: imports resolved, local variables shown as `$var`."""
         parts: list[str] = []
+        if isinstance(node, ast.Subscript):  # a generic class: Agent[AirlineContext](...) is an Agent(...)
+            node = node.value
         while isinstance(node, ast.Attribute):
             parts.append(node.attr)
             node = node.value
@@ -175,7 +180,7 @@ class PyModule:
         if not q:
             return "", ""
         parts = q.lstrip(".").split(".")
-        return parts[0], parts[-1]
+        return PACKAGE_ALIASES.get(parts[0], parts[0]), parts[-1]
 
     def line(self, node: ast.AST) -> int:
         return getattr(node, "lineno", 1)
@@ -383,6 +388,14 @@ class PyDetector:
                 names.append(n)
         return names
 
+    def _list_import(self, node: ast.AST | None) -> str | None:
+        """`TOOLS` in ToolNode(TOOLS) / tools=TOOLS when it's a list imported from another module: its dotted path."""
+        if isinstance(node, ast.Call) and node.args:
+            node = node.args[0]
+        if isinstance(node, ast.Name) and node.id in self.m.aliases and not self.m.list_items(node):
+            return self.m.aliases[node.id]
+        return None
+
     def _tool_refs(self, node: ast.AST | None) -> dict[str, str]:
         """Tool names that are imports or local functions: name -> dotted import path (or `.:<function>` locally)."""
         out: dict[str, str] = {}
@@ -392,6 +405,8 @@ class PyDetector:
                     out[e.id] = self.m.aliases[e.id]
                 elif e.id in self.m.functions and e.id not in self.tool_funcs:
                     out[e.id] = f"{self.m.module}.{e.id}"
+            elif isinstance(e, ast.Attribute) and isinstance(e.value, ast.Name) and e.value.id in self.m.aliases:
+                out[e.attr] = f"{self.m.aliases[e.value.id]}.{e.attr}"  # tools.upsert_memory, module imported as `tools`
         return out
 
     def _tool_name(self, e: ast.AST) -> str | None:
@@ -561,14 +576,26 @@ class PyDetector:
             node_name = self.m.string(self.m.arg(call, 0))
             target = self.m.arg(call, 1) if len(call.args) > 1 else self.m.arg(call, 0)
             tools = []
+            list_ref = None
             if isinstance(target, ast.Call) and (self.m.qual(target.func) or "").endswith("ToolNode"):
                 tools = self._tool_names(self.m.arg(target, 0))
+                list_ref = self._list_import(self.m.arg(target, 0))
             self._fact("subagent_edge", node_name or "node", "langgraph", call, parent_var=gvar,
-                       child=target.id if isinstance(target, ast.Name) else None, node=node_name, tools=tools)
+                       child=target.id if isinstance(target, ast.Name) else None, node=node_name, tools=tools,
+                       tool_list_ref=list_ref, module=self.m.module)
+            return
+        # model.bind_tools([...]) inside a graph node: those tools belong to the graph(s) in this file
+        if last == "bind_tools" and call.args and any(self.m.sig(t) == ("langgraph", "StateGraph") for t in self.m.var_types.values()):
+            tools = self._tool_names(call.args[0])
+            if tools or self._list_import(call.args[0]):
+                self._fact("subagent_edge", "bind_tools", "langgraph", call, parent_var="*", tools=tools,
+                           tool_refs=self._tool_refs(call.args[0]), tool_list_ref=self._list_import(call.args[0]),
+                           module=self.m.module, kind="bind_tools")
             return
         if last == "compile" and self.m.sig(vt) == ("langgraph", "StateGraph"):
             self._fact("subagent_edge", "compile", "langgraph", call, parent_var=q[1:].split(".", 1)[0],
-                       compiled_as=self.m.assigned_name(call), kind="compile")
+                       compiled_as=self.m.assigned_name(call), kind="compile",
+                       display_name=self.m.string(self.m.kw(call, "name")))
             return
         # MCP clients
         if last in ("stdio_client", "streamablehttp_client", "streamable_http_client", "sse_client", "MultiServerMCPClient") and top in ("mcp", "langchain_mcp_adapters", "fastmcp"):
@@ -658,7 +685,9 @@ class PyDetector:
                 factory = fn.name
         cls = m.enclosing_class(call)
         attrs: dict[str, Any] = {"role": role, "object": var, "factory": factory, "ctor": q.lstrip("$"),
-                                 "cls": cls.name if cls else None}
+                                 "cls": cls.name if cls else None,
+                                 # built and used inside one function: nothing outside can import it
+                                 "local_to": fn.name if fn and var and not factory else None}
         name = m.string(m.kw(call, "name", "role")) or var or factory or q.rsplit(".", 1)[-1]
         tools_kw = m.kw(call, "tools", "functions", "allowed_tools")
         if role == "react":
@@ -705,20 +734,35 @@ class PyDetector:
                 attrs["method"] = fn.name
                 name = attrs.get("config_key") or fn.name
         if framework == "crewai" and role == "crew":
-            attrs["members"] = [e.id if isinstance(e, ast.Name) else ast.unparse(e) for e in m.list_items(m.kw(call, "agents"))]
+            def member(e: ast.AST) -> str:
+                # city_selector = agents.city_selection_agent() in the same function: the member is that factory
+                if isinstance(e, ast.Name) and fn is not None:
+                    for n in ast.walk(fn):
+                        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == e.id for t in n.targets)                                 and isinstance(n.value, ast.Call):
+                            return (m.qual(n.value.func) or ast.unparse(n.value.func)).rsplit(".", 1)[-1]
+                return e.id if isinstance(e, ast.Name) else ast.unparse(e)
+            attrs["members"] = [member(e) for e in m.list_items(m.kw(call, "agents"))]
             name = var or (fn.name if fn else "crew")
         if role == "workflow":
             attrs["members"] = [e.id for e in m.list_items(m.kw(call, "agents")) if isinstance(e, ast.Name)]
         for k in ("handoffs", "sub_agents"):
             v = m.kw(call, k)
             if v is not None:
-                attrs["members"] = [e.id if isinstance(e, ast.Name) else ast.unparse(e) for e in m.list_items(v)]
+                members = []
+                for e in m.list_items(v):
+                    if isinstance(e, ast.Call):  # handoff(agent=faq_agent, tool_name_override=...)
+                        e = m.kw(e, "agent") or m.arg(e, 0) or e
+                    members.append(e.id if isinstance(e, ast.Name) else ast.unparse(e))
+                attrs["members"] = members
         if role == "graph":
             attrs["tools"] = []
         if role == "executor":
             wrapped = m.kw(call, "agent")
             attrs["wraps"] = wrapped.id if isinstance(wrapped, ast.Name) else None
+            if isinstance(wrapped, ast.Call):  # AgentExecutor(agent=create_tool_calling_agent(...), ...)
+                attrs["wraps_line"] = m.line(wrapped)
         attrs["tool_refs"] = self._tool_refs(tools_kw)
+        attrs["tool_list_ref"] = self._list_import(tools_kw)
         attrs["description"] = desc or ""
         attrs["confidence"] = "high"
         self._fact("agent", name, framework, call, **attrs)
@@ -984,8 +1028,32 @@ def detect_python(inv: Inventory, add: Callable[[Fact], str]) -> int:
         mod.local_llm = local_llm
         PyDetector(mod, collect).run()
     _resolve_imported_tools(modules, produced)
+    _imported_tool_lists(modules, produced)
     _function_tools(modules, produced, collect)
     return len(modules)
+
+
+def _imported_tool_lists(modules: list[PyModule], facts: list[Fact]) -> None:
+    """`ToolNode(TOOLS)` with `from app.tools import TOOLS`: read the list in the module that defines it."""
+    by_name = {m.module: m for m in modules}
+    for f in facts:
+        ref = f.attrs.get("tool_list_ref")
+        if not ref:
+            continue
+        if ref.startswith("."):
+            pkg = (f.attrs.get("module") or "").split(".")
+            level = len(ref) - len(ref.lstrip("."))
+            ref = ".".join(pkg[: max(0, len(pkg) - level)] + [ref.lstrip(".")])
+        modname, _, var = ref.rpartition(".")
+        mod = by_name.get(modname) or next((m for k, m in by_name.items() if k.endswith("." + modname) or modname.endswith("." + k)), None)
+        if mod is None or not var:
+            continue
+        names = [e.id for e in mod.list_items(ast.Name(id=var)) if isinstance(e, ast.Name)]
+        if not names:
+            continue
+        f.attrs["tools"] = list(dict.fromkeys([*(f.attrs.get("tools") or []), *names]))
+        f.attrs["tool_refs"] = {**(f.attrs.get("tool_refs") or {}),
+                                **{n: mod.aliases.get(n) or f"{mod.module}.{n}" for n in names}}
 
 
 def _function_tools(modules: list[PyModule], facts: list[Fact], add: Callable[[Fact], str]) -> None:
@@ -1002,7 +1070,7 @@ def _function_tools(modules: list[PyModule], facts: list[Fact], add: Callable[[F
     known = {f.name for f in facts if f.kind == "tool"} | {t.get("name") for f in facts if f.kind == "mcp_server"
                                                            for t in f.attrs.get("tools") or [] if isinstance(t, dict)}
     for f in list(facts):
-        if f.kind != "agent" or not f.attrs.get("tool_refs"):
+        if f.kind not in ("agent", "subagent_edge") or not f.attrs.get("tool_refs"):
             continue
         mod_name = f.attrs.get("module", "")
         new_tools = []

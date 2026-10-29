@@ -212,9 +212,10 @@ def _agents(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> None
     yaml_crew = {f.attrs["config_key"]: f for f in facts if f.attrs.get("yaml")}
     # LangChain: AgentExecutor(agent=tool_agent, tools=...) is the agent to test; the runnable it wraps is not separate
     wrapped = {(f.attrs.get("file"), f.attrs["wraps"]) for f in facts if f.attrs.get("wraps")}
+    inline = {(f.attrs.get("file"), f.attrs["wraps_line"]) for f in facts if f.attrs.get("wraps_line")}
     for f in facts:
         a = f.attrs
-        if (a.get("file"), a.get("object")) in wrapped:
+        if (a.get("file"), a.get("object")) in wrapped or a.get("object") is None and f.evidence                 and (a.get("file"), f.evidence[0].line) in inline:
             continue
         if a.get("yaml") and any(g.attrs.get("config_key") == a["config_key"] and not g.attrs.get("yaml") for g in facts):
             continue  # the Python Agent(config=...) for this YAML entry carries the object; merged below
@@ -227,6 +228,9 @@ def _agents(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> None
             prompt = prompt or y.get("prompt") or {}
             model = model or y.get("model") or {}
         name = f.name
+        if name.lower() in ("agent", "assistant", "bot", "graph", "app", "crew", "workflow") and a.get("file"):
+            # `agent = Agent(...)` in bank_support.py: call it Bank Support (ids stay stable per file)
+            name = _graph_name(name, a["file"]).lower().replace(" ", "_")
         ag = Agent(
             id=new_id(name), name=_title(name), framework=f.framework, language=a.get("language", "python"),
             purpose=_sentence(desc) or _sentence(prompt.get("text")),
@@ -244,6 +248,12 @@ def _agents(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> None
     # LangGraph: nodes, ToolNode tools and the compiled object
     for e in edges:
         a = e.attrs
+        if a.get("parent_var") == "*":  # bind_tools in a node: the graph(s) defined in the same file
+            for g in [x for x in agents if meta[x.id]["fact"].attrs.get("file") == a.get("file")
+                      and meta[x.id]["fact"].attrs.get("role") == "graph"]:
+                g.evidence.append(e.id)
+                g.tools += [t for t in a.get("tools") or [] if t not in g.tools]
+            continue
         g = key_of.get(f"{a.get('file')}::{a.get('parent_var')}")
         if g is None:
             continue
@@ -251,6 +261,9 @@ def _agents(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> None
         if a.get("kind") == "compile" and a.get("compiled_as"):
             meta[g.id]["fact"].attrs["compiled_as"] = a["compiled_as"]
             key_of.setdefault(f"{a.get('file')}::{a['compiled_as']}", g)
+            # name the agent the way the code does: compile(name="ReAct Agent"), else the compiled graph's variable
+            if a.get("display_name") or g.name.lower().replace(" ", "_") in ("builder", "workflow", "graph_builder", "state_graph"):
+                g.name = a.get("display_name") or _graph_name(a["compiled_as"], a.get("file") or "")
         for t in a.get("tools") or []:
             if t not in g.tools:
                 g.tools.append(t)
@@ -268,6 +281,18 @@ def _agents(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> None
                 ag.subagents.append(sub.id)
         for sname in f.attrs.get("subagents") or []:  # Claude Agent SDK subagent definitions
             ag.notes.append(f"Defines a subagent `{sname}` (Claude Agent SDK).")
+    # agents built inside tests are fixtures, not the product: offered, but not ticked
+    test_file = re.compile(r"(^|/)(tests?/|test_[^/]*\.py$|[^/]*_test\.py$|[^/]*\.(test|spec)\.[jt]sx?$|conftest\.py$)")
+    for ag in agents:
+        if test_file.search(meta[ag.id]["fact"].attrs.get("file") or "") and ag.include:
+            ag.include = False
+            ag.notes.append("Defined in a test file, so it's left out; tick it to test it anyway.")
+    for ag in agents:
+        local = meta[ag.id]["fact"].attrs.get("local_to")
+        if local and ag.include and not any(ag.id in p.subagents for p in agents):
+            ag.include = False
+            ag.notes.append(f"Created inside `{local}()` and used there, so tests can't reach it on its own; it's "
+                            "tested through whatever calls that function.")
     members = {s for ag in agents for s in ag.subagents}
     for ag in agents:
         f = meta[ag.id]["fact"]
@@ -275,6 +300,8 @@ def _agents(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> None
             parent = next(p for p in agents if ag.id in p.subagents)
             ag.include = False
             ag.notes.append(f"Tested through {parent.name}, which hands work to it.")
+            # its tools are exercised through the parent (a crew's members, handoffs), so the parent's tests cover them
+            parent.tools += [t for t in ag.tools if t not in parent.tools]
         if ag.confidence == "low":
             ag.include = not any(o.confidence != "low" and meta[o.id]["fact"].attrs.get("file") == f.attrs.get("file") for o in agents)
         if f.attrs.get("role") == "graph" and not f.attrs.get("compiled_as"):
@@ -287,6 +314,16 @@ def _agents(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> None
             if m:
                 ag.model = ModelRef(value=m.attrs.get("value"), env=m.attrs.get("env"), evidence=[m.id])
     d.agents = agents
+
+
+def _graph_name(var: str, file: str) -> str:
+    """A readable name for a compiled graph: its variable, unless that's generic (`graph`), then its file or package."""
+    generic = {"graph", "app", "agent", "workflow", "main", "__init__", "builder", "chain", "runnable", "crew", "assistant", "bot"}
+    parts = [p for p in Path(file).with_suffix("").parts if p not in ("src", "app", "lib")]
+    for cand in [var, *reversed(parts)]:
+        if cand.lower() not in generic:
+            return cand.replace("_", " ").replace("-", " ").title()
+    return var.title()
 
 
 def _data(d: Discovery, c: Collector) -> None:
@@ -527,7 +564,8 @@ def _entrypoints(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) ->
 
 
 PROMPT_ANSWERS = ("yes, the live prompt", "no, a fixed copy")
-VECTOR_ANSWERS = ("mock the retriever with fixed passages", "use the live store (read-only)")
+VECTOR_ANSWERS = ("index a snapshot of the repo's documents", "mock the retriever with fixed passages",
+                  "use the live store (read-only)")
 MEMORY = re.compile(r"\b(MemorySaver|InMemorySaver|SqliteSaver|AsyncSqliteSaver|PostgresSaver|AsyncPostgresSaver|RedisSaver|"
                     r"ConversationBufferMemory|ConversationSummaryMemory|ChatMessageHistory|RedisChatMessageHistory|"
                     r"SQLiteSession|SQLAlchemySession|RedisSession|InMemoryStore|Mem0Memory|mem0|ZepMemory|"
@@ -738,7 +776,10 @@ def enrich(d: Discovery, base_url: str, model: str, api_key: str = "",
         ev = [e for e in (item.get("evidence") or []) if e in d.facts]
         text = str(item.get("text") or "").strip()
         about = str(item.get("about") or "")
-        if ev and text and re.match(r"^(agent|tool):", about):
+        # keep questions the reviewer can act on; "what is the purpose of ..." is answered by the code itself
+        explains = re.match(r"(?i)^(what is the (purpose|role)|can you (explain|describe)|what (specific )?(tasks|does)|"
+                            r"how does|why does|what happens)", text)
+        if ev and text and re.match(r"^(agent|tool):", about) and not explains:
             d.questions.append(Question(id=f"q{len(d.questions) + 1}", text=text[:300], about=about, evidence=ev))
             changed += 1
     sent = [{"fact": e["fact"], "file": e["file"], "line": e["line"]}

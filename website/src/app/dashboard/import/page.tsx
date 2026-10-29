@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader, useProject } from "@/components/app/AppShell";
 import { IconArrow, IconCheck, IconGit, IconImport, IconRefresh, IconServer, IconShield, IconX } from "@/components/Icons";
@@ -66,7 +66,7 @@ function Import() {
       {job && (job.status === "scanning" || job.status === "failed") && <Progress job={job} title={job.status === "failed" ? "The scan failed" : "Reading the code"} />}
       {job?.discovery && (job.status === "review" || job.status === "apply_failed") && <Review job={job} onChange={setJob} />}
       {job && job.status === "applying" && <Progress job={job} title="Writing the tests and smoke-running them" />}
-      {job && job.status === "applied" && job.result && <Results job={job} />}
+      {job && job.status === "applied" && job.result && <Results job={job} onChange={setJob} />}
       {job && job.status === "apply_failed" && <Card className="mt-5 border-bad/40 p-4 text-[13px] text-bad">Apply failed: {job.error}</Card>}
     </>
   );
@@ -255,24 +255,108 @@ function Connect({ onStarted }: { onStarted: (id: string) => void }) {
 
 // ---------------------------------------------------------------- 2 / 4. progress
 
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  return now;
+}
+
+const clock = (s: number) => {
+  const sec = Math.max(0, Math.floor(s));
+  return sec < 60 ? `${sec} s` : `${Math.floor(sec / 60)} min ${String(sec % 60).padStart(2, "0")} s`;
+};
+
+/** What the job is doing now, how long it has taken, and (in the smoke run) how far along it is. */
+function phaseOf(job: ImportJob, elapsed: number) {
+  const msgs = job.progress;
+  const last = msgs[msgs.length - 1];
+  const smokeAt = msgs.findIndex((p) => p.message.startsWith("Smoke run: one attempt"));
+  if (job.status === "applying") {
+    const total = (job.discovery?.scenarios ?? []).filter((s) => s.include).length;
+    if (smokeAt >= 0) {
+      const results = msgs.slice(smokeAt + 1).filter((p) => /^[✓✗]/.test(p.message));
+      const done = results.length;
+      const per = done ? (results[done - 1].t - msgs[smokeAt].t) / done : null;
+      const left = per && total > done ? per * (total - done) - (elapsed - results[done - 1].t) : null;
+      return {
+        label: `Running test ${Math.min(done + 1, total)} of ${total} against your agent`,
+        done, total,
+        eta: left && left > 0 ? `about ${clock(left)} left` : done >= total ? "finishing" : "estimating time left after the first test…",
+      };
+    }
+    return { label: last?.message.startsWith("Connection check") ? "Starting the smoke run" : "Writing the tests and checking every connection", done: 0, total, eta: null };
+  }
+  if (last?.message.startsWith("Asking ")) {
+    return { label: "The model is describing the agents and tools (it gives up after 5 minutes and carries on without it)", done: 0, total: 0, eta: null };
+  }
+  return { label: last?.message ?? "Starting", done: 0, total: 0, eta: null };
+}
+
 function Progress({ job, title }: { job: ImportJob; title: string }) {
   const failed = job.status === "failed" || job.status === "apply_failed";
+  const running = job.status === "scanning" || job.status === "applying";
+  const now = useNow(running);
+  const elapsed = now / 1000 - job.started;
+  const last = job.progress[job.progress.length - 1];
+  const quiet = last ? elapsed - last.t : 0;
+  const phase = phaseOf(job, elapsed);
+  const logRef = useRef<HTMLOListElement>(null);
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight; // follow the newest line
+  }, [job.progress.length]);
+  const expect = job.status === "applying"
+    ? `Usually 5–10 minutes on a local model: each of the ${phase.total} tests runs once against your agent, and a model grades some of them. You can leave this page; the import keeps going and you can come back to it.`
+    : "Reading the code takes seconds. If a model writes the descriptions, add a few minutes on a local model.";
   return (
     <Card className="p-5 sm:p-6">
-      <div className="flex items-center gap-3">
-        {failed ? <span className="flex h-7 w-7 items-center justify-center rounded-full bg-bad/15 text-bad"><IconX className="h-4 w-4" /></span> : <Spinner className="h-5 w-5 text-info" />}
-        <div>
-          <div className="text-[16px] font-semibold">{title}</div>
-          <div className="font-mono text-[12px] text-dim">{job.source}</div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-center gap-3">
+          {failed ? <span className="flex h-7 w-7 items-center justify-center rounded-full bg-bad/15 text-bad"><IconX className="h-4 w-4" /></span> : <Spinner className="h-5 w-5 text-info" />}
+          <div>
+            <div className="text-[16px] font-semibold">{title}</div>
+            <div className="font-mono text-[12px] text-dim">{job.source}</div>
+          </div>
         </div>
+        {running && (
+          <div className="text-right" aria-live="off">
+            <div className="font-mono text-[20px] font-semibold tabular-nums">{clock(elapsed)}</div>
+            <div className="text-[11.5px] text-dim">elapsed</div>
+          </div>
+        )}
       </div>
-      <ol className="mt-5 max-h-80 space-y-1 overflow-y-auto rounded-lg border border-line bg-panel-2/50 p-3 font-mono text-[12px]">
+      {running && (
+        <div className="mt-4 rounded-lg border border-info/25 bg-info/[0.05] px-4 py-3">
+          <p className="text-[13px] text-mute">{expect}</p>
+          <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 text-[13px]">
+            <span className="flex items-center gap-2 font-medium text-fg" role="status">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-info" />{phase.label}
+            </span>
+            <span className="font-mono text-[12px] text-dim">
+              {phase.eta ?? (quiet >= 5 ? `still working · last update ${clock(quiet)} ago` : "working")}
+            </span>
+          </div>
+          {phase.total > 0 && job.status === "applying" && (
+            <div className="mt-2.5">
+              <div className="h-1.5 overflow-hidden rounded-full bg-panel-2">
+                <div className="h-full rounded-full bg-info transition-all duration-700" style={{ width: `${Math.max(3, (100 * phase.done) / phase.total)}%` }} />
+              </div>
+              <div className="mt-1 text-[11.5px] text-dim">{phase.done} of {phase.total} tests done{phase.eta && quiet >= 5 ? ` · last result ${clock(quiet)} ago` : ""}</div>
+            </div>
+          )}
+        </div>
+      )}
+      <ol ref={logRef} className="mt-4 max-h-80 space-y-1 overflow-y-auto rounded-lg border border-line bg-panel-2/50 p-3 font-mono text-[12px]">
         {job.progress.map((p, i) => (
           <li key={i} className={p.message.startsWith("✗") ? "text-bad" : p.message.startsWith("✓") ? "text-ok" : "text-fg/85"}>
             <span className="mr-2 text-dim">{p.t.toFixed(1)}s</span>{p.message}
           </li>
         ))}
-        {!failed && <li className="text-dim">…</li>}
+        {running && <li className="text-dim">… {clock(elapsed)}</li>}
       </ol>
       {job.error && <p className="mt-3 text-[13px] text-bad">{job.error}</p>}
     </Card>
@@ -321,7 +405,7 @@ function Review({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =>
   async function approve() {
     setSaving(true);
     try {
-      onChange(await api<ImportJob>(`/api/discover/${job.id}/apply`, { method: "POST", body: JSON.stringify({ smoke: true }) }));
+      onChange(await api<ImportJob>(`/api/discover/${job.id}/apply`, { method: "POST", body: JSON.stringify({ smoke: true, pull_request: pr }) }));
     } catch (e) {
       setError((e as Error).message);
       setSaving(false);
@@ -330,6 +414,7 @@ function Review({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =>
 
   const included = d.agents.filter((a) => a.include);
   const open = d.questions.filter((q) => !q.answer);
+  const [pr, setPr] = useState(false);
   const scenarios = d.scenarios.filter((s) => s.include);
   const tabs: [Tab, string, number | null][] = [
     ["map", "System map", null], ["agents", "Agents", d.agents.length], ["tools", "Tools", d.tools.length],
@@ -364,6 +449,11 @@ function Review({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =>
         <div className="text-[13px] text-mute">
           {included.length} agent{included.length === 1 ? "" : "s"} · {scenarios.length} tests will be written to{" "}
           <code className="font-mono text-[12px] text-fg">{d.repo.root.replace(/[\\/]$/, "")}/agent-tests</code>, then smoke-run once each.
+          {d.documents.length > 0 && <> RAG tests answer from a snapshot of {d.documents.length} document{d.documents.length === 1 ? "" : "s"} in the repo.</>}
+          <label className="mt-1.5 flex items-center gap-2 text-[12.5px]" title="Commits the tests (and accepted code changes) to a new branch from your current commit, pushes it and opens a pull request with the GitHub CLI when it's logged in. Your working tree isn't touched.">
+            <input type="checkbox" checked={pr} onChange={(e) => setPr(e.target.checked)} className="accent-[#ff6b35]" disabled={!canWrite || saving} />
+            Also open a pull request with the tests (needs a git repository with a remote)
+          </label>
         </div>
         <Button onClick={approve} disabled={!canWrite || saving || included.length === 0}>
           {saving ? <Spinner /> : <IconCheck className="h-3.5 w-3.5" />} Looks good: write tests and smoke-run
@@ -791,8 +881,22 @@ function ScenarioYaml({ agent, s, patch, disabled }: {
 
 // ---------------------------------------------------------------- 5. results
 
-function Results({ job }: { job: ImportJob }) {
+function Results({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) => void }) {
   const r = job.result!;
+  const { canWrite } = useProject();
+  const [adding, setAdding] = useState<string | null>(null);
+  const [addError, setAddError] = useState<string | null>(null);
+  async function addTool(agent: string, tool: string) {
+    setAdding(tool);
+    setAddError(null);
+    try {
+      onChange(await api<ImportJob>(`/api/discover/${job.id}/tools`, { method: "POST", body: JSON.stringify({ agent, tool }) }));
+    } catch (e) {
+      setAddError((e as Error).message);
+      setAdding(null);
+    }
+  }
+  const pr = r.pull_request;
   const rep = r.reality;
   const d = job.discovery!;
   const { switchProject } = useProject();
@@ -828,6 +932,19 @@ function Results({ job }: { job: ImportJob }) {
           </div>
         </div>
       </Card>
+      {addError && <Card className="border-bad/40 p-4 text-[13px] text-bad">{addError}</Card>}
+      {pr && (
+        <Card className={`p-5 ${pr.error ? "border-bad/40" : "border-info/30"}`}>
+          <div className="text-[14px] font-semibold">{pr.error ? "The pull request wasn't opened" : pr.pr_url ? "Pull request opened" : `Branch ${pr.branch} ${pr.pushed ? "pushed" : "created"}`}</div>
+          {pr.error ? <p className="mt-1 text-[13px] text-bad">{pr.error}</p> : (
+            <div className="mt-1 space-y-1 text-[13px] text-mute">
+              <p>{pr.files?.length} files on <code className="font-mono text-[12px] text-fg">{pr.branch}</code> (commit {pr.commit}), on top of {pr.base}.</p>
+              {(pr.pr_url || pr.compare_url) && <p><a href={pr.pr_url ?? pr.compare_url ?? undefined} target="_blank" rel="noreferrer" className="text-ember">{pr.pr_url ? "Open the pull request" : "Open a pull request"} →</a></p>}
+              {pr.note && <p className="text-[12.5px] text-dim">{pr.note}</p>}
+            </div>
+          )}
+        </Card>
+      )}
       {(r.connection || (r.code_changes && r.code_changes.length > 0)) && (
         <Card>
           <CardHeader title="Before the smoke run" sub="Connection check: the model server, every MCP server and every agent's start command." />
@@ -877,6 +994,14 @@ function Results({ job }: { job: ImportJob }) {
                     <Badge tone={f.kind.includes("error") ? "bad" : "warn"}>{f.kind.replace(/_/g, " ")}</Badge>
                     <p className="mt-1.5 break-words"><Ticks text={f.detail} /></p>
                     <p className="text-[12.5px] text-mute"><Ticks text={f.action} /></p>
+                    {f.kind === "unexpected_tool" && f.agent && f.tool && canWrite && (
+                      <div className="mt-2">
+                        <Button variant="secondary" onClick={() => addTool(f.agent!, f.tool!)} disabled={adding !== null}>
+                          {adding === f.tool ? <Spinner /> : null} Add {f.tool} to the map
+                        </Button>
+                        <span className="ml-2 text-[12px] text-dim">then review and approve again to write its tests</span>
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
