@@ -10,7 +10,7 @@ written, and a smoke run on seeded test databases shows what actually works.
 
 **Adopting it for your team:** [docs/ADOPTION.md](docs/ADOPTION.md)
 
-**Website:** https://prosws2210.github.io/AgentCrucible/ (source in [`website/`](website/))
+**Website:** agent-crucible.vercel.app (source in [`website/`](website/))
 
 <p align="center">
   <a href="https://prosws2210.github.io/AgentCrucible/demo/"><img src="docs/img/walkthrough.gif" alt="Walkthrough: import a codebase, review what it found, smoke-run it, catch a prompt regression and audit an MCP server" width="100%"></a>
