@@ -5,9 +5,12 @@ Everything here is a draft for review: each plan says why it was chosen, each sc
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +67,19 @@ def _example(param: str, typ: str | None = None, ids: dict[str, str] | None = No
 
 
 def _seed_value(col: str, typ: str, i: int) -> str:
+    v = _seed_raw(col, typ, i)
+    digits = re.search(r"(?i)^(?:NUMERIC|DECIMAL)\s*\((\d+)\s*(?:,\s*(\d+))?\)", typ.strip())
+    if digits and len(v.split(".")[0]) > int(digits.group(1)) - int(digits.group(2) or 0):  # numeric(3, 2) holds < 10
+        return "0" if int(digits.group(1)) == int(digits.group(2) or 0) else "1"
+    size = re.search(r"(?i)^(?:VARCHAR|CHAR|CHARACTER(?:\s+VARYING)?)\s*\((\d+)\)", typ.strip())
+    if size and v.startswith("'"):  # varchar(7): a drafted value must fit
+        n = int(size.group(1))
+        inner = v[1:-1]
+        v = f"'{inner[:n - 1] + str(i + 1) if len(inner) > n else inner}'"
+    return v
+
+
+def _seed_raw(col: str, typ: str, i: int) -> str:
     col, t = col.strip('"`'), typ.upper()
     if t.endswith("[]") or t.startswith("ARRAY"):
         return "'{}'"
@@ -72,7 +88,8 @@ def _seed_value(col: str, typ: str, i: int) -> str:
     if t == "DATE":
         return ["'2026-10-01'", "'2026-10-15'", "'2026-10-28'"][i]
     t = re.sub(r"\(.*", "", t).strip()  # NUMERIC(12,2), VARCHAR(255)
-    t = {"BOOL": "BOOLEAN", "DOUBLE": "REAL", "FLOAT": "REAL"}.get(t, t)
+    t = {"BOOL": "BOOLEAN", "DOUBLE": "REAL", "DOUBLE PRECISION": "REAL", "FLOAT": "REAL", "SMALLINT": "INTEGER",
+         "BIGINT": "INTEGER", "INT": "INTEGER", "INT4": "INTEGER", "INT8": "INTEGER"}.get(t, t)
     for key, vals in SEED_VALUES.items():
         if key in t or (key == "INTEGER" and t in ("INT", "BIGINT", "SMALLINT", "SERIAL")) or (key == "REAL" and t in ("NUMERIC", "DECIMAL", "FLOAT", "DOUBLE")):
             return vals[i]
@@ -186,6 +203,8 @@ def _plan_agent(d: Discovery, ag: Agent, root: Path, fixes: list[CodeFix]) -> Co
         s = next((x for x in d.datastores if x.id == sid), None)
         if s and s.url_env:
             env_map[s.url_env] = ("dbpath:" if re.search(r"PATH|FILE", s.url_env) else "db:") + s.id
+    for name in redis_settings(d):  # Redis: the episode's own empty database, when the run has a Redis server
+        env_map.setdefault(name, "redis")
     for aid in ag.external_apis:
         api = next((x for x in d.external_apis if x.id == aid), None)
         if api and api.kind == "queue":
@@ -248,15 +267,29 @@ def _plan_agent(d: Discovery, ag: Agent, root: Path, fixes: list[CodeFix]) -> Co
                         dispatch[dm].append(fa["dispatch"])
         ir = a.get("import_root") or ""  # a monorepo service runs from its own folder
         sys_path = [ir or "."] + ([f"{ir}/src" if ir else "src"] if (root / ir / "src").is_dir() else [])
-        key = next((k for k in (a.get("input_keys") or []) if MESSAGE_KEY.match(k)), None)
-        if adapter is None and a.get("role") == "class" and key:  # a class agent whose input has a slot for the user's text
-            llm = next((p for p in a.get("init_params") or [] if LLM_PARAM.match(p)), None)
-            code = _class_py(ag, ep.module, obj, key, a.get("input_keys") or [], bool(a.get("runnable")), sys_path,
-                             _prepare_args(env_map, tool_modules, tool_names, dispatch, workspace=any(t.files for t in tools if t)), llm)
+        if adapter is None and a.get("role") == "callsite" and a.get("call"):  # wired up where a route calls it
+            code = _callsite_py(ag, ep.module, a, sys_path,
+                                _prepare_args(env_map, tool_modules, tool_names, dispatch, workspace=any(t.files for t in tools if t)))
             return ConnectionPlan(agent=ag.id, strategy="code", adapter_file=rel + ".py", adapter_code=code,
                                   command=f"{_python(root)} {rel}.py", env_needed=env_needed, env_map=env_map,
-                                  why=f"`{obj}` takes a task dict; the adapter puts each user message in `{key}` and calls "
-                                      f"`{'invoke' if a.get('runnable') else 'process'}`"
+                                  why=f"`{a.get('object')}` has no agent class: the `{a.get('route')}` route builds its parts "
+                                      f"({', '.join(a.get('model_parts') or [])}) and calls it. The adapter makes that same call "
+                                      f"with each user message as `{a.get('text_var')}`; check the test values it fills in for "
+                                      f"the route's other inputs.",
+                                  warnings=warnings)
+        key = next((k for k in (a.get("input_keys") or []) if MESSAGE_KEY.match(k)), None)
+        doc = None if key else document_key(a.get("input_keys") or [])  # takes a file, not a message
+        if adapter is None and a.get("role") == "class" and (key or doc):  # a class agent with a slot for the user's input
+            llm = next((p for p in a.get("init_params") or [] if LLM_PARAM.match(p)), None)
+            code = _class_py(ag, ep.module, obj, key or doc or "", a.get("input_keys") or [], bool(a.get("runnable")), sys_path,
+                             _prepare_args(env_map, tool_modules, tool_names, dispatch, workspace=any(t.files for t in tools if t)),
+                             llm, document=bool(doc))
+            slot = (f"the document the conversation names (or the message saved as a text file) in `{doc}`" if doc
+                    else f"each user message in `{key}`")
+            return ConnectionPlan(agent=ag.id, strategy="code", adapter_file=rel + ".py", adapter_code=code,
+                                  command=f"{_python(root)} {rel}.py", env_needed=env_needed, env_map=env_map,
+                                  why=f"`{obj}` takes a task dict; the adapter puts {slot} and calls its entry method "
+                                      f"(`{'invoke' if a.get('runnable') else 'process'}`, else `invoke`, `run` or `execute`)"
                                       + (f", giving it a chat model on AgentCrucible's gateway as `{llm}`" if llm else "")
                                       + ". Add the other keys it reads if it needs them.",
                                   warnings=warnings)
@@ -395,6 +428,45 @@ def _py_adapter(adapter: str, module: str, obj: str, obj_expr: str, env_map: dic
 
 MESSAGE_KEY = re.compile(r"(?i)^(user_message|message|msg|text|query|prompt|question|input|user_input|user_query|"
                          r"task_description|instruction|request|utterance)$")
+# an agent that reads a file: `document_path`, `file_path`, `pdf_path`; and the name it should report for it
+DOC_KEY = re.compile(r"(?i)^(document|doc|file|pdf|image|attachment|upload)_?(path|file|location)$|^(file_?)?path$")
+FILENAME_KEY = re.compile(r"(?i)^(original_)?(file_?name|document_?name)$")
+
+
+SAMPLE_DIR = re.compile(r"(?i)(^|/)(tests?|fixtures?|samples?|examples?|test_?data|sample_?data|demo)(/|$)")
+SAMPLE_EXT = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".txt"}
+BAD_SAMPLE = re.compile(r"(?i)corrupt|broken|invalid|bad|empty|malformed|truncat|encrypt|password|fail")
+GOOD_SAMPLE = re.compile(r"(?i)invoice|receipt|statement|bill|document|sample|example|contract|report|form")
+SAMPLE_RANK = {".pdf": 0, ".png": 1, ".jpg": 1, ".jpeg": 1, ".tif": 1, ".tiff": 1, ".webp": 1, ".docx": 2, ".doc": 2,
+               ".txt": 3, ".xlsx": 4, ".xls": 4, ".csv": 4}
+SKIP_SAMPLE_DIR = {"node_modules", ".git", "agent-tests", ".venv", "venv", "__pycache__", "dist", "build", "output", "artifacts"}
+
+
+@functools.lru_cache(maxsize=16)
+def sample_document(root: Path) -> str | None:
+    """A small document from the repository's own test data, for agents that read files: invoices and statements
+    first, never one named as broken. Its path is relative to the repository (where the agent runs)."""
+    found: list[tuple[int, int, int, str]] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [x for x in dirnames if x not in SKIP_SAMPLE_DIR and not x.startswith(".")]
+        rel_dir = Path(dirpath).relative_to(root).as_posix()
+        if not SAMPLE_DIR.search(rel_dir):
+            continue
+        for name in filenames:
+            p = Path(dirpath) / name
+            if p.suffix.lower() in SAMPLE_EXT and not BAD_SAMPLE.search(name):
+                with contextlib.suppress(OSError):
+                    if 200 < p.stat().st_size < 5_000_000:
+                        rank = SAMPLE_RANK.get(p.suffix.lower(), 5)  # what document agents are usually built for first
+                        found.append((0 if GOOD_SAMPLE.search(name) else 1, rank, len(rel_dir), f"{rel_dir}/{name}".lstrip("./")))
+        if len(found) > 200:
+            break
+    return min(found)[3] if found else None
+
+
+def document_key(keys: list[str]) -> str | None:
+    """The input key that takes a document's path, for agents that work on a file rather than a message."""
+    return next((k for k in keys if DOC_KEY.match(k)), None)
 
 
 # a constructor parameter that takes the agent's chat model; left empty, such agents often answer without a model
@@ -402,15 +474,26 @@ LLM_PARAM = re.compile(r"(?i)^(llm|chat_model|chat_llm|language_model|model_clie
 
 
 def _class_py(ag: Agent, module: str | None, obj: str, key: str, keys: list[str], runnable: bool, sys_path: list[str],
-              prepare_args: list[str], llm: str | None = None) -> str:
-    """An adapter for a class agent that takes a task dict: one instance, each user message in `key`."""
-    call = "invoke" if runnable else "process"
-    others = [k for k in keys if k != key]
+              prepare_args: list[str], llm: str | None = None, document: bool = False) -> str:
+    """An adapter for a class agent that takes a task dict: one instance, each user message (or, for an agent that
+    reads a file, the document the conversation names) in `key`."""
+    methods = ("invoke", "ainvoke", "process", "run", "execute") if runnable else ("process", "invoke", "ainvoke", "run", "execute")
+    name_key = next((k for k in keys if k != key and FILENAME_KEY.match(k)), None) if document else None
+    others = [k for k in keys if k not in (key, name_key)]
+    what = "The document each conversation names (a path in a message) goes" if document else "Each user message goes"
+    if document:
+        fields = f'"{key}": path' + (f', "{name_key}": os.path.basename(path)' if name_key else "")
+        body = ("    path = document_from(history)  # a file named in the conversation, or the message saved as one\n"
+                f"    result = run_sync(call({{{fields}}}))")
+    else:
+        body = ("    message = as_message(history)  # each call starts fresh, so earlier turns go in with the latest message\n"
+                f'    result = run_sync(call({{"{key}": message}}))')
+    helpers = "as_text, document_from" if document else "as_message, as_text"
     return f'''"""Generated by `crucible discover` for {ag.name} ({ag.framework}): runs this agent for AgentCrucible; safe to edit.
 
-{obj} takes a task dict. Each user message goes in "{key}"{(". It also reads " + ", ".join(others) + ": add them below if it needs them") if others else ""}.
+{obj} takes a task dict. {what} in "{key}"{(". It also reads " + ", ".join(others) + ": add them below if it needs them") if others else ""}.
 """
-from agentcrucible.adapters import as_message, as_text, {"chat_model, " if llm else ""}prepare, run_sync, serve
+{"import os" + chr(10) + chr(10) if name_key else ""}from agentcrucible.adapters import {helpers}, {"chat_model, " if llm else ""}prepare, run_sync, serve
 
 prepare(
     sys_path={_repr(sys_path)},
@@ -419,11 +502,50 @@ prepare(
 from {module} import {obj}  # noqa: E402 - imported after prepare() on purpose
 
 agent = {obj}({f"{llm}=chat_model()" if llm else ""}){"  # a LangChain chat model on AgentCrucible's gateway" if llm else ""}
+# its entry point: the first of these it has
+call = next(getattr(agent, m) for m in {methods!r} if callable(getattr(agent, m, None)))
 
 
 def turn(history):
-    message = as_message(history)  # each call starts fresh, so earlier turns go in with the latest message
-    result = run_sync(agent.{call}({{"{key}": message}}))
+{body}
+    return as_text(result)
+
+
+serve(turn)
+'''
+
+
+IDENTITY_ID = re.compile(r"(?i)^(tenant|user|session|company|org|organization|account|customer|owner|workspace|team)_?id$")
+
+
+def _callsite_py(ag: Agent, module: str | None, a: dict[str, Any], sys_path: list[str], prepare_args: list[str]) -> str:
+    """An adapter that repeats the route's own call (`await run_turn(text=query, classifier=...)`) with the user's
+    message in place of the route's text, so the agent gets the parts it gets in production."""
+    # who is asking gets a test id; anything else the request may carry (a document to resume, a parent) stays unset
+    values = {n: (UUID_EXAMPLE if IDENTITY_ID.match(n) else None) for n in a.get("free") or []}
+    return f'''"""Generated by `crucible discover` for {ag.name}: runs this agent for AgentCrucible; safe to edit.
+
+`{a.get("object")}` has no agent class: the `{a.get("route")}` route in {module} builds its parts and calls it. This adapter
+makes the same call, with each user message as `{a.get("text_var")}`. TEST_VALUES stand in for what the route reads from
+the request; change them to match your fixture data.
+"""
+import importlib
+
+from agentcrucible.adapters import as_message, as_text, prepare, run_sync, serve
+
+prepare(
+    sys_path={_repr(sys_path)},
+{chr(10).join(prepare_args)}
+)
+route = importlib.import_module({module!r})  # the call's names (its parts, the callee) resolve in the route's module
+
+CALL = {a.get("call")!r}
+TEST_VALUES = {values!r}
+
+
+def turn(history):
+    names = {{**TEST_VALUES, {a.get("text_var")!r}: as_message(history)}}
+    result = run_sync(eval(CALL, vars(route), names))  # noqa: S307 - the route's own call, from your code
     return as_text(result)
 
 
@@ -846,8 +968,9 @@ def draft_scenarios(d: Discovery, ag: Agent, mocked: set[str]) -> list[DraftScen
         if workspace:
             e["workspace"] = {"path": ".."}
         if fixtures:  # a Postgres app gets a fresh Postgres database per episode (its SQL won't run on SQLite)
-            kinds = {x.id: x.kind for x in d.datastores}
-            e["fixtures"] = {s: ({"kind": "postgres", "seed": f} if kinds.get(s) == "postgres" else f) for s, f in fixtures.items()}
+            stores = {x.id: x for x in d.datastores}
+            e["fixtures"] = {s: ({"kind": "postgres", "seed": f, **_migrate_for(stores[s])}
+                                 if s in stores and stores[s].kind == "postgres" else f) for s, f in fixtures.items()}
         if mocks_http:
             e["http_mocks"] = mocks_http
         mk = {n: {"status": "ok", "note": "mocked by AgentCrucible: destructive tool"} for n in sorted(mocked) if n in ag.tools}
@@ -856,8 +979,15 @@ def draft_scenarios(d: Discovery, ag: Agent, mocked: set[str]) -> list[DraftScen
         e.update(extra or {})
         return e
 
+    # an agent that reads a file gets one in every task: a sample from the repository's own test data
+    fa = _agent_fact_attrs(d, ag)
+    keys = fa.get("input_keys") or []
+    sample = sample_document(Path(d.repo.root)) if not any(MESSAGE_KEY.match(k) for k in keys) and document_key(keys) else None
+
     def add(sid: str, reason: str, sc: dict[str, Any]) -> None:
         sid = re.sub(r"[^a-z0-9-]+", "-", sid.lower()).strip("-")[:80]
+        if sample and isinstance(sc.get("task"), str) and sample not in sc["task"]:
+            sc = {**sc, "task": f"{sc['task'].rstrip()} The document is {sample}."}
         sc = {"id": sid, "description": reason, "agent": ag.id, **sc}
         out.append(DraftScenario(id=sid, agent=ag.id, reason=reason, yaml=_dump(sc)))
 
@@ -943,7 +1073,8 @@ def draft_scenarios(d: Discovery, ag: Agent, mocked: set[str]) -> list[DraftScen
              "user": {"persona": "The person who asked: answers follow-up questions briefly and plausibly.", "max_turns": 3}})
     if not out:
         add(f"{ag.id}-smoke", "A first conversation to confirm the agent runs end to end.",
-            {"task": "Hi! What can you help me with?",  # any reply passes, but it must come from the model
+            {"task": f"Please extract the details from {sample}." if sample else "Hi! What can you help me with?",
+             # any reply passes, but it must come from the model
              "checks": [{"output.regex": ".+"}, {"budget.min_llm_calls": 1}, budget]})
     return out
 
@@ -956,14 +1087,72 @@ RISKY_ENV = re.compile(r"KEY|TOKEN|SECRET|PASSW|PWD|CREDENTIAL|DSN|URL|URI|HOST|
                        r"DATABASE|REDIS|MONGO|POSTGRES|MYSQL|BUCKET|ACCOUNT|SID|CONNECTION", re.I)
 
 
+REDIS_SETTING = re.compile(r"(?i)^(\w*_)?REDIS(_\w*)?_(URL|URI|DSN)$|^REDIS_URL$")
+
+
+def redis_settings(d: Discovery) -> list[str]:
+    """The settings that hold a Redis URL: from Redis datastores the code connects to, and from its .env names."""
+    stores = {s.url_env for s in d.datastores if s.kind == "redis" and s.url_env}
+    return sorted(stores | {n for ns in d.repo.dotenv.values() for n in ns if REDIS_SETTING.match(n)})
+
+
 def blanked_dotenv(d: Discovery) -> list[str]:
     """Variables from the repository's .env files that tests blank: real environment variables win over .env values,
     so the code under test can't reach the systems or credentials configured there."""
     return sorted({n for names in d.repo.dotenv.values() for n in names if RISKY_ENV.search(n)})
 
 
+@functools.lru_cache(maxsize=4)
+def _py_index(root: str, _bucket: int) -> tuple[frozenset[str], dict[str, str]]:
+    """The repository's Python files and module names (cached for a few minutes: re-planning after each review answer
+    mustn't rescan a big repository)."""
+    from .graph import _py_modules
+    from .scan import scan
+    files = frozenset(f.rel for f in scan(Path(root)).files if f.rel.endswith(".py"))
+    return files, _py_modules(Path(root), set(files))
+
+
+@functools.lru_cache(maxsize=20000)
+def _file_imports(root: str, rel: str, _bucket: int) -> frozenset[str]:
+    from .graph import _imports
+    files, modules = _py_index(root, _bucket)
+    return frozenset(_imports(Path(root), rel, modules, set(files)))
+
+
+def import_closure(root: Path, start: str, limit: int = 800) -> set[str]:
+    """Every repository file `start` imports, directly or not (up to `limit` files)."""
+    bucket = int(time.time() // 300)
+    seen: set[str] = set()
+    todo = [start]
+    while todo and len(seen) < limit:
+        rel = todo.pop()
+        if rel in seen:
+            continue
+        seen.add(rel)
+        todo += [x for x in _file_imports(str(root), rel, bucket) if x not in seen]
+    return seen
+
+
+def _databases_by_import(d: Discovery, root: Path) -> None:
+    """An agent that imports (however indirectly) the module that reads the database setting uses that database, even
+    when its own files never touch it: such code often refuses to import without the setting."""
+    sql = [s for s in d.datastores if s.kind not in ("redis", "mongodb") and s.url_env]
+    if not sql or not root.is_dir():
+        return
+    where = {s.id: _files(d, s.evidence) for s in sql}
+    for ag in d.agents:
+        if not ag.include or ag.language != "python" or any(x in where for x in ag.datastores):
+            continue
+        start = next(iter(sorted(_files(d, ag.evidence))), None)
+        if not start:
+            continue
+        reach = import_closure(root, start)
+        ag.datastores += [s.id for s in sql if where[s.id] & reach and s.id not in ag.datastores]
+
+
 def build_plan(d: Discovery, root: Path) -> None:
     """Fill `d.plans` and `d.scenarios` for every included agent (keeps the user's include toggles)."""
+    _databases_by_import(d, root)
     d.documents = sample_documents(root) if d.vector_stores or any(RETRIEVAL.search(t.name) for t in d.tools) else []
     keep = {s.id: s.include for s in d.scenarios}
     accepted = {fx.id for p in d.plans for fx in p.fixes if fx.accept}
@@ -971,11 +1160,12 @@ def build_plan(d: Discovery, root: Path) -> None:
     for p in d.plans:
         for fx in p.fixes:
             fx.accept = fx.id in accepted
-    redis = [s for s in d.datastores if s.kind == "redis"] or         [n for names in d.repo.dotenv.values() for n in names if "REDIS" in n.upper()]
-    if redis:  # nothing stands one up for tests: say what happens rather than let it surprise
+    redis = redis_settings(d)
+    if redis:
         for p in d.plans:
-            p.warnings.append("The code uses Redis. Tests run without one (its URL is blank), so code that needs it fails "
-                              "open or errors; to test with Redis, set its URL to a test instance in the agent's env.")
+            p.warnings.append(f"The code uses Redis ({', '.join(redis[:4])}). Each episode gets its own empty Redis database "
+                              "when the run has a Redis server (CRUCIBLE_REDIS_URL; Docker Compose starts one). Without "
+                              "one its URL stays blank, so code that needs Redis fails open or errors.")
     blank = blanked_dotenv(d)
     if blank:  # AgentCrucible's own values (gateway URLs and keys, fixture databases) are applied on top at run time
         files = ", ".join(sorted(d.repo.dotenv))
@@ -1051,12 +1241,13 @@ def project_files(d: Discovery, root: Path, model: str = "qwen2.5:7b",
     for s in d.datastores:
         if s.tables or s.schema_files:
             sql = ""
-            for f in s.schema_files:
+            for f in sorted(s.schema_files + _data_files(s.schema_files, root)):  # migrations in the order they apply
                 p = root / f
-                if p.suffix == ".sql" and p.is_file() and _schema_for(f, root, roots) \
-                        and "CREATE TABLE" in p.read_text(encoding="utf-8", errors="replace").upper():
+                text = p.read_text(encoding="utf-8", errors="replace").upper() if p.suffix == ".sql" and p.is_file() else ""
+                if text and _schema_for(f, root, roots) and ("CREATE TABLE" in text or "INSERT INTO" in text):
                     sql += psql_free(p.read_text(encoding="utf-8", errors="replace")) + "\n"
-                    if SEARCH_PATH.search(sql):  # a file that moves to its own schema doesn't take the next ones along
+                    # a file that moves to its own schema, or a pg_dump that empties the path, doesn't take the next along
+                    if re.search(r"(?i)search_path", sql):
                         sql += "SET search_path TO public;\n"
             # your schema file as is, then a few drafted rows; or tables drafted from your models
             filled = {m.lower() for m in re.findall(r"INSERT\s+INTO\s+[\"`]?(\w+)", sql, re.I)}
@@ -1064,7 +1255,8 @@ def project_files(d: Discovery, root: Path, model: str = "qwen2.5:7b",
             # rows only where the model's columns are all there, nothing required is left out and every type takes a
             # drafted value (not an enum of the schema's own); the values follow the schema file's types
             tbl = {k: created[k.lower()][1] for k in s.tables if k.lower() in created}
-            empty = {k: v for k, v in s.tables.items() if k in tbl and k.lower() not in filled
+            checked = sql_checked(sql)
+            empty = {k: v for k, v in s.tables.items() if k in tbl and k.lower() not in filled and k.lower() not in checked
                      and {c.lower() for c in v} <= set(tbl[k])
                      and not {c for c, (req, _, _) in tbl[k].items() if req} - {c.lower() for c in v}
                      and all(SEEDABLE.search(tbl[k][c.lower()][1]) for c in v)}
@@ -1088,6 +1280,30 @@ MANIFESTS = ("pyproject.toml", "requirements.txt", "package.json", "go.mod", "po
 DATA_SCRIPT = re.compile(r"(?i)(^|/)(manual|backfills?|data[-_]?fix(es)?|one[-_]?off)(/|$)|backfill")
 
 
+def _migrate_for(store: Any) -> dict[str, str]:
+    """Code-based migrations to run on each fresh database: Alembic runs from its ini's folder, with the database URL in
+    the setting the code reads. The drafted SQL seed then adds rows on top."""
+    ini = next((f for f in sorted(store.schema_files) if f.endswith("alembic.ini")), None)
+    if not ini:
+        return {}
+    folder = Path(ini).parent.as_posix()
+    return {"migrate": f"python -m alembic -c {Path(ini).name} upgrade head", "url_env": store.url_env or "DATABASE_URL",
+            "cwd": f"../{folder}" if folder != "." else ".."}
+
+
+def _data_files(schema_files: list[str], root: Path) -> list[str]:
+    """Row files next to a schema file (`01a_reference_data.sql` beside `01_schema.sql`): reference data the code
+    expects to find, which holds no CREATE TABLE of its own."""
+    out: list[str] = []
+    for folder in sorted({Path(f).parent for f in schema_files if f.endswith(".sql")}):
+        for p in sorted((root / folder).glob("*.sql")):
+            rel = (folder / p.name).as_posix()
+            if rel not in schema_files and not DATA_SCRIPT.search(rel) and p.stat().st_size < 2_000_000 \
+                    and "INSERT INTO" in p.read_text(encoding="utf-8", errors="replace").upper():
+                out.append(rel)
+    return out
+
+
 def _schema_for(rel: str, root: Path, agent_roots: set[str]) -> bool:
     """Does this schema file describe the agents' own database? In a monorepo another service's migrations (its own
     folder with its own manifest) are left out, and so are one-off data scripts (`manual/`, backfills)."""
@@ -1103,11 +1319,14 @@ def _schema_for(rel: str, root: Path, agent_roots: set[str]) -> bool:
 
 # psql client syntax a server can't run: meta-commands (\set, \i, \connect) and variables (:'name', :"name", :name)
 PSQL_META = re.compile(r"^\s*\\.*$", re.M)
+# a dump's roles, grants and replication: the test database has no such roles
+ROLE_STMT = re.compile(r"(?is)^\s*(ALTER\s+\w+(\s+\w+)?\s+\S+.*\bOWNER\s+TO\b|GRANT\b|REVOKE\b|ALTER\s+DEFAULT\s+PRIVILEGES\b"
+                       r"|SECURITY\s+LABEL\b|CREATE\s+ROLE\b|ALTER\s+ROLE\b|CREATE\s+PUBLICATION\b|CREATE\s+SUBSCRIPTION\b)")
 PSQL_QUOTED_VAR = re.compile(r"(?<![\w:'\"]):(?:'[A-Za-z_]\w*'|\"[A-Za-z_]\w*\")")
 PSQL_VAR = re.compile(r"(?<![\w:\"']):[A-Za-z_]\w*\b(?!:)")
 
 
-CREATE_TABLE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[\"`]?(\w+)[\"`]?\.)?([\"`]?\w+[\"`]?)\s*\(", re.I)
+CREATE_TABLE = re.compile(r"CREATE\s+(?:UNLOGGED\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[\"`]?(\w+)[\"`]?\.)?([\"`]?\w+[\"`]?)\s*\(", re.I)
 SEARCH_PATH = re.compile(r"(?i)SET\s+(?:LOCAL\s+)?search_path\s*(?:TO|=)\s*[\"']?(\w+)")
 NOT_A_COLUMN = re.compile(r"(?i)^(CONSTRAINT|PRIMARY|FOREIGN|UNIQUE|CHECK|EXCLUDE|LIKE)\b")
 
@@ -1138,7 +1357,10 @@ def sql_tables(sql: str) -> dict[str, tuple[str, dict[str, tuple[bool, str, str]
                 item = re.sub(r"--[^\n]*", "", part).strip()
                 if item and not NOT_A_COLUMN.match(item):
                     words = item.split()
-                    name, typ = words[0].strip('"`').lower(), (words[1] if len(words) > 1 else "TEXT").strip('"`')
+                    # the whole type: `character varying(7)`, `timestamp with time zone`, `numeric(12, 2)`
+                    tm = re.match(r"\S+\s+(.+?)(?=\s+(?:NOT|NULL|DEFAULT|PRIMARY|REFERENCES|UNIQUE|CHECK|CONSTRAINT|GENERATED|"
+                                  r"COLLATE)\b|\s*$)", item, re.I | re.S)
+                    name, typ = words[0].strip('"`').lower(), (tm.group(1).strip().strip('"`') if tm else "TEXT")
                     up = item.upper()
                     cols[name] = ("NOT NULL" in up and "DEFAULT" not in up and "PRIMARY KEY" not in up
                                   and not re.search(r"\b(SERIAL|BIGSERIAL|IDENTITY)\b", up), typ, words[0])
@@ -1146,7 +1368,33 @@ def sql_tables(sql: str) -> dict[str, tuple[str, dict[str, tuple[bool, str, str]
             else:
                 part += ch
         out.setdefault(m.group(2).strip('"`').lower(), (m.group(2), cols))
+    # later migrations reshape them: ADD / DROP / RENAME COLUMN, in the order they run
+    for m in ALTER_COLUMN.finditer(sql):
+        t = out.get(m.group("table").lower())
+        if not t:
+            continue
+        cols = t[1]
+        if m.group("add"):
+            spec = m.group("add").strip()
+            tm = re.match(r"(\S+)\s+(.+?)(?=\s+(?:NOT|NULL|DEFAULT|PRIMARY|REFERENCES|UNIQUE|CHECK|CONSTRAINT|GENERATED|"
+                          r"COLLATE)\b|\s*$)", spec, re.I | re.S)
+            if tm:
+                up = spec.upper()
+                cols[tm.group(1).strip('"`').lower()] = ("NOT NULL" in up and "DEFAULT" not in up, tm.group(2).strip(), tm.group(1))
+        elif m.group("drop"):
+            cols.pop(m.group("drop").strip('"`').lower(), None)
+        elif m.group("old"):
+            old = cols.pop(m.group("old").strip('"`').lower(), None)
+            if old:
+                cols[m.group("new").strip('"`').lower()] = (old[0], old[1], m.group("new"))
     return out
+
+
+ALTER_COLUMN = re.compile(
+    r"ALTER\s+TABLE\s+(?:ONLY\s+)?(?:IF\s+EXISTS\s+)?(?:[\"`]?public[\"`]?\.)?[\"`]?(?P<table>\w+)[\"`]?\s+"
+    r"(?:ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?!CONSTRAINT\b|PRIMARY\b|FOREIGN\b|UNIQUE\b|CHECK\b)(?P<add>[^;,]+)"
+    r"|DROP\s+(?:COLUMN\s+)?(?:IF\s+EXISTS\s+)?(?!CONSTRAINT\b)(?P<drop>[\"`]?\w+[\"`]?)"
+    r"|RENAME\s+(?:COLUMN\s+)?(?P<old>[\"`]?\w+[\"`]?)\s+TO\s+(?P<new>[\"`]?\w+[\"`]?))", re.I)
 
 
 REFERENCE = re.compile(r"REFERENCES\s+(?:[\"`]?\w+[\"`]?\.)?[\"`]?(\w+)", re.I)
@@ -1166,6 +1414,28 @@ def sql_references(sql: str) -> dict[str, set[str]]:
     for t, r in ALTER_FK.findall(sql):
         refs.setdefault(t.lower(), set()).add(r.lower())
     return refs
+
+
+ALTER_CHECK = re.compile(r"ALTER\s+TABLE\s+(?:ONLY\s+)?(?:IF\s+EXISTS\s+)?(?:[\"`]?\w+[\"`]?\.)?[\"`]?(\w+)[\"`]?[^;]*?\bCHECK\s*\(",
+                         re.I | re.S)
+
+
+def sql_checked(sql: str) -> set[str]:
+    """Tables drafted rows can't be trusted to fit: CHECK constraints, and partitioned tables (a drafted date lands
+    outside every partition). Those are created but not seeded."""
+    out = {t.lower() for t in ALTER_CHECK.findall(sql)} | {(a or b).lower() for a, b in PARTITION_OF.findall(sql)}
+    for m in CREATE_TABLE.finditer(sql):
+        depth, i = 1, m.end()
+        while i < len(sql) and depth:
+            depth += {"(": 1, ")": -1}.get(sql[i], 0)
+            i += 1
+        if re.search(r"(?i)\bCHECK\s*\(", sql[m.end():i]) or re.match(r"(?i)\s*PARTITION\s+BY\b", sql[i:i + 40]):
+            out.add(m.group(2).strip('"`').lower())
+    return out
+
+
+PARTITION_OF = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[\"`]?\w+[\"`]?\.)?[\"`]?(\w+)[\"`]?\s+PARTITION\s+OF\b"
+                          r"|ATTACH\s+PARTITION\s+(?:[\"`]?\w+[\"`]?\.)?[\"`]?(\w+)", re.I)
 
 
 def seed_order(tables: dict[str, Any], refs: dict[str, set[str]], filled: set[str]) -> dict[str, Any]:
@@ -1200,7 +1470,12 @@ def psql_free(sql: str) -> str:
         code = re.sub(r"--[^\n]*", "", stmt)
         bare = re.sub(r"'(?:[^']|'')*'", "''", PSQL_QUOTED_VAR.sub(":v", code))  # text in string literals isn't SQL
         uses = PSQL_QUOTED_VAR.search(code) or PSQL_VAR.search(bare)
-        out.append(f"-- left out by AgentCrucible: uses psql variables: {' '.join(stmt.split())[:120]}" if uses else stmt)
+        if uses:
+            out.append(f"-- left out by AgentCrucible: uses psql variables: {' '.join(stmt.split())[:120]}")
+        elif ROLE_STMT.match(code):
+            out.append(f"-- left out by AgentCrucible: roles and grants: {' '.join(stmt.split())[:120]}")
+        else:
+            out.append(stmt)
     return "\n".join(out)
 
 

@@ -33,6 +33,18 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # Redis for the agents under test: every episode gets one of its numbered databases, emptied before and after.
+  # Nothing is persisted; it holds only test data.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   models:
     image: ollama/ollama:${OLLAMA_VERSION:-0.17.1}
     # Point OLLAMA_MODELS_DIR at an existing Ollama models folder to reuse downloaded models.
@@ -74,6 +86,8 @@ services:
       CRUCIBLE_HELPER_MODEL: ${CRUCIBLE_MODEL:-qwen2.5:7b}
       # Postgres fixtures: a fresh database per episode is created (and dropped) on this server
       CRUCIBLE_POSTGRES_URL: ${CRUCIBLE_POSTGRES_URL:-postgresql://${POSTGRES_USER:-crucible}:${POSTGRES_PASSWORD:-crucible}@db:5432/${POSTGRES_DB:-crucible}}
+      # Redis for agents that use it: each episode gets its own empty numbered database on this server
+      CRUCIBLE_REDIS_URL: ${CRUCIBLE_REDIS_URL:-redis://redis:6379}
       # Dashboard/API access. Empty = open (fine on your own machine); set before exposing the port.
       CRUCIBLE_API_TOKEN: ${CRUCIBLE_API_TOKEN:-}
       CRUCIBLE_VIEWER_TOKEN: ${CRUCIBLE_VIEWER_TOKEN:-}
@@ -94,6 +108,7 @@ services:
       - "8000:8000"
     depends_on:
       db: { condition: service_healthy }
+      redis: { condition: service_healthy }
       models-init: { condition: service_completed_successfully }
     restart: unless-stopped
 

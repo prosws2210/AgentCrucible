@@ -525,6 +525,8 @@ def _link_tools(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> 
         ag.tools = list(dict.fromkeys(by_norm.get(re.sub(r"[^a-z0-9]", "", tn.lower()), tn) if not d.tool(tn) else tn for tn in ag.tools))
     tool_names = {t.name for t in d.tools}
     for ag in d.agents:
+        if TEST_FILE.search(meta[ag.id]["fact"].attrs.get("file") or ""):
+            continue  # a test's stub agent names stub tools: not the product's tools
         for tn in ag.tools:
             if tn not in tool_names:
                 builtin = tn[:1].isupper() or tn in BUILTIN_EFFECTS

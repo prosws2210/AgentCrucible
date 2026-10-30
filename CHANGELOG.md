@@ -17,7 +17,24 @@ All notable changes to AgentCrucible. Versions follow [Semantic Versioning](http
 - **Class agents that take a task dict** get a working adapter when their code reads a message-like key
   (`user_message`, `task_description`, …); otherwise the scaffold lists the keys the code reads.
 
+- **Redis for tests:** with `CRUCIBLE_REDIS_URL` (Docker Compose now starts a `redis` service) every episode gets its own
+  empty numbered Redis database, emptied before and after; imported agents' Redis URL settings point at it.
+- **Migrations and big schemas:** a Postgres fixture can run a `migrate` command (Alembic, Django, Prisma) before its
+  seed, and the import drafts one for Alembic projects. Each distinct fixture is built once per run as a template
+  database and copied for every episode. The import reads `pg_dump` schemas and numbered SQL migrations (with reference
+  data beside them), follows `ALTER TABLE` column changes, and leaves out roles, grants and rows that can't fit
+  (CHECK constraints, partitions, column lengths).
+- **More kinds of agents:** an orchestrator with no agent class that a web route calls with its model-backed parts
+  (`await run_turn(text=query, classifier=…)`) is found, owns the tools of its package, and gets an adapter that repeats
+  the route's call. Agents that take a file (`document_path`) get the document the conversation names, and drafted
+  tests use a sample from the repository's own test data. Agents get the database whose setting they read anywhere in
+  their imports.
+
 ### Changed
+- **Name -> function tables count as tools only when a tool call is dispatched through them** (`TOOLS[call.name]`), so
+  lookup tables of loaders, formatters and card writers are no longer reported as tools.
+- **The dashboard opens at once** after the first load in a tab, and refreshes behind the page; a dropped connection
+  keeps the open page instead of replacing it.
 - **Minimal environment for code under test:** agents, MCP servers and checks no longer inherit the server's
   environment. `inherit_env: [NAME]` on an agent or MCP server, or `CRUCIBLE_PASS_ENV`, passes variables through.
   Credential-like variables from the repository's `.env` are blanked in drafted configs.

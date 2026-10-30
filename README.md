@@ -172,6 +172,11 @@ variable through with `inherit_env: [NAME]` on the agent or MCP server, or `CRUC
 them. Variables from the repository's `.env` that look like credentials or service URLs are blanked in the drafted
 config (names only are read, never values), with a note on the review's **How it runs** tab.
 
+**Databases and Redis.** The import builds a Postgres fixture from the code's own schema: SQL migrations, `pg_dump`
+files with their reference data, ORM models, and for Alembic projects a `migrate` step that runs before the seed. Each
+fixture is built once per run and copied for every episode. With `CRUCIBLE_REDIS_URL` set (Docker Compose starts a
+Redis), every episode also gets its own empty Redis database, and the code's Redis URL settings point at it.
+
 **Knowledge graph.** Every import also writes `agent-tests/knowledge-graph.json` and `knowledge-graph.html`: the files,
 how they import each other, and every agent, tool, MCP server, prompt, database and API, with which agent uses what.
 Click an agent or MCP server to light up everywhere it's used, each linked to its file and line. The HTML file opens in

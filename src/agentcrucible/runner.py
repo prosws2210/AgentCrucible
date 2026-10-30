@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -97,6 +98,38 @@ def git(cwd: Path, *args: str) -> str:
     return r.stdout
 
 
+def redis_db_url(url: str, n: int) -> str:
+    """redis://host:6379 or redis://host:6379/0 -> the same server, database n."""
+    return re.sub(r"(/\d*)?(\?.*)?$", lambda m: f"/{n}{m.group(2) or ''}", url.rstrip("/"), count=1)
+
+
+def _flush_redis(url: str) -> None:
+    """FLUSHDB over the Redis protocol, so no client library is needed."""
+    import socket
+    from urllib.parse import unquote, urlparse
+    u = urlparse(url)
+    db = (u.path or "/0").lstrip("/") or "0"
+
+    def cmd(*parts: str) -> bytes:
+        return b"*%d\r\n" % len(parts) + b"".join(b"$%d\r\n%s\r\n" % (len(p.encode()), p.encode()) for p in parts)
+    raw = socket.create_connection((u.hostname or "localhost", u.port or 6379), timeout=5)
+    if u.scheme == "rediss":
+        import ssl
+        raw = ssl.create_default_context().wrap_socket(raw, server_hostname=u.hostname)
+    with raw as s:
+        msgs = ([cmd("AUTH", *([unquote(u.username)] if u.username else []), unquote(u.password))] if u.password else [])
+        msgs += [cmd("SELECT", db), cmd("FLUSHDB")]
+        s.sendall(b"".join(msgs))
+        replies = b""
+        while replies.count(b"\r\n") < len(msgs):
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            replies += chunk
+    if b"-" in b"".join(line[:1] for line in replies.split(b"\r\n")):
+        raise RuntimeError(f"Redis refused: {replies.decode(errors='replace')[:200]}")
+
+
 def agent_extra_env(sc: Scenario, dbs: dict[str, Path | str], mcp_servers: set[str]) -> dict[str, str]:
     """What the agent process itself needs from the scenario's environment.
 
@@ -171,6 +204,12 @@ class Runner:
         self.python = project_python(cfg)[0]  # what `python` in agent and MCP server commands means
         self.cancelled = threading.Event()  # set from another thread (the dashboard's Cancel) to stop the run
         self._live: set[asyncio.subprocess.Process] = set()  # agent processes running right now
+        # Postgres fixtures: one template database per distinct seed (+ migrate), copied for every episode
+        self._pg_lock = threading.Lock()
+        self._pg_templates: dict[str, str] = {}
+        self._pg_template_names: list[str] = []
+        self._redis_lock = threading.Lock()
+        self._redis_used: set[int] = set()  # numbered Redis databases leased to running episodes
         self.models_used: set[str] = set()
         self.out_root = opts.out_root or (cfg.root / ".crucible")
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -227,6 +266,8 @@ class Runner:
             services = await self._start_services()
             results = [r for r in await asyncio.gather(*(guarded(sc, a) for sc, a in jobs)) if r is not None]
         finally:
+            if self._pg_template_names:
+                await asyncio.to_thread(self._drop_postgres, self._pg_template_names)
             for proc in services:
                 await self._stop_service(proc)
             for log in getattr(self, "_service_logs", []):
@@ -404,7 +445,7 @@ class Runner:
                 dbs[server] = self._create_postgres(sql, pg_created)  # a Postgres seed gets a Postgres database
                 continue
             if fx.kind == "postgres":
-                dbs[server] = self._create_postgres(sql, pg_created)
+                dbs[server] = self._create_postgres(sql, pg_created, fx)
                 continue
             db = tmp / f"{server}.db"
             conn = sqlite3.connect(db)
@@ -414,19 +455,60 @@ class Runner:
             dbs[server] = db
         return dbs
 
-    def _create_postgres(self, sql: str, pg_created: list[str]) -> str:
+    def _create_postgres(self, sql: str, pg_created: list[str], fx: Any = None) -> str:
+        """A fresh database for one episode: a copy of a template built once per run (migrations and seed applied),
+        so a big schema costs one build, not one per episode."""
         import psycopg
         admin = self.cfg.postgres.admin_url
         if not admin:
             raise RuntimeError("postgres fixtures need `postgres.admin_url` in crucible.yaml or CRUCIBLE_POSTGRES_URL")
-        name = f"crucible_{uuid.uuid4().hex[:12]}"
-        with psycopg.connect(admin, autocommit=True) as conn:
-            conn.execute(f'CREATE DATABASE "{name}"')
+        key = hashlib.sha256(f"{sql}\0{getattr(fx, 'migrate', None)}\0{getattr(fx, 'cwd', '')}".encode()).hexdigest()[:12]
+        with self._pg_lock:
+            template = self._pg_templates.get(key)
+            if template is None:
+                template = f"crucible_tpl_{key}_{uuid.uuid4().hex[:6]}"
+                with psycopg.connect(admin, autocommit=True) as conn:
+                    conn.execute(f'CREATE DATABASE "{template}"')
+                self._pg_template_names.append(template)
+                url = with_database(admin, template)
+                if fx is not None and fx.migrate:
+                    self._migrate(fx, url)
+                with psycopg.connect(url, autocommit=True) as conn:
+                    conn.execute(sql)
+                self._pg_templates[key] = template
+            name = f"crucible_{uuid.uuid4().hex[:12]}"
+            with psycopg.connect(admin, autocommit=True) as conn:
+                conn.execute(f'CREATE DATABASE "{name}" TEMPLATE "{template}"')
         pg_created.append(name)
-        url = with_database(admin, name)
-        with psycopg.connect(url, autocommit=True) as conn:
-            conn.execute(sql)
-        return url
+        return with_database(admin, name)
+
+    def _lease_redis(self) -> int:
+        """A free numbered Redis database for one episode (1..databases-1; 0 is left alone), emptied first."""
+        with self._redis_lock:
+            free = [n for n in range(1, max(2, self.cfg.redis.databases)) if n not in self._redis_used]
+            if not free:
+                raise RuntimeError(f"all {self.cfg.redis.databases - 1} Redis test databases are in use: lower `--parallel` "
+                                   "or raise `redis.databases`")
+            n = free[0]
+            self._redis_used.add(n)
+        _flush_redis(redis_db_url(self.cfg.redis.url or "", n))
+        return n
+
+    def _release_redis(self, n: int) -> None:
+        with contextlib.suppress(Exception):
+            _flush_redis(redis_db_url(self.cfg.redis.url or "", n))
+        with self._redis_lock:
+            self._redis_used.discard(n)
+
+    def _migrate(self, fx: Any, url: str) -> None:
+        """Run the fixture's migrate command against a new database (Alembic, Django, Prisma ...)."""
+        cwd = (self.cfg.root / fx.cwd).resolve()
+        env = child_env({fx.url_env: url, "CRUCIBLE_DB_URL": url})
+        r = subprocess.run(split_command(fx.migrate, self.python), cwd=cwd, env=env, capture_output=True, text=True,
+                           timeout=600, stdin=subprocess.DEVNULL)
+        if r.returncode != 0:
+            tail = (r.stderr or r.stdout).strip().splitlines()[-3:]
+            raise RuntimeError(f"migrate `{fx.migrate}` failed (exit {r.returncode}): {' | '.join(tail)[:400]}")
 
     def _drop_postgres(self, names: list[str]) -> None:
         import psycopg
@@ -469,6 +551,10 @@ class Runner:
         http_urls = {n: f"{base}/http/{n}" for n in sc.environment.http_mocks}
         agent = self.cfg.agent_for(sc.agent)
         extra = agent_extra_env(sc, dbs or {}, set(self.cfg.mcp_servers))
+        if self.cfg.redis.url:  # a Redis database of its own, empty, given back (emptied) when the episode ends
+            n = await asyncio.to_thread(self._lease_redis)
+            stack.push_async_callback(asyncio.to_thread, self._release_redis, n)
+            extra["CRUCIBLE_REDIS_URL"] = redis_db_url(self.cfg.redis.url, n)
         if agent.transport == "http":
             send = self._http_turns(agent, eid, base, mcp_urls, http_urls, workspace, extra)
         else:

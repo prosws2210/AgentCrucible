@@ -145,6 +145,8 @@ llm:
           <Table head={["Field", "Per episode"]} rows={[
             ["fixtures: { shop: seed.sql }", "New SQLite file; path in CRUCIBLE_DB for that server"],
             ["fixtures: { shop: { postgres: seed.sql } }", "New Postgres database on CRUCIBLE_POSTGRES_URL; URL in CRUCIBLE_DB_URL; dropped afterwards"],
+            ["fixtures: { app: { kind: postgres, seed: seed.sql, migrate: python -m alembic upgrade head } }", "Migrations run first (URL in DATABASE_URL, or url_env); built once per run and copied per episode"],
+            ["CRUCIBLE_REDIS_URL (server setting)", "Each episode gets its own empty Redis database; adapters map the code's Redis URL to it"],
             ["workspace: { path: repos/app, ref: v1.4.0 }", "Fresh copy or git clone with a baseline commit; path in CRUCIBLE_WORKSPACE"],
             ["http_mocks: { payments: [ … ] }", "Canned API at CRUCIBLE_HTTP_PAYMENTS_URL; requests recorded; unmatched → 404"],
             ["mocks: { send_email: { status: sent } }", "Tool returns this instead of running"],
@@ -252,7 +254,8 @@ CRUCIBLE_VIEWER_TOKEN=<another one>         # optional: read-only`} />
             ["CRUCIBLE_IMPORT_DIR", "Docker Compose: host folder mounted at /import for the codebase import (host paths under it are mapped)"],
             ["OPENAI_API_KEY · ANTHROPIC_API_KEY", "Server-side keys for import descriptions with OpenAI or Claude (or paste one in the import's Options)"],
             ["CRUCIBLE_SYNTHESIS_TIMEOUT · CRUCIBLE_CACHE_DIR", "Codebase import: seconds per model request (300); where model answers are cached"],
-            ["CRUCIBLE_PASS_ENV", "Comma-separated server variables passed to every agent, MCP server and check (default: none)"],
+            ["CRUCIBLE_REDIS_URL", "Redis server for agents that use Redis: one empty numbered database per episode (Docker Compose starts one)"],
+            ["CRUCIBLE_PASS_ENV","Comma-separated server variables passed to every agent, MCP server and check (default: none)"],
             ["CRUCIBLE_ENVS_DIR", "Where managed Python environments for imported agents live (default ~/.cache/agentcrucible/envs)"],
           ]} />
 

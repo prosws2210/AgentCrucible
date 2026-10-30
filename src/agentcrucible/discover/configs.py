@@ -160,7 +160,9 @@ def _start_commands(inv: Inventory, add: Callable[[Fact], str]) -> None:
 
 def _schemas(inv: Inventory, add: Callable[[Fact], str]) -> None:
     for sf in inv.named("**/*.sql"):
-        for m in re.finditer(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[\"`]?(\w+)[\"`]?\s*\((.*?)\)\s*;", sf.text, re.I | re.S):
+        # `public.documents` in a pg_dump is the `documents` the code queries; tables in other schemas aren't
+        for m in re.finditer(r"CREATE\s+(?:UNLOGGED\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[\"`]?public[\"`]?\.)?[\"`]?(\w+)[\"`]?\s*\((.*?)\)\s*;",
+                             sf.text, re.I | re.S):
             cols: dict[str, str] = {}
             for part in re.split(r",\s*(?![^()]*\))", m.group(2)):
                 cm = re.match(r"\s*[\"`]?(\w+)[\"`]?\s+(\w+)", part)

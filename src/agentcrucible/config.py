@@ -99,6 +99,13 @@ class PostgresSettings(BaseModel):
     admin_url: str | None = None  # e.g. postgresql://user:pass@localhost:5432/postgres; env CRUCIBLE_POSTGRES_URL
 
 
+class RedisSettings(BaseModel):
+    """A Redis server for tests: every episode gets one of its numbered databases, emptied before and after."""
+
+    url: str | None = None  # e.g. redis://localhost:6379; env CRUCIBLE_REDIS_URL
+    databases: int = 16  # how many numbered databases the server has (`databases` in redis.conf); 0 is never used
+
+
 class SuiteSpec(BaseModel):
     path: str
     runs: int = 3
@@ -132,6 +139,7 @@ class ProjectConfig(BaseModel):
     suites: dict[str, SuiteSpec] = Field(default_factory=dict)
     ci: CISettings = Field(default_factory=CISettings)
     postgres: PostgresSettings = Field(default_factory=PostgresSettings)
+    redis: RedisSettings = Field(default_factory=RedisSettings)
 
     root: Path = Field(default=Path("."), exclude=True)
 
@@ -182,6 +190,11 @@ class Fixture(BaseModel):
 
     kind: Literal["sqlite", "postgres"] = "sqlite"
     seed: str
+    # Postgres: a command that builds the schema in the new database before the seed runs (`python -m alembic
+    # upgrade head`, `python manage.py migrate`, `npx prisma migrate deploy`); it gets the URL in `url_env`
+    migrate: str | None = None
+    url_env: str = "DATABASE_URL"
+    cwd: str = "."  # for `migrate`, relative to the folder that holds crucible.yaml
 
 
 class MockRoute(BaseModel):
@@ -315,6 +328,8 @@ def load_config(path: Path | None = None) -> ProjectConfig:
         cfg.llm.api_key = cfg.simulator.api_key = cfg.judge.api_key = key
     if pg := os.environ.get("CRUCIBLE_POSTGRES_URL"):
         cfg.postgres.admin_url = pg
+    if rd := os.environ.get("CRUCIBLE_REDIS_URL"):
+        cfg.redis.url = rd
     for spec in cfg.mcp_servers.values():  # ${VAR} in remote MCP headers, so tokens stay out of the file
         spec.headers = {k: os.path.expandvars(v) for k, v in spec.headers.items()}
     if model := os.environ.get("CRUCIBLE_MODEL"):

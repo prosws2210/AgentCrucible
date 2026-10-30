@@ -20,7 +20,9 @@ import importlib
 import inspect
 import json
 import os
+import re
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -120,6 +122,24 @@ def as_message(history: list[dict[str, str]]) -> str:
     return f"Conversation so far:\n{earlier}\n\nLatest message from the user:\n{history[-1]['content']}"
 
 
+DOC_PATH = re.compile(r"""[\w./\\:-]*[\w-]\.(?:pdf|png|jpe?g|tiff?|webp|gif|bmp|docx?|xlsx?|xls|csv|txt|pptx?|json|md|html?)\b""", re.I)
+
+
+def document_from(history: list[dict[str, str]]) -> str:
+    """The document a turn is about, for agents that take a file rather than a message: a path named in the
+    conversation (latest first) that exists, else the latest message saved as a text file."""
+    for m in reversed(history):
+        if m.get("role") != "user":
+            continue
+        for p in DOC_PATH.findall(m.get("content") or ""):
+            if os.path.isfile(p):
+                return os.path.abspath(p)
+    fd, path = tempfile.mkstemp(prefix="crucible-doc-", suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(history[-1]["content"] if history else "")
+    return path
+
+
 def chat_model() -> Any:
     """A LangChain chat model on AgentCrucible's gateway, for agents that take one (`Agent(llm=chat_model())`).
     Uses the OpenAI-format endpoint with langchain_openai, else the Anthropic one with langchain_anthropic."""
@@ -147,7 +167,8 @@ def prepare(env_map: dict[str, str] | None = None, tool_modules: list[str] | Non
     """Call before importing the agent.
 
     env_map: your setting -> what to point it at: "db:<fixture>" (the episode's database as a URL), "dbpath:<fixture>"
-             (as a file path), "http:<mock>" (an HTTP mock's base URL), "openai" / "anthropic" (the model gateway).
+             (as a file path), "http:<mock>" (an HTTP mock's base URL), "openai" / "anthropic" (the model gateway),
+             "redis" (the episode's own empty Redis database, when the run has a Redis server).
     tool_modules + tools: modules to import first and the tool names in them to wrap (traced, mockable, blockable).
     dispatch: {"app.agent": ["TOOLS"]}: name->function tables of a hand-written tool loop to wrap in place.
     workspace: run in the episode's fresh copy of the repository (CRUCIBLE_WORKSPACE), so files the tools read or
@@ -200,6 +221,8 @@ def apply_env_map(env_map: dict[str, str]) -> None:
             value = url or (f"sqlite:///{path}" if path else None)
         elif kind == "dbpath":
             value = os.environ.get(f"CRUCIBLE_DB_{key}")
+        elif kind == "redis":  # this episode's own empty Redis database
+            value = os.environ.get("CRUCIBLE_REDIS_URL")
         elif kind == "http":
             value = os.environ.get(f"CRUCIBLE_HTTP_{key}_URL")
         elif kind == "openai":

@@ -8,9 +8,11 @@ catches any model call or agent constructor that takes `tools=` in a module that
 from __future__ import annotations
 
 import ast
+import builtins
 import re
 import warnings
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from .effects import py_effects
@@ -819,10 +821,25 @@ class PyDetector:
             self._fact("mcp_client", m.string(url_node) or m.env_name(url_node) or "remote server", "mcp", call,
                        transport="sse" if last == "sse_client" else "http", url=m.string(url_node), url_env=m.env_name(url_node))
 
+    def _tool_table(self, name: str) -> bool:
+        """Is this name -> function table how a model's tool calls are dispatched? Looked up with a tool call's name
+        (`TOOLS[call.function.name]`, `HANDLERS.get(tool_name)`) it is; `_CARD_SAYERS[card]` or `LOADERS[key]` is
+        ordinary code. A table never looked up here (imported elsewhere) is judged by its name."""
+        keys: list[ast.AST] = []
+        for n in self.m.nodes:
+            if isinstance(n, ast.Subscript) and isinstance(n.value, ast.Name) and n.value.id == name:
+                keys.append(n.slice)
+            elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "get" \
+                    and isinstance(n.func.value, ast.Name) and n.func.value.id == name and n.args:
+                keys.append(n.args[0])
+        if not keys:
+            return bool(TOOL_TABLE.search(name))
+        return any(TOOL_KEY.search(ast.unparse(k)) for k in keys)
+
     def _dispatch_tables(self) -> None:
         """TOOLS = {"refund": refund_order, ...}: links tool names in a raw loop to their implementations."""
         for name, value in self.m.consts.items():
-            if not isinstance(value, ast.Dict) or not value.keys:
+            if not isinstance(value, ast.Dict) or not value.keys or NOT_TOOL_TABLE.search(name) or not self._tool_table(name):
                 continue
             pairs = [(self.m.string(k), v) for k, v in zip(value.keys, value.values, strict=False) if k is not None]
             impls = [(k, v.id) for k, v in pairs if k and isinstance(v, ast.Name)
@@ -1064,6 +1081,7 @@ def detect_python(inv: Inventory, add: Callable[[Fact], str]) -> int:
     _imported_tool_lists(modules, produced)
     _function_tools(modules, produced, collect)
     _custom_base_agents(modules, produced, collect)
+    _route_call_agents(modules, produced, collect)
     _fill_tool_params(modules, produced)
     return len(modules)
 
@@ -1116,6 +1134,13 @@ def import_roots(inv: Inventory) -> Callable[[str], tuple[str, bool]]:
 
 
 TOOL_NAME = re.compile(r"^[A-Za-z_][\w.-]{0,63}$")  # what model APIs accept as a tool name
+# a tool table's name, and the key a tool call is dispatched with (`call.function.name`, `tool_name`, `block.name`)
+TOOL_TABLE = re.compile(r"(?i)tool|function|handler|action|dispatch|registry|available|callable|skill")
+TOOL_KEY = re.compile(r"(?i)\bname\b|\.name\b|tool|func|call|action|^fn$")
+# name -> function tables that are ordinary code, not a model's tools: LOADERS = {"cashflow": load_cashflow, ...}
+NOT_TOOL_TABLE = re.compile(r"(?i)(LOADER|READER|FETCHER|PARSER|FORMATTER|RENDERER|SERIALI[SZ]ER|VALIDATOR|CONVERTER|"
+                            r"NORMALI[SZ]ER|MIGRATION|BUILDER|EXPORTER|IMPORTER|ENCODER|DECODER|MAPPER|TRANSFORMER|"
+                            r"COLUMN|FIELD|METRIC|CALCULATOR|COMPUTER)S?(_MAP|_TABLE|_REGISTRY)?$")
 TEST_FILE = re.compile(r"(^|/)(tests?/|test_[^/]*\.py$|[^/]*_test\.py$|conftest\.py$)")
 
 
@@ -1201,6 +1226,73 @@ def _custom_base_agents(modules: list[PyModule], facts: list[Fact], add: Callabl
                       description=_first_sentence(ast.get_docstring(node))
                       or f"Built on {base}, the repository's own agent class{' (a LangChain Runnable)' if runnable else ''}.",
                       confidence="medium")
+
+
+ROUTE_VERB = {"get", "post", "put", "patch", "delete", "websocket", "route", "api_route"}
+TEXT_KW = re.compile(r"(?i)^(text|message|query|prompt|question|user_message|user_input|user_query|utterance)$")
+MODEL_PART = re.compile(r"(Classifier|Composer|LLM|Llm|Model|Agent|Chat|Completion|Writer|Planner|Router|Responder)")
+
+
+def _imported(module: str, imported: set[str]) -> bool:
+    """Is `module` (src.services.intel.metrics_cash) what one of these imports names, written with or without the
+    service's own root (`services.intel.metrics_cash.cash_runway` or `src.services.intel`)?"""
+    if not module:
+        return False
+    forms = {module, module.removeprefix("src.")}
+    return any(i == f or i.startswith(f + ".") or i.removeprefix("src.") == f or i.removeprefix("src.").startswith(f + ".")
+               for i in imported for f in forms)
+
+
+def _route_call_agents(modules: list[PyModule], facts: list[Fact], add: Callable[[Fact], str]) -> None:
+    """An orchestrator with no agent class, wired up where a web route calls it:
+    `await run_turn(text=query, classifier=SharedModelClassifier(...), composer=SharedComposer(...))`.
+    The callee is the agent; its adapter repeats the route's own call with the user's message in place of `query`,
+    and the tools defined in its package are its tools."""
+    have = {f.attrs.get("object") or f.name for f in facts if f.kind == "agent"}
+    by_module = {m.module: m for m in modules}
+    tools = [f for f in facts if f.kind == "tool"]
+    builtin = set(dir(builtins))
+    seen: set[str] = set()
+    for mod in modules:
+        if TEST_FILE.search(mod.sf.rel):
+            continue
+        module_names = set(mod.aliases) | set(mod.functions) | set(mod.consts) | builtin \
+            | {n.name for n in mod.tree.body if isinstance(n, ast.ClassDef)}
+        for fn in mod.functions.values():
+            if not any(isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute) and dec.func.attr in ROUTE_VERB
+                       for dec in fn.decorator_list):
+                continue
+            for node in ast.walk(fn):
+                if not (isinstance(node, ast.Await) and isinstance(node.value, ast.Call)):
+                    continue
+                call = node.value
+                text = next((k for k in call.keywords if k.arg and TEXT_KW.match(k.arg) and isinstance(k.value, ast.Name)), None)
+                parts = [k for k in call.keywords if isinstance(k.value, ast.Call)
+                         and MODEL_PART.search((mod.qual(k.value.func) or "").rsplit(".", 1)[-1])]
+                callee = mod.qual(call.func) or ""
+                short = callee.rsplit(".", 1)[-1].lstrip("$")
+                if text is None or not parts or not short or short in have or callee in seen:
+                    continue
+                seen.add(callee)
+                target = by_module.get(callee.rsplit(".", 1)[0].lstrip("."))
+                if target is None:  # `from src.chat_v2.pipeline import run_turn` as written in a monorepo service
+                    target = next((m for m in modules if callee.rsplit(".", 1)[0].endswith(m.module) and m.module), None)
+                pkg = Path(target.sf.rel).parent.as_posix() if target else None
+                # its tools: those defined in its package, and those in modules its package imports (its lanes' tools)
+                inside = [m for m in modules if pkg and m.sf.rel.startswith(pkg + "/")]
+                imported = {v.lstrip(".") for m in inside for v in m.aliases.values()}
+                own = sorted({t.name for t in tools if pkg and (t.attrs.get("file") or "").startswith(pkg + "/")
+                              or _imported(t.attrs.get("module") or "", imported)})
+                free = sorted({n.id for n in ast.walk(call) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+                              - module_names - {text.value.id})
+                doc = ast.get_docstring(target.functions[short]) if target and short in target.functions else None
+                det = PyDetector(mod, add)
+                det._fact("agent", f"{(pkg or mod.module).rsplit('/', 1)[-1]} {short}", "custom", call, role="callsite",
+                          module=mod.module, object=short, callee=callee, call=ast.unparse(call), text_var=text.value.id,
+                          free=free, route=fn.name, tools=own, model_parts=[k.arg for k in parts],
+                          description=_first_sentence(doc) or f"Called from the `{fn.name}` route with the user's text and "
+                                                             f"its model-backed parts ({', '.join(k.arg or '' for k in parts)}).",
+                          confidence="medium")
 
 
 def _imported_tool_lists(modules: list[PyModule], facts: list[Fact]) -> None:

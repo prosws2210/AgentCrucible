@@ -54,6 +54,23 @@ function savedProject(): string {
   }
 }
 
+// what the last successful load saw, kept for this browser tab only, so the next page opens without "Connecting…"
+type Boot = { auth: AuthStatus; projects: ProjectSummary[]; health: Health; project: Project };
+const BOOT_KEY = "crucible:boot";
+
+function loadBoot(): Boot | null {
+  try {
+    const b = JSON.parse(sessionStorage.getItem(BOOT_KEY) || "null") as Boot | null;
+    return b && b.project?.id && b.auth?.authenticated ? b : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveBoot(b: Boot) {
+  try { sessionStorage.setItem(BOOT_KEY, JSON.stringify(b)); } catch {}
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = norm(usePathname() || "/dashboard/");
   const [state, setState] = useState<"loading" | "offline" | "login" | "ready">("loading");
@@ -68,23 +85,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const a = await api<AuthStatus>("/api/auth/status");
+      // two round trips, not three: who's asking, the projects and the server's health together, then the project
+      const [a, list, h] = await Promise.all([api<AuthStatus>("/api/auth/status"), api<ProjectSummary[]>("/api/projects"),
+        api<Health>("/api/health")]);
       setAuth(a);
       if (!a.authenticated) {
         setState("login");
         return;
       }
-      const list = await api<ProjectSummary[]>("/api/projects");
       const wanted = savedProject();
       const id = list.find((x) => x.id === wanted && !x.error)?.id ?? list.find((x) => x.home)?.id ?? list[0]?.id ?? "";
       setCurrentProject(id);
-      const [h, p] = await Promise.all([api<Health>("/api/health"), api<Project>("/api/project")]);
+      const p = await api<Project>("/api/project");
       setProjects(list);
       setHealth(h);
       setProject(p);
       setState("ready");
       shown.current = true;
       setLost(false);
+      saveBoot({ auth: a, projects: list, health: h, project: p });
       api<{ models: string[] }>("/api/models").then((m) => setModels(m.models)).catch(() => setModels([]));
     } catch (e) {
       // a server that's restarting fails with a network error, not an API one: offline either way (it retries itself)
@@ -101,9 +120,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [state, lost, refresh]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load; state is set after the requests resolve
+    // a reload or a new page in this tab opens at once from what the last load saw; the requests below refresh it
+    const boot = loadBoot();
+    if (boot && boot.project.id === (savedProject() || boot.project.id)) {
+      setCurrentProject(boot.project.id);
+      /* eslint-disable react-hooks/set-state-in-effect -- restoring the last session before the network answers */
+      setAuth(boot.auth);
+      setProjects(boot.projects);
+      setHealth(boot.health);
+      setProject(boot.project);
+      setState("ready");
+      /* eslint-enable react-hooks/set-state-in-effect */
+      shown.current = true;
+    }
     refresh();
-    const expired = () => setState("login");
+    const expired = () => {
+      try { sessionStorage.removeItem(BOOT_KEY); } catch {}
+      setState("login");
+    };
     window.addEventListener(UNAUTHORIZED, expired);
     return () => window.removeEventListener(UNAUTHORIZED, expired);
   }, [refresh]);
@@ -119,6 +153,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(async () => {
     await api("/api/auth/logout", { method: "POST" }).catch(() => {});
+    try { sessionStorage.removeItem(BOOT_KEY); } catch {}
     setProject(null);
     setState("login");
   }, []);
