@@ -395,6 +395,20 @@ Today the gateway records MCP tool calls. Most framework agents call ordinary fu
 
 Each draft carries its reason. The user approves, edits or deletes it. Drafts never reach CI without approval.
 
+### 8.3 The agents' interpreter and environment
+
+- `python` in an agent's command resolves to the project's interpreter: `python:` in `crucible.yaml`, else the managed
+  environment for that project (`CRUCIBLE_ENVS_DIR`, default `~/.cache/agentcrucible/envs`, outside the repository),
+  else AgentCrucible's own Python. `crucible env --install` (or Setup → Install dependencies) fills the managed one from
+  every `requirements*.txt` and `pyproject.toml` found.
+- The connection check imports each agent's module once and reports the missing package. If no agent can start, the
+  smoke run is skipped with that message rather than producing a page of crashed episodes; the results page can retry it.
+- Code under test gets a minimal environment (`gateway.child_env`): system basics and `CRUCIBLE_*` addresses only.
+  `inherit_env` per agent or MCP server, or `CRUCIBLE_PASS_ENV`, adds names. The scan records the *names* in the
+  repository's `.env` files (never values); credential- and service-like ones are set blank in the plan's env.
+- Scenarios for an agent whose adapter is still the generated scaffold (its `turn` raises `NotImplementedError`) are
+  skipped at run time and listed in the run; Setup and the connection check say which file to finish.
+
 ---
 
 ## 9. Proving it: the discovery vs reality report

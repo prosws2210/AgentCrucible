@@ -55,3 +55,27 @@ def test_small_k_large_drop_is_inconclusive_with_runs_needed():
     row = next(r for r in compare_runs(base, cand)["scenarios"] if r["scenario_id"] == "s9")
     assert row["verdict"] == "inconclusive"
     assert row["runs_needed"] and row["runs_needed"] > 3
+
+
+def crashed(run_id, scenarios=("a", "b"), k=3):
+    run = make_run(run_id, {s: [False] * k for s in scenarios})
+    for e in run["episodes"]:
+        e["error"] = "RuntimeError: agent exited (code 1)"
+    run["summary"] = summarize_run(run)
+    return run
+
+
+def test_a_run_where_nothing_ran_never_passes_the_gate():
+    base, cand = crashed("r1"), crashed("r2")
+    cmp = compare_runs(base, cand, b=200)
+    assert cmp["overall"]["verdict"] == "inconclusive" and "errored" in cmp["overall"]["note"]
+    ok, reasons = gate(cmp, cand, ["regressed"])
+    assert not ok and "nothing ran" in reasons[0]
+
+
+def test_some_errors_are_tolerated_up_to_the_limit():
+    run = make_run("r", {"a": [True] * 9, "b": [True] * 1})
+    run["episodes"][0]["error"] = "timeout"
+    run["summary"] = summarize_run(run)
+    assert gate(None, run, ["regressed"])[0]  # 1 of 10 errored: 10% <= 20%
+    assert not gate(None, run, ["regressed"], max_error_rate=0.05)[0]

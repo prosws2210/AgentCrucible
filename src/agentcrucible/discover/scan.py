@@ -6,8 +6,10 @@ credential is redacted before it can reach a snippet, `discovery.json` or the sy
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,6 +33,16 @@ ALWAYS_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "env", "__pycache__
 SECRET_FILE = re.compile(r"(^\.env($|\.(?!example$|sample$|template$|dist$).*)|\.pem$|\.key$|\.p12$|\.pfx$|^id_rsa|"
                          r"^id_ed25519|credentials\.json$|secrets?\.(json|ya?ml|toml)$|\.keystore$)", re.I)
 MAX_FILE_BYTES = 1_000_000
+DOTENV_FILE = re.compile(r"^\.env($|\.(?!example$|sample$|template$|dist$)[\w.-]+$)", re.I)
+_DOTENV_NAME = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", re.M)
+
+
+def dotenv_names(path: Path) -> list[str]:
+    """The variable names a .env file sets. Values are never kept: they're secrets."""
+    try:
+        return sorted(set(_DOTENV_NAME.findall(path.read_text(encoding="utf-8", errors="replace"))))
+    except OSError:
+        return []
 MAX_FILES = 25_000
 
 # credential-looking strings: provider key formats, and long values assigned to key/secret/token/password names
@@ -89,6 +101,7 @@ class Inventory:
     files: list[SourceFile] = field(default_factory=list)
     skipped: int = 0
     skipped_secret: list[str] = field(default_factory=list)
+    dotenv: dict[str, list[str]] = field(default_factory=dict)  # .env file -> the names it sets (no values)
     skip_reasons: dict[str, int] = field(default_factory=dict)  # why things were left out, for the preview
 
     def skip(self, reason: str) -> None:
@@ -97,6 +110,13 @@ class Inventory:
 
     def code(self, *languages: str) -> list[SourceFile]:
         return [f for f in self.files if f.language in languages]
+
+    def prefetch(self) -> None:
+        """Read every file's text in parallel: opening a file on a Windows folder mounted into Docker takes ~20 ms."""
+        todo = [f for f in self.files if f._text is None]
+        if len(todo) > 50:
+            with ThreadPoolExecutor(max_workers=32) as pool:
+                list(pool.map(lambda f: f.text, todo))
 
     def named(self, *patterns: str) -> list[SourceFile]:
         """Files whose relative path matches any glob (gitwildmatch syntax)."""
@@ -119,49 +139,72 @@ def _gitignore(root: Path) -> pathspec.GitIgnoreSpec:
     return pathspec.GitIgnoreSpec.from_lines(lines)
 
 
+def _size(path: str) -> int | None:
+    try:
+        return os.stat(path).st_size
+    except OSError:
+        return None
+
+
 def scan(root: Path, include: list[str] | None = None) -> Inventory:
-    """Walk `root` (optionally limited to `include` globs, e.g. one service of a monorepo)."""
+    """Walk `root` (optionally limited to `include` globs, e.g. one service of a monorepo).
+
+    Folder entries are typed from the directory listing (no stat per entry) and file sizes are fetched in parallel:
+    on a Docker Desktop bind mount of a Windows folder each stat costs milliseconds, which made big repos take a minute.
+    """
     root = root.resolve()
     ignore = _gitignore(root)
     only = pathspec.GitIgnoreSpec.from_lines(include) if include else None
     inv = Inventory(root=root)
-    stack = [root]
+    found: list[tuple[str, str, str | None]] = []  # (absolute path, rel, language), in walk order
+    stack = [(str(root), "")]
     while stack:
-        d = stack.pop()
+        d, drel = stack.pop()
         try:
-            entries = sorted(d.iterdir(), key=lambda p: p.name)
+            with os.scandir(d) as it:
+                entries = sorted(it, key=lambda e: e.name)
         except OSError:
             continue
-        for p in entries:
-            rel = p.relative_to(root).as_posix()
-            if p.is_dir():
-                if p.name in ALWAYS_SKIP_DIRS or p.name.startswith(".") and p.name not in (".claude", ".github", ".cursor", ".vscode"):
+        for e in entries:
+            rel = f"{drel}{e.name}"
+            try:
+                is_dir = e.is_dir()
+            except OSError:
+                continue
+            if is_dir:
+                if e.name in ALWAYS_SKIP_DIRS or e.name.startswith(".") and e.name not in (".claude", ".github", ".cursor", ".vscode"):
                     inv.skip("dependency, build and hidden folders")
                     continue
                 if ignore.match_file(rel + "/"):
                     inv.skip("folders in .gitignore")
                     continue
-                stack.append(p)
+                stack.append((e.path, rel + "/"))
                 continue
-            if SECRET_FILE.search(p.name):
+            if SECRET_FILE.search(e.name):
                 inv.skipped_secret.append(rel)
+                if DOTENV_FILE.match(e.name):  # the code loads it at run time: tests must neutralise it
+                    inv.dotenv[rel] = dotenv_names(Path(e.path))
                 continue
             if ignore.match_file(rel) or (only and not only.match_file(rel)):
                 inv.skip("files in .gitignore" if ignore.match_file(rel) else "outside the chosen paths")
                 continue
-            lang = LANGS.get(p.suffix.lower())
-            if lang is None and p.suffix.lower() not in CONFIG_SUFFIXES and p.name not in CONFIG_NAMES:
+            suffix = os.path.splitext(e.name)[1].lower()
+            lang = LANGS.get(suffix)
+            if lang is None and suffix not in CONFIG_SUFFIXES and e.name not in CONFIG_NAMES:
                 inv.skip("binaries, media and other non-code files")
                 continue
-            try:
-                if p.stat().st_size > MAX_FILE_BYTES:
-                    inv.skip("files over 1 MB")
-                    continue
-            except OSError:
-                continue
-            inv.files.append(SourceFile(p, rel, lang))
-            if len(inv.files) >= MAX_FILES:
-                return inv
+            found.append((e.path, rel, lang))
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        sizes = list(pool.map(_size, [f[0] for f in found]))
+    for (path, rel, lang), size in zip(found, sizes, strict=True):
+        if size is None:
+            continue
+        if size > MAX_FILE_BYTES:
+            inv.skip("files over 1 MB")
+            continue
+        inv.files.append(SourceFile(Path(path), rel, lang))
+        if len(inv.files) >= MAX_FILES:
+            break
     return inv
 
 

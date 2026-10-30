@@ -203,6 +203,7 @@ class RepoInfo(BaseModel):
     files_scanned: int = 0
     files_skipped: int = 0
     source: str | None = None  # the git URL it was cloned from
+    dotenv: dict[str, list[str]] = Field(default_factory=dict)  # .env files the code may load -> variable names
 
 
 class Discovery(BaseModel):

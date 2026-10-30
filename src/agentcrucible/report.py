@@ -26,7 +26,8 @@ def markdown_summary(run: dict[str, Any], comparison: dict[str, Any] | None) -> 
         failed = c["regressed"] or o["verdict"] == "regressed"
         verdict = {"regressed": "**Overall pass rate regressed** (significant)",
                    "improved": "**Overall pass rate improved** (significant)",
-                   "unchanged": "No significant overall change"}[o["verdict"]]
+                   "unchanged": "No significant overall change",
+                   "inconclusive": "**Comparison inconclusive**" + (f" ({o['note']})" if o.get("note") else "")}[o["verdict"]]
         lines.append(f"{'❌' if failed else '✅'} {verdict}: {o['delta'] * 100:+.1f} pts · "
                      f"scenarios: {c['regressed']} regressed · {c['improved']} improved · "
                      f"{c['inconclusive']} inconclusive · {c['unchanged']} unchanged")

@@ -39,6 +39,7 @@ export const CHECK_HELP: Record<string, string> = {
   "output.not_contains": "reply never contains forbidden text",
   "output.regex": "reply matches the expected pattern",
   "budget.max_llm_calls": "stays within the LLM-call budget",
+  "budget.min_llm_calls": "actually calls the model",
   "budget.max_tokens": "stays within the token budget",
   "budget.max_duration_s": "stays within the time budget",
   "budget.max_cost_usd": "stays within the cost budget",

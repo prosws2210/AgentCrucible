@@ -6,7 +6,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useProject } from "@/components/app/AppShell";
 import { RunStatus } from "@/components/app/bits";
 import { useResource } from "@/components/app/hooks";
-import { IconArrow, IconCheck, IconExternal, IconRefresh, IconX } from "@/components/Icons";
+import { IconAlert, IconArrow, IconCheck, IconExternal, IconRefresh, IconStop, IconX } from "@/components/Icons";
 import { flaggedTools, TrajectoryTimeline } from "@/components/TrajectoryTimeline";
 import { Badge, Button, Card, CardHeader, Dots, Empty, PassRate, Spinner, Stat } from "@/components/ui";
 import { api, reportUrl, type ComparisonRow, type Episode, type Run, type RunDetail, type TrajectoryEvent } from "@/lib/api";
@@ -41,26 +41,48 @@ function RunView() {
             <RunStatus r={r} />
           </div>
           <p className="mt-1 font-mono text-[12px] text-dim">
-            {when(r.created_at)} · {r.model} · {r.params?.agent ? `agent ${r.params.agent}` : r.suite ?? "all suites"} · {r.k}× per scenario · {r.id}
+            {when(r.created_at)} · {r.model} · {r.params?.agent ? `agent ${r.params.agent}` : r.suite ?? "all suites"} · {r.params?.runs ?? r.k}× per scenario · {r.id}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <RunAgain run={r} />
-          {r.status === "done" && <Button variant="secondary" href={reportUrl(r.id)} external>HTML report <IconExternal className="h-3.5 w-3.5" /></Button>}
+          {(r.status === "done" || r.status === "cancelled") && <Button variant="secondary" href={reportUrl(r.id)} external>HTML report <IconExternal className="h-3.5 w-3.5" /></Button>}
         </div>
       </div>
 
       {(r.status === "queued" || r.status === "running") && <Progress detail={data} />}
-      {r.status === "failed" && (
-        <Card className="border-bad/40 p-5">
-          <div className="text-[15px] font-semibold text-bad">The run stopped with an error</div>
-          <pre className="code mt-2 whitespace-pre-wrap text-mute">{r.error}</pre>
-          <div className="mt-3 text-[13px] text-mute">
-            Usually the model server or an MCP server isn&apos;t reachable. <Link href="/dashboard/setup/" className="text-ember">Run the connection check →</Link>
-          </div>
-        </Card>
+      {(r.status === "failed" || r.status === "cancelled" || r.status === "interrupted" || !!data.skipped?.length) && (
+        <div className="mb-5 space-y-2.5">
+          {r.status === "failed" && (
+            <Notice tone="bad" icon={<IconX className="h-3.5 w-3.5" />} title="The run stopped with an error">
+              <pre className="code mt-2 whitespace-pre-wrap">{r.error}</pre>
+              <div className="mt-2">
+                Usually the model server or an MCP server isn&apos;t reachable. <Link href="/dashboard/setup/" className="text-ember hover:underline">Run the connection check →</Link>
+              </div>
+            </Notice>
+          )}
+          {r.status === "cancelled" && (
+            <Notice tone="warn" icon={<IconStop className="h-3.5 w-3.5" />} title="Cancelled">
+              {data.summary?.n_episodes
+                ? `Stopped after ${data.summary.n_episodes} finished episode${data.summary.n_episodes === 1 ? "" : "s"}; the rest didn't run. A partial run gets no comparison or gate verdict.`
+                : "It was stopped before any episode finished."}
+            </Notice>
+          )}
+          {r.status === "interrupted" && (
+            <Notice tone="bad" icon={<IconX className="h-3.5 w-3.5" />} title="Interrupted">
+              {r.error || "The server stopped while this run was going."} Start it again with Run again.
+            </Notice>
+          )}
+          {!!data.skipped?.length && (
+            <Notice tone="warn" icon={<IconAlert className="h-3.5 w-3.5" />}
+              title={`${data.skipped.length} scenario${data.skipped.length === 1 ? " was" : "s were"} skipped`}>
+              {[...new Set(data.skipped.map((x) => x.agent ?? "the agent"))].join(", ")}: {data.skipped[0].reason}. Finish the adapter
+              in <code className="font-mono text-[12px] text-fg/80">agent-tests/adapters/</code> and run again.
+            </Notice>
+          )}
+        </div>
       )}
-      {r.status === "done" && data.summary && <Results detail={data} />}
+      {(r.status === "done" || r.status === "cancelled") && data.summary && <Results detail={data} />}
       {r.status === "done" && !data.summary && (
         <Card className="p-5">
           <div className="text-[15px] font-semibold">This run&apos;s result files are no longer available</div>
@@ -71,6 +93,22 @@ function RunView() {
         </Card>
       )}
     </>
+  );
+}
+
+/** One status line above the results: a coloured edge and icon, a short title, and what to do about it. */
+function Notice({ tone, icon, title, children }: { tone: "warn" | "bad"; icon: React.ReactNode; title: string; children: React.ReactNode }) {
+  const c = tone === "bad" ? { edge: "before:bg-bad", chip: "bg-bad/15 text-bad", title: "text-bad" }
+    : { edge: "before:bg-warn", chip: "bg-warn/15 text-warn", title: "text-warn" };
+  return (
+    <div className={`card relative flex items-start gap-3 overflow-hidden px-4 py-3 before:absolute before:inset-y-0 before:left-0 before:w-[3px] ${c.edge}`}>
+      <span className={`mt-px flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${c.chip}`}>{icon}</span>
+      <div className="min-w-0 text-[13px] leading-relaxed text-mute">
+        <span className={`font-semibold ${c.title}`}>{title}</span>
+        <span className="mx-1.5 text-dim">·</span>
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -85,7 +123,9 @@ function RunAgain({ run }: { run: Run }) {
     <Button variant="secondary" disabled={busy} onClick={async () => {
       setBusy(true);
       try {
-        const r = await api<Run>("/api/runs", { method: "POST", body: JSON.stringify({ ...p, label: `${run.label || "run"} (again)` }) });
+        // a repeat answers "did anything change since this run?", so a finished run is the baseline
+        const r = await api<Run>("/api/runs", { method: "POST", body: JSON.stringify({
+          ...p, label: `${run.label || "run"} (again)`, compare: run.status === "done" ? run.id : p.compare }) });
         router.push(`/dashboard/run/?id=${r.id}`);
       } catch { setBusy(false); }
     }}>
@@ -96,17 +136,36 @@ function RunAgain({ run }: { run: Run }) {
 
 function Progress({ detail }: { detail: RunDetail }) {
   const p = detail.progress;
+  const { canWrite } = useProject();
+  const [stopping, setStopping] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function cancel() {
+    setStopping(true);
+    setError(null);
+    try {
+      await api(`/api/runs/${detail.run.id}/cancel`, { method: "POST" });
+    } catch (e) {
+      setError((e as Error).message);
+      setStopping(false);
+    }
+  }
   return (
     <Card className="p-6">
       <div className="flex items-center gap-3">
         <Spinner className="h-5 w-5 text-info" />
-        <div>
+        <div className="min-w-0 flex-1">
           <div className="text-[16px] font-semibold">{detail.run.status === "queued" ? "Waiting for the previous run to finish" : "Running your agent through the scenarios"}</div>
           <div className="text-[13px] text-mute">
             {p ? `${p.done} of ${p.total} episodes finished${p.failed ? ` · ${p.failed} failed so far` : ""}` : "Starting the gateways and sandboxes…"}
           </div>
         </div>
+        {canWrite && (
+          <Button variant="secondary" onClick={cancel} disabled={stopping}>
+            {stopping ? <><Spinner /> Stopping…</> : <><IconX className="h-3.5 w-3.5" /> Cancel run</>}
+          </Button>
+        )}
       </div>
+      {error && <p className="mt-3 text-[12.5px] text-bad">{error}</p>}
       <div className="mt-5 h-2 overflow-hidden rounded-full bg-panel-2">
         <div className="h-full rounded-full bg-info transition-all duration-500" style={{ width: `${p ? (100 * p.done) / p.total : 3}%` }} />
       </div>
@@ -123,7 +182,7 @@ function Results({ detail }: { detail: RunDetail }) {
   const multiAgent = new Set(Object.values(detail.scenario_meta ?? {}).map((m) => m.agent).filter(Boolean)).size > 1;
   const s = detail.summary!;
   const params = useSearchParams();
-  const cmp = detail.comparison;
+  const cmp = detail.run.status === "cancelled" ? null : detail.comparison;  // a partial sample isn't compared
   const cmpBy = useMemo(() => new Map((cmp?.scenarios ?? []).map((c) => [c.scenario_id, c])), [cmp]);
   const rows = useMemo(() => {
     const list = (detail.scenarios ?? []).slice();
@@ -132,14 +191,19 @@ function Results({ detail }: { detail: RunDetail }) {
   }, [detail.scenarios]);
   const initial = params.get("scenario") ?? rows.find((r) => r.passed < r.n)?.id ?? rows[0]?.id ?? null;
   const [selected, setSelected] = useState<string | null>(initial);
+  const [picked, setPicked] = useState(false);  // chosen by a click (not the page opening): bring its detail into view
+  useEffect(() => {
+    if (picked && selected) document.getElementById("scenario-detail")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [picked, selected]);
 
   return (
     <>
-      <Verdict detail={detail} />
-      <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {/* a cancelled run is a partial sample: its notice above says why there's no verdict */}
+      {detail.run.status !== "cancelled" && <Verdict detail={detail} />}
+      <div className={`${detail.run.status !== "cancelled" ? "mt-5 " : ""}grid grid-cols-2 gap-3 lg:grid-cols-4`}>
         <Stat label="Episodes passed" value={pct(s.pass_at_1)} sub={`95% confidence: ${pct(s.pass_at_1_ci[0])} – ${pct(s.pass_at_1_ci[1])}`}
           tone={s.pass_at_1 >= 0.9 ? "ok" : s.pass_at_1 >= 0.6 ? "warn" : "bad"} />
-        <Stat label={s.k === 1 ? "Scenarios passed" : `Scenarios passing all ${s.k} attempts`} value={pct(s.pass_pow_k)} sub={s.k === 1 ? "run more attempts to measure reliability" : "what users experience every time"} />
+        <Stat label={detail.run.status === "cancelled" ? "Scenarios passing every attempt that ran" : s.k === 1 ? "Scenarios passed" : `Scenarios passing all ${s.k} attempts`} value={pct(s.pass_pow_k)} sub={s.k === 1 ? "run more attempts to measure reliability" : "what users experience every time"} />
         <Stat label="Flaky scenarios" value={s.flaky_scenarios.length} sub="pass sometimes, fail sometimes" tone={s.flaky_scenarios.length ? "warn" : undefined} />
         <Stat label="Episode time" value={duration(s.duration_p50_s)} sub={`slowest 5%: ${duration(s.duration_p95_s)} · ${Math.round(s.tokens_per_episode)} tokens`} />
       </div>
@@ -150,33 +214,38 @@ function Results({ detail }: { detail: RunDetail }) {
           <table className="w-full min-w-[640px] text-left text-[13px]">
             <thead>
               <tr className="border-b border-line text-[11.5px] text-dim">
-                <th className="px-5 py-2.5 font-medium">Scenario</th>
-                <th className="px-5 py-2.5 font-medium">Attempts</th>
-                <th className="px-5 py-2.5 font-medium">Pass rate</th>
-                {cmp && <th className="px-5 py-2.5 font-medium">vs baseline</th>}
+                <th className="w-full px-5 py-2.5 font-medium">Scenario</th>
+                <th className="whitespace-nowrap px-5 py-2.5 font-medium">Attempts</th>
+                <th className="whitespace-nowrap px-5 py-2.5 font-medium">Pass rate</th>
+                {cmp && <th className="whitespace-nowrap px-5 py-2.5 font-medium">vs baseline</th>}
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => {
                 const c = cmpBy.get(row.id);
                 const on = selected === row.id;
+                // an attempt that crashed before grading: say why right in the list
+                const crash = (detail.episodes ?? []).find((e) => e.scenario_id === row.id && e.error)?.error
+                  ?.replace(/; see logs\/[\w.-]+\.log$/, "");
                 return (
-                  <tr key={row.id} onClick={() => setSelected(row.id)}
+                  <tr key={row.id} onClick={() => { setSelected(row.id); setPicked(true); }}
                     className={`cursor-pointer border-b border-line/60 last:border-0 ${on ? "bg-white/[0.05]" : "hover:bg-white/[0.03]"}`}>
-                    <td className="px-5 py-3">
-                      <div className="flex items-center gap-2">
+                    {/* max-w-0: the scenario column takes the room left over, so long descriptions truncate */}
+                    <td className="max-w-0 px-5 py-3">
+                      <div className="flex min-w-0 items-center gap-2">
                         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${on ? "bg-ember" : "bg-transparent"}`} />
-                        <span className="font-mono text-[12.5px]">{row.id}</span>
+                        <span className="truncate font-mono text-[12.5px]" title={row.id}>{row.id}</span>
                         {row.flaky && <Badge tone="warn">flaky</Badge>}
                       </div>
                       <div className="ml-3.5 truncate text-[12px] text-dim">
                         {multiAgent && detail.scenario_meta?.[row.id]?.agent ? <span className="text-ember/80">{detail.scenario_meta[row.id].agent} · </span> : null}
                         {detail.scenario_meta?.[row.id]?.description}
                       </div>
+                      {crash && <div className="ml-3.5 truncate font-mono text-[11.5px] text-bad" title={crash}>{crash}</div>}
                     </td>
-                    <td className="px-5 py-3"><Dots passed={row.passed} n={row.n} /></td>
-                    <td className="px-5 py-3"><PassRate value={row.pass_rate} /> <span className="font-mono text-[11.5px] text-dim">{row.passed}/{row.n}</span></td>
-                    {cmp && <td className="px-5 py-3">{c ? <CmpCell c={c} /> : <span className="text-dim">not in baseline</span>}</td>}
+                    <td className="whitespace-nowrap px-5 py-3"><Dots passed={row.passed} n={row.n} /></td>
+                    <td className="whitespace-nowrap px-5 py-3"><PassRate value={row.pass_rate} /> <span className="font-mono text-[11.5px] text-dim">{row.passed}/{row.n}</span></td>
+                    {cmp && <td className="whitespace-nowrap px-5 py-3">{c ? <CmpCell c={c} /> : <span className="text-dim">not in baseline</span>}</td>}
                   </tr>
                 );
               })}
@@ -185,8 +254,10 @@ function Results({ detail }: { detail: RunDetail }) {
         </div>
       </Card>
 
-      {selected && <ScenarioDetail key={selected} runId={detail.run.id} scenarioId={selected}
-        episodes={(detail.episodes ?? []).filter((e) => e.scenario_id === selected).sort((a, b) => a.attempt - b.attempt)} />}
+      <div id="scenario-detail" className="scroll-mt-4">
+        {selected && <ScenarioDetail key={selected} runId={detail.run.id} scenarioId={selected}
+          episodes={(detail.episodes ?? []).filter((e) => e.scenario_id === selected).sort((a, b) => a.attempt - b.attempt)} />}
+      </div>
     </>
   );
 }
@@ -211,14 +282,33 @@ function Verdict({ detail }: { detail: RunDetail }) {
   const failed = r.gate === "fail";
   let headline = "";
   let body: React.ReactNode = null;
+  const s = detail.summary;
+  if (s && s.n_episodes > 0 && s.errors >= s.n_episodes) {
+    // nothing ran: no pass rate or comparison means anything, so say that instead
+    return (
+      <div className="card flex items-start gap-4 border-bad/40 bg-bad/[0.04] p-5">
+        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-bad/15 text-bad"><IconX /></span>
+        <div className="min-w-0">
+          <div className="text-[16px] font-semibold">Nothing ran: {s.n_episodes === 1 ? "the only episode" : `all ${s.n_episodes} episodes`} errored before {s.n_episodes === 1 ? "it" : "they"} could be graded · <span className="text-bad">CI gate would fail</span></div>
+          <div className="mt-1 text-[13.5px] leading-relaxed text-mute">
+            The agents crashed or couldn&apos;t start, so this run says nothing about their behaviour. Open a scenario below to see the
+            error, fix it (often a missing dependency or setting; Setup checks every agent), and run again.
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (cmp) {
     const [lo, hi] = cmp.overall.ci;
-    headline = cmp.overall.verdict === "regressed" ? "Worse than the baseline" : cmp.overall.verdict === "improved" ? "Better than the baseline" : "No significant change from the baseline";
+    headline = cmp.overall.verdict === "regressed" ? "Worse than the baseline" : cmp.overall.verdict === "improved" ? "Better than the baseline"
+      : cmp.overall.verdict === "inconclusive" ? "Can't compare with the baseline" : "No significant change from the baseline";
     body = (
       <>
         Pass rate moved {signedPts(cmp.overall.delta)}. With 95% confidence the real change is between {signedPts(lo)} and {signedPts(hi)}
         {cmp.overall.verdict === "unchanged" ? ", which includes zero, so this could be noise." : "."}
         {cmp.counts.inconclusive ? ` ${cmp.counts.inconclusive} scenario${cmp.counts.inconclusive > 1 ? "s" : ""} changed but need more attempts to be sure.` : ""}
+        {cmp.overall.note ? ` ${cmp.overall.note}` : ""}
+        {s && s.errors > 0 ? ` ${s.errors} of ${s.n_episodes} episodes errored before they could be graded.` : ""}
       </>
     );
   } else {
@@ -257,6 +347,35 @@ function Verdict({ detail }: { detail: RunDetail }) {
 
 /* ------------------------------------------------------------------ one scenario */
 
+/** An episode's error, with the agent's log one click away (the traceback is usually what you need). */
+function EpisodeError({ runId, error }: { runId: string; error: string }) {
+  const name = /logs\/([\w.-]+\.log)/.exec(error)?.[1];
+  const [log, setLog] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  async function toggle() {
+    if (!open && log === null && name) {
+      try {
+        setLog((await api<{ text: string }>(`/api/runs/${runId}/logs/${encodeURIComponent(name)}`)).text);
+      } catch (e) {
+        setFailed((e as Error).message);
+      }
+    }
+    setOpen((o) => !o);
+  }
+  return (
+    <div className="mb-3 rounded-lg border border-bad/30 bg-bad/[0.06] px-3 py-2 text-[12.5px] text-bad">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <span className="min-w-0 break-words">{error.replace(/; see logs\/[\w.-]+\.log$/, "")}</span>
+        {name && <button type="button" onClick={toggle} className="shrink-0 text-[12px] text-mute underline-offset-2 hover:text-fg hover:underline">{open ? "Hide log" : "Show log"}</button>}
+      </div>
+      {open && (failed ? <p className="mt-2 text-mute">{failed}</p> : (
+        <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-ink/70 p-2.5 font-mono text-[11.5px] text-mute">{log ?? "Loading…"}</pre>
+      ))}
+    </div>
+  );
+}
+
 function ScenarioDetail({ runId, scenarioId, episodes }: { runId: string; scenarioId: string; episodes: Episode[] }) {
   const firstBad = episodes.find((e) => !e.passed) ?? episodes[0];
   const [epId, setEpId] = useState(firstBad?.episode_id);
@@ -291,7 +410,7 @@ function ScenarioDetail({ runId, scenarioId, episodes }: { runId: string; scenar
       <div className="grid lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.4fr)]">
         <div className="border-b border-line p-5 lg:border-b-0 lg:border-r">
           <div className="mb-3 text-[11.5px] font-medium uppercase tracking-[0.12em] text-dim">Checks</div>
-          {ep.error && <div className="mb-3 rounded-lg border border-bad/30 bg-bad/[0.06] px-3 py-2 text-[12.5px] text-bad">{ep.error}</div>}
+          {ep.error && <EpisodeError runId={runId} error={ep.error} />}
           <ul className="space-y-3">
             {ep.checks.map((c, i) => (
               <li key={i} className="text-[13px]">

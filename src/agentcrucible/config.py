@@ -26,6 +26,7 @@ class AgentSpec(BaseModel):
     url: str | None = None
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
+    inherit_env: list[str] = Field(default_factory=list)  # server variables to pass through (default: none)
     headers: dict[str, str] = Field(default_factory=dict)  # http: e.g. an auth token for a staging service
     turn_timeout_s: float = 180.0
     ready_timeout_s: float = 60.0
@@ -58,6 +59,7 @@ class McpServerSpec(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)  # only for `url`; ${ENV_VAR} is expanded
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
+    inherit_env: list[str] = Field(default_factory=list)  # server variables to pass through (default: none)
 
     @model_validator(mode="after")
     def _one_source(self) -> "McpServerSpec":
@@ -108,6 +110,9 @@ class CISettings(BaseModel):
         default_factory=lambda: ["regressed"]
     )
     alpha: float = 0.05
+    # episodes that crash before they can be graded (agent didn't start, setup failed) make a run meaningless:
+    # above this share the gate fails, whatever the comparison says
+    max_error_rate: float = 0.2
 
 
 class ProjectConfig(BaseModel):
@@ -117,6 +122,9 @@ class ProjectConfig(BaseModel):
     agent: AgentSpec | None = None
     agents: dict[str, AgentSpec] = Field(default_factory=dict)
     model: str = "qwen2.5:7b"
+    # the interpreter (or virtual environment folder) that `python` in agent commands means; empty: found
+    # automatically (see pyenv.py)
+    python: str | None = None
     llm: LLMSettings = Field(default_factory=LLMSettings)
     mcp_servers: dict[str, McpServerSpec] = Field(default_factory=dict)
     simulator: HelperModel = Field(default_factory=HelperModel)

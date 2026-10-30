@@ -28,7 +28,9 @@ export default function ScenariosPage() {
   const [agent, setAgent] = useState("all");
 
   const mine = (data ?? []).filter((s) => agent === "all" || s.agent === agent);
-  const suites = [...new Set(mine.map((s) => s.suite))];
+  // imported projects have one suite per agent: the agent row above already filters by it
+  const mirror = (data ?? []).every((s) => s.suite === s.agent);
+  const suites = mirror ? [] : [...new Set(mine.map((s) => s.suite))];
   const shown = mine.filter((s) => filter === "all" || s.suite === filter || (filter === "failing" && s.latest && s.latest.passed < s.latest.n));
 
   return (

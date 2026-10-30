@@ -74,13 +74,17 @@ crucible import-traces traces.json --agent support   # production conversations 
             tools and draft tests, answer any questions, and approve. The codebase then becomes a project in the dashboard with all its agents.
             Or add one agent by hand (a function, a framework object, a TypeScript export, a web service or a command) with its first test.
             With Docker Compose, mount the code with
-            <code className="font-mono text-[14px] text-fg"> CRUCIBLE_IMPORT_DIR=/path/to/code</code>.</P>
+            <code className="font-mono text-[14px] text-fg"> CRUCIBLE_IMPORT_DIR=/path/to/code</code> in <code className="font-mono text-[14px] text-fg">.env</code>;
+            on Windows, paste paths as Windows shows them (<code className="font-mono text-[14px] text-fg">D:\code\my-repo</code>). Descriptions come from the local
+            model by default and fill in after the review opens; under Options you can use an OpenAI or Claude API key instead, which is much faster and is never saved.</P>
           <ul className="mt-4 list-disc space-y-2 pl-5 text-[15px] leading-relaxed text-mute">
             <li>Python: LangGraph, LangChain, OpenAI Agents SDK, CrewAI, PydanticAI, LlamaIndex, Claude Agent SDK, MCP servers and raw OpenAI / Anthropic tool loops. TypeScript: Vercel AI SDK, Mastra, OpenAI Agents JS, LangChain JS, MCP. Go (go-openai, langchaingo) and Java (Spring AI, LangChain4j) run through their own adapters: an exported Go function, a Java method or Spring bean, or the web endpoint.</li>
             <li>Every finding links to the file and line it came from; anything it can&apos;t prove becomes a question. <code className="font-mono text-[13.5px] text-fg">.env</code> files and secrets are skipped.</li>
             <li>Destructive tools are mocked in the drafted tests until you change that, and external APIs become HTTP mocks.</li>
             <li>Each import writes a knowledge graph into the repository, <code className="font-mono text-[13.5px] text-fg">agent-tests/knowledge-graph.html</code>: files and imports, every agent, tool and MCP server, and what uses what. It opens in any browser without a server, and the dashboard shows it under <b className="text-fg">Knowledge graph</b>.</li>
             <li>Adapters report in-process tool calls, so trajectories show arguments and results for ordinary functions too.</li>
+            <li>The agents run with their own dependencies: <code className="font-mono text-[13.5px] text-fg">python:</code> in <code className="font-mono text-[13.5px] text-fg">crucible.yaml</code>, or a managed environment filled by <code className="font-mono text-[13.5px] text-fg">crucible env --install</code> (Setup → Install dependencies). Until they import, the smoke run is skipped and names the missing package.</li>
+            <li>Code under test starts with a minimal environment, never the server&apos;s API keys. Pass a variable with <code className="font-mono text-[13.5px] text-fg">inherit_env: [NAME]</code> on the agent or MCP server, or <code className="font-mono text-[13.5px] text-fg">CRUCIBLE_PASS_ENV</code>.</li>
           </ul>
 
           <H2 id="agent">Connect your agent</H2>
@@ -177,6 +181,7 @@ checks:
             ["trajectory.max_tool_calls · no_tool_errors · no_blocked_calls", "Efficiency and robustness"],
             ["output.contains · not_contains · regex", "What the agent said"],
             ["budget.max_llm_calls · max_tokens · max_duration_s · max_cost_usd", "Cost and latency ceilings"],
+            ["budget.min_llm_calls", "At least N model calls: catches an agent that answers without its model"],
             ["judge.rubric", "LLM judge 1–5 against criteria; demoted to non-blocking if calibration κ < 0.6"],
           ]} />
 
@@ -188,7 +193,9 @@ crucible run --cache replay                              # re-run from recording
           <P>Use k ≥ 5 attempts for gating. Each scenario gets a verdict: <b className="text-fg">regressed</b>, <b className="text-fg">improved</b>, <b className="text-fg">unchanged</b> or <b className="text-fg">inconclusive</b> with a “needs k≈N” estimate. Overall: pass-rate difference with a bootstrap 95% CI; per scenario: Fisher&apos;s exact test with Benjamini–Hochberg correction.</P>
           <Code title="crucible.yaml" code={`ci:
   fail_on: [regressed]      # also: inconclusive, any_failure
-  alpha: 0.05`} />
+  alpha: 0.05
+  max_error_rate: 0.2       # more crashed episodes than this makes the run inconclusive`} />
+          <P>A running run can be cancelled from its page; one cut off by a server restart shows as interrupted. When an episode crashes, its error shows the agent&apos;s last log line and <b className="text-fg">Show log</b> opens the rest.</P>
 
           <H2 id="ci">CI gate</H2>
           <P>On your main branch the action stores the run as the baseline. On pull requests it compares against it, comments once (and updates the comment) and fails the check on a regression.</P>
@@ -230,6 +237,7 @@ CRUCIBLE_VIEWER_TOKEN=<another one>         # optional: read-only`} />
             ["crucible label · calibrate", "Human labels → judge agreement (κ)"],
             ["crucible discover", "Find agents in a repository and draft their tests: --apply, --use-draft, --check --report, --update, --json, --no-llm"],
             ["crucible graph", "Write the codebase knowledge graph into agent-tests/ (--rescan, --out)"],
+            ["crucible env", "Which Python runs the agents; --install puts their dependencies in a managed environment"],
             ["crucible import-traces", "OpenTelemetry, LangSmith or JSONL conversations → draft scenarios"],
           ]} />
 
@@ -241,8 +249,11 @@ CRUCIBLE_VIEWER_TOKEN=<another one>         # optional: read-only`} />
             ["CRUCIBLE_API_TOKEN · CRUCIBLE_VIEWER_TOKEN", "Dashboard and API access"],
             ["DATABASE_URL", "Run history for crucible serve (Postgres); SQLite if unset"],
             ["CRUCIBLE_DISCOVER_ROOTS", "Folders the dashboard's codebase import may read (default: home folder)"],
-            ["CRUCIBLE_IMPORT_DIR", "Docker Compose: host folder mounted at /import for the codebase import"],
+            ["CRUCIBLE_IMPORT_DIR", "Docker Compose: host folder mounted at /import for the codebase import (host paths under it are mapped)"],
+            ["OPENAI_API_KEY · ANTHROPIC_API_KEY", "Server-side keys for import descriptions with OpenAI or Claude (or paste one in the import's Options)"],
             ["CRUCIBLE_SYNTHESIS_TIMEOUT · CRUCIBLE_CACHE_DIR", "Codebase import: seconds per model request (300); where model answers are cached"],
+            ["CRUCIBLE_PASS_ENV", "Comma-separated server variables passed to every agent, MCP server and check (default: none)"],
+            ["CRUCIBLE_ENVS_DIR", "Where managed Python environments for imported agents live (default ~/.cache/agentcrucible/envs)"],
           ]} />
 
           <H2 id="limits">Limitations</H2>

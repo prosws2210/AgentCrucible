@@ -34,7 +34,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 
 from .config import McpServerSpec
-from .gateway import content_text, probe_remote, split_command
+from .gateway import child_env, content_text, probe_remote, split_command
 
 SEVERITY_PENALTY = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
 SUITES = ["conformance", "tool_quality", "robustness", "security", "behavioral", "performance"]
@@ -96,8 +96,8 @@ class Target:
     """A connection to the server under audit. Restartable, so a crash doesn't end the audit."""
 
     def __init__(self, command: str | None, url: str | None, env: dict[str, str], cwd: str | None,
-                 headers: dict[str, str] | None = None, transport: str = "http"):
-        self.command, self.url, self.env, self.cwd = command, url, env, cwd
+                 headers: dict[str, str] | None = None, transport: str = "http", python: str | None = None):
+        self.command, self.url, self.env, self.cwd, self.python = command, url, env, cwd, python
         self.headers, self.transport = headers or {}, transport
         self.stack: AsyncExitStack | None = None
         self.session: ClientSession | None = None
@@ -112,8 +112,8 @@ class Target:
         elif self.url:
             read, write, _ = await self.stack.enter_async_context(streamablehttp_client(self.url, headers=self.headers))
         else:
-            cmd = split_command(self.command or "")
-            params = StdioServerParameters(command=cmd[0], args=cmd[1:], env={**os.environ, **self.env}, cwd=self.cwd)
+            cmd = split_command(self.command or "", self.python)
+            params = StdioServerParameters(command=cmd[0], args=cmd[1:], env=child_env(self.env), cwd=self.cwd)
             read, write = await self.stack.enter_async_context(stdio_client(params, errlog=open(os.devnull, "w")))
         self.session = await self.stack.enter_async_context(ClientSession(read, write))
         self.init = await asyncio.wait_for(self.session.initialize(), 30)

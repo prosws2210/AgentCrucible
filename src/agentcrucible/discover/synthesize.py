@@ -20,6 +20,7 @@ from .. import __version__
 from .codefacts import detect_code
 from .configs import detect_configs
 from .effects import BUILTIN_EFFECTS, merge_effects
+from .plan import chat_input
 from .pyfacts import detect_python
 from .scan import Inventory, git_commit, redact, scan
 from .schema import (
@@ -83,13 +84,20 @@ DETECTORS_VERSION = "2026.10.2"  # bump when detector output changes, so drift r
 def collect(root: Path, include: list[str] | None = None, progress: Progress | None = None) -> tuple[Inventory, Collector]:
     say = progress or (lambda _m: None)
     inv = scan(root, include)
+    inv.prefetch()
     say(f"Scanned {len(inv.files)} files ({', '.join(f'{n} {lang}' for lang, n in inv.languages().items()) or 'no code'})")
     if inv.skip_reasons or inv.skipped_secret:
         reasons = [f"{n} {why}" for why, n in sorted(inv.skip_reasons.items(), key=lambda kv: -kv[1])]
         say("Skipped " + ", ".join(reasons + ([f"{len(inv.skipped_secret)} secret files (.env, keys)"] if inv.skipped_secret else [])))
     c = Collector()
+    n_py, n_ts = len(inv.code("python")), len(inv.code("typescript", "javascript"))
+    if n_py:
+        say(f"Reading {n_py} Python files (the longest step on a big repository)")
     detect_python(inv, c.add)
+    if n_ts:
+        say(f"Reading {n_ts} TypeScript and JavaScript files")
     detect_code(inv, c.add)
+    say("Reading configs, prompts and data files")
     detect_configs(inv, c.add)
     say(f"Found {len(c.of('agent'))} agent candidates, {len(c.of('tool'))} tools, {len(c.of('mcp_server'))} MCP servers")
     return inv, c
@@ -101,7 +109,8 @@ def collect(root: Path, include: list[str] | None = None, progress: Progress | N
 def assemble(inv: Inventory, c: Collector, source: str | None = None) -> Discovery:
     d = Discovery(repo=RepoInfo(root=str(inv.root), name=inv.root.name, commit=git_commit(inv.root),
                                 languages=inv.languages(), files_scanned=len(inv.files),
-                                files_skipped=inv.skipped + len(inv.skipped_secret), source=source),
+                                files_skipped=inv.skipped + len(inv.skipped_secret), source=source,
+                                dotenv=inv.dotenv),
                   facts=c.facts, generator={"agentcrucible": __version__, "detectors": DETECTORS_VERSION})
     meta: dict[str, dict[str, Any]] = {}  # agent id -> its fact and http entry points (not serialized)
     _tools(d, c)
@@ -123,10 +132,19 @@ def assemble(inv: Inventory, c: Collector, source: str | None = None) -> Discove
     return d
 
 
+# files of the test suite: their agents are fixtures and their tools stubs
+SCRIPT_FILE = re.compile(r"(^|/)scripts?/")
+BENCH_DIR = re.compile(r"(?i)(^|/)[\w-]*bench(mark)?s?[\w-]*/")
+NOT_A_DATABASE = re.compile(r"(?i)(^|_)TEST(_|$)|PASSWORD|PASSWD|(^|_)PASS$|(^|_)USER(NAME)?$|(^|_)PORT$|(^|_)NAME$")
+TEST_FILE = re.compile(r"(^|/)(tests?/|test_[^/]*\.py$|[^/]*_test\.py$|[^/]*\.(test|spec)\.[jt]sx?$|conftest\.py$)")
+
+
 def _tools(d: Discovery, c: Collector) -> None:
     by_name: dict[str, Tool] = {}
     for f in c.of("tool"):
         a = f.attrs
+        if TEST_FILE.search(a.get("file") or "") or SCRIPT_FILE.search(a.get("file") or "") or BENCH_DIR.search(a.get("file") or ""):
+            continue  # stubs in the test suite, developer scripts and benchmark harnesses aren't the product's tools
         kind = "mcp" if a.get("mcp") else "in-process"
         t = by_name.get(f.name)
         if t is None:
@@ -281,12 +299,33 @@ def _agents(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> None
                 ag.subagents.append(sub.id)
         for sname in f.attrs.get("subagents") or []:  # Claude Agent SDK subagent definitions
             ag.notes.append(f"Defines a subagent `{sname}` (Claude Agent SDK).")
+    # `super().__init__(tools=…)` inside a class already found as an agent is that agent, not a second one
+    classes = {(meta[a.id]["fact"].attrs.get("file"), meta[a.id]["fact"].attrs.get("cls")) for a in agents
+               if a.confidence != "low" and meta[a.id]["fact"].attrs.get("cls")}
+    agents[:] = [a for a in agents if not (a.confidence == "low" and meta[a.id]["fact"].attrs.get("in_function") == "__init__"
+                                           and any(f == meta[a.id]["fact"].attrs.get("file") for f, _ in classes))]
     # agents built inside tests are fixtures, not the product: offered, but not ticked
-    test_file = re.compile(r"(^|/)(tests?/|test_[^/]*\.py$|[^/]*_test\.py$|[^/]*\.(test|spec)\.[jt]sx?$|conftest\.py$)")
     for ag in agents:
-        if test_file.search(meta[ag.id]["fact"].attrs.get("file") or "") and ag.include:
+        if TEST_FILE.search(meta[ag.id]["fact"].attrs.get("file") or "") and ag.include:
             ag.include = False
             ag.notes.append("Defined in a test file, so it's left out; tick it to test it anyway.")
+    for ag in agents:
+        f = meta[ag.id]["fact"]
+        if not ag.include:
+            continue
+        param, why = chat_input(f.attrs["params"]) if "params" in f.attrs else ("", "")
+        if param is None:  # a pipeline step (a PDF, a workbook, a payload in), not something a conversation can drive
+            ag.include = False
+            fn = f.attrs.get("function") or ag.name
+            ag.notes.append(f"`{fn}()` {why}, so a conversation can't drive it: it's a step of a pipeline, not a chat "
+                            "agent. Test it from code with real inputs, or through the agent or endpoint that calls it.")
+        elif SCRIPT_FILE.search(f.attrs.get("file") or ""):
+            ag.include = False
+            ag.notes.append("In a scripts folder (developer tools, not the product), so it's left out; tick it to test it anyway.")
+        elif f.framework.startswith("raw") and not ag.tools and (f.attrs.get("function") or "").startswith("_"):
+            ag.include = False
+            ag.notes.append("A private helper that makes one model call without tools; it's tested through whatever calls it. "
+                            "Tick it to test it on its own.")
     for ag in agents:
         local = meta[ag.id]["fact"].attrs.get("local_to")
         if local and ag.include and not any(ag.id in p.subagents for p in agents):
@@ -303,7 +342,8 @@ def _agents(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> None
             # its tools are exercised through the parent (a crew's members, handoffs), so the parent's tests cover them
             parent.tools += [t for t in ag.tools if t not in parent.tools]
         if ag.confidence == "low":
-            ag.include = not any(o.confidence != "low" and meta[o.id]["fact"].attrs.get("file") == f.attrs.get("file") for o in agents)
+            ag.include = ag.include and not any(o.confidence != "low" and meta[o.id]["fact"].attrs.get("file") == f.attrs.get("file")
+                                                for o in agents)  # (and a test file's agent stays left out)
         if f.attrs.get("role") == "graph" and not f.attrs.get("compiled_as"):
             ag.notes.append("The graph is never compiled in this file; the adapter needs the compiled graph.")
     # model fallback: a model call in the same file
@@ -331,6 +371,9 @@ def _data(d: Discovery, c: Collector) -> None:
     tables: list[Fact] = []
     for f in c.of("datastore"):
         a = f.attrs
+        where = a.get("file") or (f.evidence[0].file if f.evidence else "")
+        if TEST_FILE.search(where) or NOT_A_DATABASE.search(a.get("url_env") or ""):
+            continue  # the test suite's own databases, and credentials (DB_PASSWORD) aren't the app's database
         if a.get("table") or a.get("schema_file") and not a.get("url_env") and f.framework in ("alembic",):
             tables.append(f)
             continue
@@ -639,13 +682,17 @@ def _questions(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> N
     def q(text: str, about: str, evidence: list[str], suggested: str | None = None, options: list[str] | None = None) -> None:
         qs.append(Question(id=f"q{len(qs) + 1}", text=text, about=about, evidence=evidence, suggested=suggested, options=options or []))
 
+    fixture = {ag.id for ag in d.agents if any(TEST_FILE.search(x) or SCRIPT_FILE.search(x)
+                                                for x in [meta[ag.id]["fact"].attrs.get("file") or ""])}
+    included = {ag.id for ag in d.agents if ag.include}
+    used_stores = {s for ag in d.agents if ag.include for s in ag.datastores}
     for ag in d.agents:
-        if not ag.include and ag.confidence != "low":
-            continue
+        if not ag.include and (ag.confidence != "low" or ag.id in fixture):
+            continue  # left out on purpose (a test fixture, a script, a pipeline step): nothing to ask
         if ag.confidence == "low":
             q(f"Is `{ag.name}` an agent you want to test? It was found only by the generic fallback.", f"agent:{ag.id}",
               ag.evidence, "yes", ["yes", "no"])
-        if ag.entrypoint.kind == "unknown":
+        if ag.entrypoint.kind == "unknown" and ag.include:
             q(f"How can AgentCrucible start `{ag.name}`? Give a function to import (module:function) or a command.",
               f"agent:{ag.id}", ag.evidence, None)
         if len(meta[ag.id].get("http", [])) > 1:
@@ -653,7 +700,7 @@ def _questions(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> N
             q(f"`{ag.name}` is reachable at several endpoints. Which one is the main entry point?", f"agent:{ag.id}",
               meta[ag.id]["http"], names[0], names)
     for t in d.tools:
-        if t.agents and not t.effects and t.kind != "builtin":
+        if set(t.agents) & included and not t.effects and t.kind != "builtin":
             q(f"Does the tool `{t.name}` change anything?", f"tool:{t.name}", t.evidence, None,
               ["read-only", "writes data", "destructive"])
     for s in d.datastores:
@@ -663,8 +710,8 @@ def _questions(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> N
     for v in d.vector_stores:
         q(f"How should tests get documents for the {v.kind} vector store?", f"vector:{v.id}", v.evidence,
           VECTOR_ANSWERS[0], list(VECTOR_ANSWERS))
-    for s in d.datastores:
-        if not s.tables and not s.schema_files:
+    for s in d.datastores:  # only SQL databases an agent under test uses need a schema to be rebuilt
+        if not s.tables and not s.schema_files and s.id in used_stores and s.kind not in ("redis", "mongodb"):
             q(f"The database `{s.id}` has no schema files or models in the repository. Point to a schema dump or "
               "migrations folder (a path in the repository) so tests can build it.", f"datastore:{s.id}", s.evidence, None)
     for ag in d.agents:
@@ -675,6 +722,16 @@ def _questions(d: Discovery, c: Collector, meta: dict[str, dict[str, Any]]) -> N
         if ag.include and m.get("prompt_source"):
             q(f"`{ag.name}` loads its prompt at run time (`{m['prompt_source']}`). Should tests use the live prompt?",
               f"prompt:{ag.id}", ag.evidence, PROMPT_ANSWERS[0], list(PROMPT_ANSWERS))
+    # many tools in one folder and no agent using them: an agent the scan couldn't recognise probably runs them
+    orphans: dict[str, list[Tool]] = {}
+    for t in d.tools:
+        if not t.agents and t.evidence and t.evidence[0] in d.facts:
+            orphans.setdefault(d.facts[t.evidence[0]].evidence[0].file.rsplit("/", 1)[0], []).append(t)
+    for folder, ts in sorted(orphans.items(), key=lambda kv: -len(kv[1]))[:3]:
+        if len(ts) >= 8:
+            q(f"{len(ts)} tools in `{folder}/` aren't used by any agent the scan found ({', '.join(t.name for t in ts[:4])}…). "
+              "If an agent runs them, add it by hand (Add agents → its function, command or endpoint) so they get tested.",
+              f"toolgroup:{folder}", [t.evidence[0] for t in ts[:5]], None, ["I'll add the agent", "No agent uses them"])
     for s in d.mcp_servers:
         sdk = any(d.facts[i].attrs.get("sdk") for i in s.evidence if i in d.facts)
         if s.defined_here and not s.command and not sdk:
@@ -694,70 +751,153 @@ ENRICH_PROMPT = (
     "Rules: only describe what the evidence shows; skip anything you are unsure about; at most 5 questions, each "
     "citing at least one fact id from the input.\n\n"
 )
-BATCH_TOOLS, BATCH_AGENTS = 40, 12
+# Batch limits: (agents, tools, characters) per request, and how many requests to send at most.
+# A local model: Ollama's default window is 4096 tokens and a longer prompt is cut from the front, dropping the
+# instructions; 5,000 characters of JSON is about 1,500 tokens, and the answer for that many items stays short
+# enough to finish inside the request timeout on a laptop CPU, which writes a few tokens a second.
+LOCAL_BATCH = (5, 20, int(os.environ.get("CRUCIBLE_SYNTHESIS_CHARS", "5000")),
+               int(os.environ.get("CRUCIBLE_SYNTHESIS_MAX_REQUESTS", "12")))
+# A hosted model (OpenAI, Claude) has a large window and answers in seconds: bigger batches, several at once.
+HOSTED_BATCH = (12, 40, 24000, 40)
+HOSTED_PARALLEL = 4
+PROVIDERS = {"openai": "https://api.openai.com/v1", "anthropic": "https://api.anthropic.com"}
+CLAUDE_DEFAULT_MODEL = "claude-opus-5-5"
 
 
 def _cache_dir() -> Path:
     return Path(os.environ.get("CRUCIBLE_CACHE_DIR") or Path.home() / ".cache" / "agentcrucible") / "synthesis"
 
 
-def enrich_batches(d: Discovery) -> list[dict[str, Any]]:
-    """What will be sent: agents and tools with redacted snippets, grouped by module so each request stays small
-    (large repositories get several requests whose answers are merged)."""
+def enrich_batches(d: Discovery, hosted: bool = False) -> list[dict[str, Any]]:
+    """What will be sent: every agent, and the tools that have no description yet (a docstring already is one), with
+    redacted snippets. Tools the agents use go first and tools of one module stay together; each request stays within
+    the batch limits (small for a local model's context) and only the first so many requests are sent."""
+    max_agents, max_tools, max_chars, max_requests = HOSTED_BATCH if hosted else LOCAL_BATCH
+
     def src(fid: str) -> dict[str, Any]:
         e = d.facts[fid].evidence[0]
-        return {"fact": fid, "file": e.file, "line": e.line, "snippet": redact(e.snippet)[:300]}
+        return {"fact": fid, "file": e.file, "line": e.line, "snippet": redact(e.snippet)[:240]}
 
     agents = [{"id": a.id, "name": a.name, "framework": a.framework, "tools": a.tools[:20], "current": a.purpose,
                "evidence": [src(fid) for fid in a.evidence[:2] if fid in d.facts]} for a in d.agents]
-    tools = [{"name": t.name, "current": t.description, "effects": t.effects,
-              "evidence": [src(t.evidence[0])] if t.evidence and t.evidence[0] in d.facts else []} for t in d.tools]
+    used = {name for a in d.agents if a.include for name in a.tools}
+    need = sorted((t for t in d.tools if not t.description), key=lambda t: (t.name not in used, "destructive" not in t.effects))
+    tools = [{"name": t.name, "effects": t.effects,
+              "evidence": [src(t.evidence[0])] if t.evidence and t.evidence[0] in d.facts else []} for t in need]
     by_module: dict[str, list[dict[str, Any]]] = {}
     for t in tools:
         by_module.setdefault(t["evidence"][0]["file"] if t["evidence"] else "", []).append(t)
-    tool_batches: list[list[dict[str, Any]]] = [[]]
-    for group in by_module.values():
-        if tool_batches[-1] and len(tool_batches[-1]) + len(group) > BATCH_TOOLS:
-            tool_batches.append([])
-        tool_batches[-1] += group
-    agent_batches = [agents[i:i + BATCH_AGENTS] for i in range(0, len(agents), BATCH_AGENTS)] or [[]]
-    n = max(len(tool_batches), len(agent_batches))
-    return [{"agents": agent_batches[i] if i < len(agent_batches) else [],
-             "tools": tool_batches[i] if i < len(tool_batches) else []} for i in range(n)]
+    items = [("agent", a) for a in agents] + [("tool", t) for group in by_module.values() for t in group]
+    batches: list[dict[str, Any]] = []
+    cur: dict[str, Any] = {"agents": [], "tools": []}
+    size = 0
+    for kind, x in items:
+        n = len(json.dumps(x))
+        full = len(cur["agents"]) >= max_agents if kind == "agent" else len(cur["tools"]) >= max_tools
+        if (cur["agents"] or cur["tools"]) and (size + n > max_chars or full):
+            batches.append(cur)
+            cur, size = {"agents": [], "tools": []}, 0
+        cur["agents" if kind == "agent" else "tools"].append(x)
+        size += n
+    if cur["agents"] or cur["tools"] or not batches:
+        batches.append(cur)
+    return batches[:max_requests]
+
+
+_NO_EFFORT: set[str] = set()  # Claude models that rejected `effort` once: later requests leave it out
+
+
+def _ask_claude(body: str, model: str, api_key: str, timeout: float) -> str:
+    """One request to Claude through the Anthropic SDK; returns the text of the answer."""
+    try:
+        import anthropic
+    except ImportError as e:  # the SDK comes with the `examples` extra and the Docker image
+        raise RuntimeError("describing with Claude needs the anthropic package: pip install anthropic") from e
+    client = anthropic.Anthropic(api_key=api_key or None, timeout=timeout)
+    extra: dict[str, Any] = {}
+    if re.match(r"claude-(opus-5|fable-5|sonnet-5-5)", model):  # models with server-side fallback on a refusal
+        extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
+    if model not in _NO_EFFORT:
+        extra["output_config"] = {"effort": "low"}  # short, simple answers
+    try:
+        r = client.beta.messages.create(model=model, max_tokens=16000, messages=[{"role": "user", "content": body}], **extra)
+    except anthropic.BadRequestError as e:
+        if "effort" not in str(e) or "output_config" not in extra:
+            raise
+        _NO_EFFORT.add(model)  # older models (Sonnet 4.5, Haiku 4.5...) don't take an effort level
+        extra.pop("output_config")
+        r = client.beta.messages.create(model=model, max_tokens=16000, messages=[{"role": "user", "content": body}], **extra)
+    if r.stop_reason == "refusal":
+        raise ValueError("Claude declined this request")
+    return "".join(b.text for b in r.content if b.type == "text")
+
+
+def _ask_openai(body: str, base_url: str, model: str, api_key: str, timeout: float) -> str:
+    """One request to an OpenAI-compatible server (OpenAI, a local Ollama, OpenRouter...)."""
+    r = httpx.post(base_url.rstrip("/") + "/chat/completions", timeout=timeout,
+                   headers={"Authorization": f"Bearer {api_key or 'none'}"},
+                   json={"model": model, "temperature": 0, "response_format": {"type": "json_object"},
+                         "messages": [{"role": "user", "content": body}]})
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"] or "{}"
 
 
 def enrich(d: Discovery, base_url: str, model: str, api_key: str = "",
            timeout: float = float(os.environ.get("CRUCIBLE_SYNTHESIS_TIMEOUT", "300")),  # local models on a laptop are slow
-           progress: Progress | None = None) -> None:
+           progress: Progress | None = None, provider: str | None = None) -> None:
     """Ask a model for one-sentence purposes and extra questions. Only claims that cite a known fact survive.
-    Answers are cached by a hash of the request, so re-scanning an unchanged repository costs nothing."""
+    Answers are cached by a hash of the request, so re-scanning an unchanged repository costs nothing.
+    `provider` "anthropic" calls Claude through its SDK; anything else is an OpenAI-compatible server at `base_url`.
+    Hosted providers ("openai", "anthropic") get bigger batches, sent several at a time."""
     say = progress or (lambda _m: None)
-    batches = enrich_batches(d)
+    hosted = provider in PROVIDERS
+    batches = enrich_batches(d, hosted)
     cache = _cache_dir()
     data: dict[str, Any] = {"agents": {}, "tools": {}, "questions": []}
-    hits = 0
-    for i, batch in enumerate(batches):
-        body = ENRICH_PROMPT + json.dumps(batch)[:24000]
+    failed: list[str] = []
+    counts = {"hits": 0, "done": 0}
+
+    def one(i: int, batch: dict[str, Any]) -> dict[str, Any] | None:
+        body = ENRICH_PROMPT + json.dumps(batch)
         key = hashlib.sha256(f"{model}\n{body}".encode()).hexdigest()
         f = cache / f"{key}.json"
         if f.is_file():
-            part, hits = json.loads(f.read_text(encoding="utf-8")), hits + 1
-        else:
-            if len(batches) > 1:
-                say(f"Model request {i + 1} of {len(batches)}")
-            r = httpx.post(base_url.rstrip("/") + "/chat/completions", timeout=timeout,
-                           headers={"Authorization": f"Bearer {api_key or 'none'}"},
-                           json={"model": model, "temperature": 0, "response_format": {"type": "json_object"},
-                                 "messages": [{"role": "user", "content": body}]})
-            r.raise_for_status()
-            text = r.json()["choices"][0]["message"]["content"] or "{}"
+            counts["hits"] += 1
+            return json.loads(f.read_text(encoding="utf-8"))
+        if len(batches) > 1 and not hosted:
+            say(f"Model request {i + 1} of {len(batches)}")
+        try:
+            text = _ask_claude(body, model, api_key, timeout) if provider == "anthropic" \
+                else _ask_openai(body, base_url, model, api_key, timeout)
             m = re.search(r"\{.*\}", text, re.S)
             part = json.loads(m.group(0) if m else "{}")
-            try:
-                cache.mkdir(parents=True, exist_ok=True)
-                f.write_text(json.dumps(part), encoding="utf-8")
-            except OSError:
-                pass
+        except Exception as e:  # noqa: BLE001 - one slow or bad answer doesn't lose the others
+            failed.append(f"{type(e).__name__}: {str(e)[:120]}")
+            say(f"Model request {i + 1} failed ({failed[-1]}); going on without it")
+            if len(failed) == len(batches) or isinstance(e, httpx.ConnectError) \
+                    or "Authentication" in type(e).__name__ or getattr(e, "status_code", None) == 401:
+                raise
+            return None
+        counts["done"] += 1
+        if hosted and len(batches) > 1:
+            say(f"Model answers: {counts['done']} of {len(batches)}")
+        try:
+            cache.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps(part), encoding="utf-8")
+        except OSError:
+            pass
+        return part
+
+    if hosted and len(batches) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=HOSTED_PARALLEL) as pool:
+            parts = list(pool.map(lambda ib: one(*ib), enumerate(batches)))
+    else:
+        parts = [one(i, b) for i, b in enumerate(batches)]
+    hits = counts["hits"]
+    for part in parts:
+        if part is None:
+            continue
         data["agents"].update(part.get("agents") or {})
         data["tools"].update(part.get("tools") or {})
         data["questions"] += part.get("questions") or []
@@ -779,13 +919,17 @@ def enrich(d: Discovery, base_url: str, model: str, api_key: str = "",
         # keep questions the reviewer can act on; "what is the purpose of ..." is answered by the code itself
         explains = re.match(r"(?i)^(what is the (purpose|role)|can you (explain|describe)|what (specific )?(tasks|does)|"
                             r"how does|why does|what happens)", text)
-        if ev and text and re.match(r"^(agent|tool):", about) and not explains:
+        kind, _, key = about.partition(":")
+        relevant = (kind == "agent" and (ag := d.agent(key)) is not None and ag.include) or                    (kind == "tool" and (t := d.tool(key)) is not None and any(d.agent(a) and d.agent(a).include for a in t.agents))
+        if ev and text and relevant and not explains:  # nothing about agents left out (fixtures, pipeline steps)
             d.questions.append(Question(id=f"q{len(d.questions) + 1}", text=text[:300], about=about, evidence=ev))
             changed += 1
     sent = [{"fact": e["fact"], "file": e["file"], "line": e["line"]}
             for b in batches for x in b["agents"] + b["tools"] for e in x["evidence"]]
+    described = {x["name"] for b in batches for x in b["tools"]}
     d.synthesis = {"model": model, "base_url": base_url, "used": True, "changes": changed, "requests": len(batches),
-                   "cached": hits, "sent": sent, "chars": sum(len(json.dumps(b)) for b in batches)}
+                   "cached": hits, "failed": failed, "sent": sent, "chars": sum(len(json.dumps(b)) for b in batches),
+                   "left_undescribed": sum(1 for t in d.tools if not t.description and t.name not in described)}
 
 
 def discover(root: Path, *, include: list[str] | None = None, llm_base_url: str | None = None, llm_model: str | None = None,
@@ -796,8 +940,12 @@ def discover(root: Path, *, include: list[str] | None = None, llm_base_url: str 
     if llm_base_url and llm_model:
         batches = enrich_batches(d)
         size = sum(len(json.dumps(b)) for b in batches)
-        say(f"Asking {llm_model} to describe {len(d.agents)} agents and {len(d.tools)} tools "
-            f"({size // 1000 + 1} KB of redacted snippets, {len(batches)} request{'s' if len(batches) > 1 else ''})")
+        n_tools = sum(len(b["tools"]) for b in batches)
+        missing = sum(1 for t in d.tools if not t.description)
+        say(f"Asking {llm_model} to describe {len(d.agents)} agents and {n_tools} tools "
+            f"({size // 1000 + 1} KB of redacted snippets, {len(batches)} request{'s' if len(batches) > 1 else ''})"
+            + (f"; {missing - n_tools} more tools keep descriptions from the code (CRUCIBLE_SYNTHESIS_MAX_REQUESTS)"
+               if missing > n_tools else ""))
         try:
             enrich(d, llm_base_url, llm_model, llm_api_key, progress=say)
             if d.synthesis.get("cached"):

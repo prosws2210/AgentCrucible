@@ -11,7 +11,8 @@ from typing import Any, Callable
 import yaml
 
 from ..config import load_config, load_scenarios
-from ..runner import Runner, RunOptions
+from ..pyenv import project_python
+from ..runner import Runner, RunOptions, scaffold_pending
 from ..trajectory import load_events
 from .plan import OUT_DIR, apply_fixes, build_plan, project_files
 from .schema import Discovery
@@ -73,28 +74,96 @@ def validate(out: Path) -> dict[str, Any]:
     return {"agents": sorted(cfg.agents), "scenarios": len(pairs), "suites": sorted(cfg.suites)}
 
 
-async def _connection_check(out: Path, model: str | None) -> list[dict[str, Any]]:
+def _requirements_hint(root: Path, import_root: str) -> str:
+    """The install command for the code's dependencies, from the nearest requirements file."""
+    base = root / import_root if import_root else root
+    for name in ("requirements.txt", "pyproject.toml"):
+        if (base / name).is_file():
+            rel = (base / name).relative_to(root).as_posix()
+            return f"pip install -r {rel}" if name.endswith(".txt") else f"pip install -e {(base.relative_to(root).as_posix() or '.')}"
+    return "pip install the project's dependencies"
+
+
+# what a setting mapped to a fixture holds during the import check (nothing listens there; it only has to parse)
+PLACEHOLDER = {"db": "postgresql://agentcrucible:agentcrucible@127.0.0.1:9/agentcrucible", "dbpath": "/nonexistent/agentcrucible.db",
+               "http": "http://127.0.0.1:9", "openai": "http://127.0.0.1:9/v1", "anthropic": "http://127.0.0.1:9"}
+
+
+async def _import_check(cfg: Any, out: Path, d: Discovery, root: Path) -> dict[str, dict[str, Any]]:
+    """Import each Python agent's module the way its adapter will (same interpreter, folder, path and environment),
+    so a missing dependency shows up here in seconds, not as every scenario failing in the smoke run."""
+    from ..gateway import child_env, split_command
+    project = project_python(cfg)[0]
+    jobs: dict[tuple[str, str, str], list[str]] = {}  # (python, module, import root) -> agent names
+    for name, a in cfg.agents.items():
+        ag = d.agent(name)
+        ep = ag.entrypoint if ag else None
+        if not ag or ag.language != "python" or not ep or ep.kind != "code" or not ep.module or not a.command:
+            continue
+        python = split_command(a.command, project)[0]
+        fact = d.facts.get(ag.evidence[0]) if ag.evidence else None
+        ir = (fact.attrs.get("import_root") if fact else None) or ""
+        jobs.setdefault((python, ep.module, ir), []).append(name)
+    sem = asyncio.Semaphore(4)
+
+    async def one(python: str, module: str, ir: str, names: list[str]) -> dict[str, Any]:
+        a = cfg.agents[names[0]]
+        cwd = (out / a.cwd).resolve() if a.cwd else out
+        # the environment a run gives the agent (gateway keys included: clients are often built at import time); settings
+        # its adapter points at fixtures get a placeholder of the same kind, since code often checks them on import
+        plan = next((pl for pl in d.plans if pl.agent == names[0]), None)
+        mapped = {k: PLACEHOLDER.get(t.partition(":")[0], "") for k, t in (plan.env_map if plan else {}).items()}
+        env = {**child_env(a.env, mapped, inherit=a.inherit_env), "OPENAI_BASE_URL": "http://127.0.0.1:9/v1", "OPENAI_API_KEY": "agentcrucible",
+               "OPENAI_API_BASE": "http://127.0.0.1:9/v1", "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+               "ANTHROPIC_API_KEY": "agentcrucible", "CRUCIBLE_MODEL": cfg.model, "PYTHONIOENCODING": "utf-8",
+               "PYTHONDONTWRITEBYTECODE": "1"}  # a check leaves nothing behind in the repository
+        base = root / ir if ir else root
+        paths = [str(base)] + ([str(base / "src")] if (base / "src").is_dir() else [])
+        code = f"import sys, importlib; sys.path[:0] = {paths!r}; importlib.import_module({module!r})"
+        async with sem:
+            try:
+                proc = await asyncio.create_subprocess_exec(python, "-c", code, cwd=str(cwd), env=env, stdout=asyncio.subprocess.DEVNULL,
+                                                            stderr=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.DEVNULL)
+                _, err = await asyncio.wait_for(proc.communicate(), 120)
+            except asyncio.TimeoutError:
+                proc.kill()
+                return {"ok": True, "detail": f"importing {module} took over 2 minutes; left to the smoke run"}
+            except OSError as e:
+                return {"ok": False, "detail": f"`{python}` couldn't start: {e.strerror or e}"}
+        if proc.returncode == 0:
+            return {"ok": True, "detail": f"imports {module}"}
+        lines = [ln.strip() for ln in err.decode("utf-8", "replace").splitlines() if ln.strip()]
+        cause = next((ln for ln in reversed(lines) if re.match(r"[\w.]*(Error|Exception)\b", ln)), lines[-1] if lines else "failed")
+        missing = re.search(r"No module named '([^']+)'", cause)
+        hint = (f"; install the code's dependencies where AgentCrucible runs it ({_requirements_hint(root, ir)}), "
+                "or run the tests from your project's own environment (crucible run -c agent-tests)") if missing else ""
+        return {"ok": False, "detail": f"can't import {module}: {cause[:200]}{hint}",
+                "missing": missing.group(1).split(".")[0] if missing else None}
+
+    results = await asyncio.gather(*(one(*k, names) for k, names in jobs.items()))
+    return {name: r for k, r in zip(jobs, results, strict=True) for name in jobs[k]}
+
+
+async def _connection_check(out: Path, model: str | None, d: Discovery | None = None,
+                            root: Path | None = None) -> list[dict[str, Any]]:
     """The plan's step 6.2: the model server, every MCP server and every agent's start command, before the smoke run."""
-    import httpx
 
     from ..audit import Target
     cfg = load_config(out)
     want = model or cfg.model
     checks: list[dict[str, Any]] = []
-    try:
-        async with httpx.AsyncClient(timeout=10) as http:
-            r = await http.get(cfg.llm.upstream_base_url.rstrip("/") + "/models",
-                               headers={"Authorization": f"Bearer {cfg.llm.api_key}"} if cfg.llm.api_key else {})
-        names = {m.get("id") for m in r.json().get("data", [])} if r.status_code == 200 else set()
-        # a server that answers but doesn't list models (404) may still serve the model; only a missing model fails
-        ok = r.status_code != 200 or not names or want in names or f"{want}:latest" in names
-        detail = f"{cfg.llm.upstream_base_url} · " + (f"{want} available" if names and ok else
-                                                      f"{want} not found ({len(names)} models)" if not ok else "answering")
-    except Exception as e:  # noqa: BLE001
-        ok, detail = False, f"{cfg.llm.upstream_base_url} unreachable: {type(e).__name__}"
+    from ..gateway import list_models
+    answered, listed, error = await list_models(cfg.llm.upstream_base_url, cfg.llm.api_key)
+    names = set(listed)
+    unreachable = not answered and ("ConnectError" in error or "Timeout" in error)
+    # a server that answers but doesn't list models may still serve the model; only a missing model fails
+    ok = not unreachable and (not names or want in names or f"{want}:latest" in names)
+    detail = f"{cfg.llm.upstream_base_url} · " + (f"unreachable: {error}" if unreachable else f"{want} available" if names and ok
+                                                  else f"{want} not found ({len(names)} models)" if not ok else "answering")
     checks.append({"id": "model", "ok": ok, "detail": detail})
     for name, spec in cfg.mcp_servers.items():
-        t = Target(spec.command, spec.url, spec.env, str((out / spec.cwd).resolve()) if spec.cwd else str(out), spec.headers, spec.transport)
+        t = Target(spec.command, spec.url, spec.env, str((out / spec.cwd).resolve()) if spec.cwd else str(out), spec.headers,
+                   spec.transport, project_python(cfg)[0])
         try:
             await asyncio.wait_for(t.connect(), 30)
             tools = (await t.session.list_tools()).tools  # type: ignore[union-attr]
@@ -112,12 +181,22 @@ async def _connection_check(out: Path, model: str | None) -> list[dict[str, Any]
                 compile((cwd / script).read_text(encoding="utf-8"), script, "exec")
             except SyntaxError as e:
                 ok, script = False, f"{script} has a syntax error on line {e.lineno}"
-        checks.append({"id": f"agent:{name}", "ok": ok, "detail": f"`{a.command}`" + ("" if ok else f" · {script} not found or invalid")})
+        detail = f"`{a.command}`" + ("" if ok else f" · {script} not found or invalid")
+        if ok and scaffold_pending(cfg, name):
+            ok, detail = False, f"{detail} · its adapter is a scaffold to finish: fill in `turn` in {script}"
+        checks.append({"id": f"agent:{name}", "ok": ok, "detail": detail})
+    if d is not None and root is not None:
+        imports = await _import_check(cfg, out, d, root)
+        for c in checks:
+            r = imports.get(c["id"].removeprefix("agent:")) if c["id"].startswith("agent:") else None
+            if r and c["ok"]:
+                c.update(ok=r["ok"], detail=f"{c['detail']} · {r['detail']}", **({"missing": r["missing"]} if r.get("missing") else {}))
     return checks
 
 
-def connection_check(out: Path, model: str | None = None) -> list[dict[str, Any]]:
-    return asyncio.run(_connection_check(out, model))
+def connection_check(out: Path, model: str | None = None, d: Discovery | None = None,
+                     root: Path | None = None) -> list[dict[str, Any]]:
+    return asyncio.run(_connection_check(out, model, d, root))
 
 
 def tune_budgets(d: Discovery, out: Path, run: dict[str, Any]) -> dict[str, dict[str, int]]:
@@ -149,9 +228,10 @@ def tune_budgets(d: Discovery, out: Path, run: dict[str, Any]) -> dict[str, dict
 
 
 def smoke_run(out: Path, model: str | None = None, cache: str | None = None, parallel: int = 2,
-              on_episode: Callable[[Any], None] | None = None) -> tuple[dict[str, Any], Path]:
+              on_episode: Callable[[Any], None] | None = None, skip_agents: set[str] | None = None) -> tuple[dict[str, Any], Path]:
     cfg = load_config(out)
-    pairs = [(sc, 1) for sc, _ in load_scenarios(cfg)]
+    skip = skip_agents or set()
+    pairs = [(sc, 1) for suite, spec in cfg.suites.items() if spec.agent not in skip for sc, _ in load_scenarios(cfg, suite)]
     runner = Runner(cfg, RunOptions(label="import-smoke", parallel=parallel, model=model, cache=cache), on_episode)
     run = asyncio.run(runner.run(pairs))
     return run, runner.run_dir
@@ -270,22 +350,46 @@ def apply(d: Discovery, root: Path, out: Path | None = None, *, model: str = "qw
     say(f"Config valid: {len(info['agents'])} agents, {info['scenarios']} scenarios")
     result: dict[str, Any] = {"out": str(out), "files": written, "validate": info, "code_changes": fixed}
     if smoke and info["scenarios"]:
-        conn = connection_check(out, model)
-        result["connection"] = conn
-        bad = [c for c in conn if not c["ok"]]
-        say(f"Connection check: {len(conn) - len(bad)}/{len(conn)} ok" + (" · " + "; ".join(f"{c['id']}: {c['detail']}" for c in bad) if bad else ""))
-        if any(c["id"] == "model" for c in bad):
-            say("Smoke run skipped: the model server isn't reachable. Start it and approve again.")
-            return result
-        say("Smoke run: one attempt per scenario")
-        run, run_dir = smoke_run(out, model=model, cache=cache, on_episode=on_episode)
-        tuned = tune_budgets(d, out, run)
-        if tuned:
-            say(f"Budgets set from the smoke run for {len(tuned)} scenarios")
-        rep = reality(d, run, run_dir)
-        (run_dir / "reality.json").write_text(json.dumps(rep, indent=2), encoding="utf-8")
-        (out / ".crucible").mkdir(exist_ok=True)
-        (out / ".crucible" / "import-report.json").write_text(json.dumps(rep, indent=2), encoding="utf-8")
-        result.update(run_id=run["run_id"], summary=run["summary"], reality=rep)
-        say(f"Smoke run: {rep['passed']}/{rep['episodes']} passed, {len(rep['findings'])} findings")
+        result.update(smoke_and_report(d, root, out, model=model, cache=cache, progress=say, on_episode=on_episode))
+    return result
+
+
+def smoke_and_report(d: Discovery, root: Path, out: Path, *, model: str | None = None, cache: str | None = None,
+                     progress: Progress | None = None, on_episode: Callable[[Any], None] | None = None) -> dict[str, Any]:
+    """The connection check, then one attempt per scenario, then the discovery vs reality report. Run at approval,
+    and again from the results page once what the check found is fixed."""
+    say = progress or (lambda _m: None)
+    result: dict[str, Any] = {}
+    say("Connection check: the model server, every MCP server, and importing each agent's code")
+    conn = connection_check(out, model, d, root)
+    result["connection"] = conn
+    bad = [c for c in conn if not c["ok"]]
+    say(f"Connection check: {len(conn) - len(bad)}/{len(conn)} ok" + (" · " + "; ".join(f"{c['id']}: {c['detail']}" for c in bad[:3]) if bad else ""))
+    if any(c["id"] == "model" for c in bad):
+        result["smoke_skipped"] = "The model server isn't reachable, so the smoke run was skipped. Start it and run the check again."
+        say(result["smoke_skipped"])
+        return result
+    cant_start = {c["id"].removeprefix("agent:") for c in bad if c["id"].startswith("agent:")}
+    agents = set(load_config(out).agents)
+    if agents and cant_start >= agents:
+        missing = sorted({c["missing"] for c in bad if c.get("missing")})
+        result["smoke_skipped"] = ("None of the agents can run yet, so the smoke run was skipped"
+                                   + (f" (missing: {', '.join(missing[:6])})" if missing else "")
+                                   + ". The tests are written; fix what the connection check shows and run them.")
+        say(result["smoke_skipped"])
+        return result
+    if cant_start:
+        say(f"Skipping {len(cant_start)} agents that can't run yet: {', '.join(sorted(cant_start))}")
+    n = sum(1 for s in d.scenarios if s.include and s.agent not in cant_start)
+    say(f"Smoke run: one attempt per scenario ({n} tests)")  # the dashboard reads the count from this line
+    run, run_dir = smoke_run(out, model=model, cache=cache, on_episode=on_episode, skip_agents=cant_start)
+    tuned = tune_budgets(d, out, run)
+    if tuned:
+        say(f"Budgets set from the smoke run for {len(tuned)} scenarios")
+    rep = reality(d, run, run_dir)
+    (run_dir / "reality.json").write_text(json.dumps(rep, indent=2), encoding="utf-8")
+    (out / ".crucible").mkdir(exist_ok=True)
+    (out / ".crucible" / "import-report.json").write_text(json.dumps(rep, indent=2), encoding="utf-8")
+    result.update(run_id=run["run_id"], summary=run["summary"], reality=rep, smoke_skipped=None)
+    say(f"Smoke run: {rep['passed']}/{rep['episodes']} passed, {len(rep['findings'])} findings")
     return result

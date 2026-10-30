@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader, useProject } from "@/components/app/AppShell";
 import { useGraphLinks } from "@/components/app/graph";
@@ -14,6 +14,115 @@ const EFFECT_TONE: Record<Effect, "ok" | "warn" | "bad" | "info" | "ember"> = {
 };
 const STEPS = ["Connect", "Scan", "Review", "Approve", "Results"];
 type Tab = "map" | "agents" | "tools" | "questions" | "connection" | "tests" | "graph";
+
+type Roots = { roots: string[]; suggestions: string[]; mounted?: { host: string; path: string }[] };
+
+type Provider = "local" | "openai" | "anthropic";
+const PROVIDERS: { id: Provider; label: string }[] = [
+  { id: "local", label: "Local model" }, { id: "openai", label: "OpenAI" }, { id: "anthropic", label: "Claude" },
+];
+type LlmCheck = {
+  ok: boolean; models: string[]; labels?: Record<string, string>; model_ok: boolean | null;
+  key_from: "pasted" | "server" | null; error: string | null;
+};
+
+const FIELD = "w-full rounded-lg border border-line bg-panel px-3 py-2.5 text-[13px] outline-none transition-colors focus:border-ember/70";
+
+/** Key and model for a hosted provider: lists the models the key can use (which proves it works) and checks the chosen one. */
+function HostedModel({ provider, apiKey, onKey, model, onModel }: {
+  provider: Provider; apiKey: string; onKey: (k: string) => void; model: string; onModel: (m: string) => void;
+}) {
+  const [check, setCheck] = useState<LlmCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+  const seq = useRef(0);
+  const run = useCallback(async (wanted: string) => {
+    const n = ++seq.current;
+    setChecking(true);
+    try {
+      const r = await api<LlmCheck>("/api/llm/models", {
+        method: "POST", body: JSON.stringify({ provider, ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}), ...(wanted ? { model: wanted } : {}) }),
+      });
+      if (n !== seq.current) return;
+      const pick = r.models.includes(wanted) ? wanted
+        : (provider === "anthropic" ? r.models.find((m) => m === "claude-opus-5-5") : r.models.find((m) => m.includes("mini"))) ?? r.models[0];
+      // a model from the list the key just returned is available to it
+      setCheck(pick && pick !== wanted ? { ...r, model_ok: r.ok ? true : null } : r);
+      if (pick && pick !== wanted) onModel(pick);
+    } catch (e) {
+      if (n === seq.current) setCheck({ ok: false, models: [], model_ok: null, key_from: null, error: (e as Error).message });
+    } finally {
+      if (n === seq.current) setChecking(false);
+    }
+  }, [provider, apiKey, onModel]);
+  // check when the provider or key changes (once typing stops); choosing a model checks that model
+  const modelRef = useRef(model);
+  useEffect(() => {
+    modelRef.current = model;
+  }, [model]);
+  useEffect(() => {
+    const t = setTimeout(() => run(modelRef.current), 500);
+    return () => clearTimeout(t);
+  }, [run]);
+
+  const name = provider === "anthropic" ? "Anthropic" : "OpenAI";
+  const envVar = provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+  const serverKey = !apiKey.trim() && check?.key_from === "server";
+  const label = (m: string) => check?.labels?.[m] && check.labels[m] !== m ? `${check.labels[m]} · ${m}` : m;
+  const models = check?.models.length ? check.models : model ? [model] : [];
+  const good = !checking && !!check?.ok && check.model_ok !== false;
+  const bad = !checking && !!check && !good;
+  const status = checking ? "Checking the key…"
+    : !check ? "Add a key to see the models it can use"
+      : !check.ok ? check.error
+        : check.model_ok === false ? `This key can't use ${model}. Pick another model.`
+          : `Connected · ${check.labels?.[model] ?? model} is available · ${check.models.length} models`;
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-line bg-panel-2/50">
+      <div className="space-y-3 p-4">
+        <div>
+          <div className="flex items-center justify-between gap-2">
+            <label htmlFor="import-llm-key" className="text-[12.5px] font-medium text-fg">{name} API key</label>
+            {serverKey && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-ok/10 px-2 py-0.5 text-[11px] font-medium text-ok">
+                <IconCheck className="h-3 w-3" /> Using the key from .env
+              </span>
+            )}
+          </div>
+          <input id="import-llm-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(e) => onKey(e.target.value)}
+            placeholder={serverKey ? "Paste a different key to override it" : provider === "anthropic" ? "sk-ant-…" : "sk-…"}
+            className={`mt-1.5 font-mono ${FIELD}`} />
+        </div>
+        <div>
+          <label htmlFor="import-llm-model" className="text-[12.5px] font-medium text-fg">Model</label>
+          <div className="relative mt-1.5">
+            <select id="import-llm-model" value={model} disabled={!models.length}
+              onChange={(e) => { onModel(e.target.value); run(e.target.value); }}
+              className={`appearance-none truncate pr-9 disabled:cursor-not-allowed disabled:opacity-60 ${FIELD}`}>
+              {!models.length && <option value="">{checking ? "Loading models…" : "No models yet"}</option>}
+              {models.map((m) => <option key={m} value={m}>{label(m)}</option>)}
+            </select>
+            <svg aria-hidden viewBox="0 0 16 16" className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-mute">
+              <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+        </div>
+      </div>
+      <div role="status" aria-live="polite"
+        className={`flex items-center gap-2 border-t px-4 py-2.5 text-[12.5px] ${good ? "border-ok/20 bg-ok/[0.06] text-ok" : bad ? "border-bad/20 bg-bad/[0.06] text-bad" : "border-line text-mute"}`}>
+        {checking ? <Spinner /> : <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${good ? "bg-ok" : bad ? "bg-bad" : "bg-dim"}`} />}
+        <span className="min-w-0 flex-1">{status}</span>
+        {!checking && check && (
+          <button type="button" onClick={() => run(model)} className="shrink-0 text-[12px] text-mute underline-offset-2 hover:text-fg hover:underline">Check again</button>
+        )}
+      </div>
+      <p className="border-t border-line px-4 py-2.5 text-[12px] leading-relaxed text-dim">
+        Several requests run at once, so this is much faster than a local model. A pasted key is used for this import only and never
+        saved{!serverKey && <>; or set <code className="font-mono text-mute">{envVar}</code> in .env</>}. Only redacted code snippets are sent.
+      </p>
+    </div>
+  );
+}
 
 export default function ImportPage() {
   return (
@@ -44,11 +153,12 @@ function Import() {
     load();
   }, [load]);
   const busy = job?.status === "scanning" || job?.status === "applying";
+  const describing = !!job?.describing;
   useEffect(() => {
-    if (!busy) return;
-    const t = setInterval(load, 1000);
+    if (!busy && !describing) return;
+    const t = setInterval(load, busy ? 1000 : 4000); // while descriptions arrive, refresh the review now and then
     return () => clearInterval(t);
-  }, [busy, load]);
+  }, [busy, describing, load]);
 
   const step = !jobId ? 0 : !job || job.status === "scanning" ? 1 : job.status === "review" || job.status === "failed" ? 2
     : job.status === "applying" ? 3 : 4;
@@ -100,18 +210,23 @@ function Connect({ onStarted }: { onStarted: (id: string) => void }) {
   const [useLlm, setUseLlm] = useState(true);
   const [llmUrl, setLlmUrl] = useState("");
   const [llmModel, setLlmModel] = useState("");
-  const [roots, setRoots] = useState<{ roots: string[]; suggestions: string[] } | null>(null);
-  const [previewed, setPreviewed] = useState<{ key: string; data: ImportPreview | null } | null>(null);
+  const [provider, setProvider] = useState<Provider>("local");
+  const [apiKey, setApiKey] = useState(""); // sent with this import only; never stored
+  const [roots, setRoots] = useState<Roots | null>(null);
+  const [previewed, setPreviewed] = useState<{ key: string; data: ImportPreview | null; error?: string } | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api<{ roots: string[]; suggestions: string[] }>("/api/discover/roots").then(setRoots).catch(() => setRoots({ roots: [], suggestions: [] }));
+    api<Roots>("/api/discover/roots").then(setRoots).catch(() => setRoots({ roots: [], suggestions: [] }));
   }, []);
 
   const includes = useMemo(() => include.split(",").map((s) => s.trim()).filter(Boolean), [include]);
-  const llm = { use_llm: useLlm, ...(llmUrl.trim() ? { llm_url: llmUrl.trim() } : {}), ...(llmModel.trim() ? { llm_model: llmModel.trim() } : {}) };
+  const llm = {
+    use_llm: useLlm, ...(provider !== "local" ? { llm_provider: provider } : {}),
+    ...(provider === "local" && llmUrl.trim() ? { llm_url: llmUrl.trim() } : {}), ...(llmModel.trim() ? { llm_model: llmModel.trim() } : {}),
+  };
   const llmKey = JSON.stringify(llm);
   const previewKey = JSON.stringify([path.trim(), includes, llmKey]);
   // a preview is shown only while it still answers the current inputs
@@ -127,8 +242,8 @@ function Connect({ onStarted }: { onStarted: (id: string) => void }) {
           method: "POST", body: JSON.stringify({ path: path.trim(), include: includes, ...JSON.parse(llmKey) }),
         });
         if (live) setPreviewed({ key: previewKey, data: p });
-      } catch {
-        if (live) setPreviewed({ key: previewKey, data: null });
+      } catch (e) {
+        if (live) setPreviewed({ key: previewKey, data: null, error: e instanceof Error ? e.message : undefined });
       } finally {
         if (live) setPreviewing(false);
       }
@@ -146,7 +261,7 @@ function Connect({ onStarted }: { onStarted: (id: string) => void }) {
       const body = mode === "path" ? { path: path.trim() } : { git_url: git.trim() };
       const j = await api<ImportJob>("/api/discover", {
         method: "POST",
-        body: JSON.stringify({ ...body, ...llm, include: includes }),
+        body: JSON.stringify({ ...body, ...llm, ...(useLlm && provider !== "local" && apiKey.trim() ? { llm_api_key: apiKey.trim() } : {}), include: includes }),
       });
       onStarted(j.id);
     } catch (e) {
@@ -197,18 +312,33 @@ function Connect({ onStarted }: { onStarted: (id: string) => void }) {
               Let a model write one-line descriptions and extra questions
             </label>
             {useLlm && (
-              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px]">
-                <div>
-                  <label htmlFor="import-llm-url" className="block text-[12.5px] text-mute">Model server (empty: the local one)</label>
-                  <input id="import-llm-url" value={llmUrl} onChange={(e) => setLlmUrl(e.target.value)} placeholder="https://openrouter.ai/api/v1"
-                    className="mt-1 w-full rounded-lg border border-line bg-panel-2 px-3 py-2 font-mono text-[12.5px] outline-none focus:border-ember/70" />
+              <div className="space-y-3">
+                <div role="radiogroup" aria-label="Which model writes the descriptions" className="inline-flex rounded-full border border-line bg-panel-2 p-1 text-[12.5px]">
+                  {PROVIDERS.map((pv) => (
+                    <button key={pv.id} type="button" role="radio" aria-checked={provider === pv.id}
+                      onClick={() => { setProvider(pv.id); setLlmModel(""); }}
+                      className={`rounded-full px-3 py-1 ${provider === pv.id ? "bg-fg font-medium text-ink" : "text-mute hover:text-fg"}`}>
+                      {pv.label}
+                    </button>
+                  ))}
                 </div>
-                <div>
-                  <label htmlFor="import-llm-model" className="block text-[12.5px] text-mute">Model</label>
-                  <input id="import-llm-model" value={llmModel} onChange={(e) => setLlmModel(e.target.value)} placeholder="auto"
-                    className="mt-1 w-full rounded-lg border border-line bg-panel-2 px-3 py-2 font-mono text-[12.5px] outline-none focus:border-ember/70" />
-                </div>
-                <p className="text-[12px] text-dim sm:col-span-2">A hosted server uses the key in <code className="font-mono">CRUCIBLE_LLM_API_KEY</code>. Only redacted snippets are sent; the review lists every one.</p>
+                {provider === "local" ? (
+                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px]">
+                    <div>
+                      <label htmlFor="import-llm-url" className="block text-[12.5px] text-mute">Model server (empty: the local one)</label>
+                      <input id="import-llm-url" value={llmUrl} onChange={(e) => setLlmUrl(e.target.value)} placeholder="http://localhost:11434/v1"
+                        className="mt-1 w-full rounded-lg border border-line bg-panel-2 px-3 py-2 font-mono text-[12.5px] outline-none focus:border-ember/70" />
+                    </div>
+                    <div>
+                      <label htmlFor="import-llm-model" className="block text-[12.5px] text-mute">Model</label>
+                      <input id="import-llm-model" value={llmModel} onChange={(e) => setLlmModel(e.target.value)} placeholder="auto"
+                        className="mt-1 w-full rounded-lg border border-line bg-panel-2 px-3 py-2 font-mono text-[12.5px] outline-none focus:border-ember/70" />
+                    </div>
+                    <p className="text-[12px] text-dim sm:col-span-2">Free and private, but slow on a laptop CPU: the review opens first and descriptions fill in later.</p>
+                  </div>
+                ) : (
+                  <HostedModel provider={provider} apiKey={apiKey} onKey={setApiKey} model={llmModel} onModel={setLlmModel} />
+                )}
               </div>
             )}
           </div>
@@ -229,7 +359,7 @@ function Connect({ onStarted }: { onStarted: (id: string) => void }) {
                     : useLlm ? "No model server answered: descriptions will come from the code only." : "No model: descriptions come from the code only."}
                 </div>
               </>
-            ) : <span className="text-dim">Can&apos;t preview this folder.</span>}
+            ) : <span className="text-warn">{previewed?.error || "Can't preview this folder."}</span>}
           </div>
         )}
         {error && <p role="alert" className="mt-4 text-[13px] text-bad">{error}</p>}
@@ -247,7 +377,12 @@ function Connect({ onStarted }: { onStarted: (id: string) => void }) {
           <li>You review and edit everything. Approving writes an <code className="font-mono text-[12px]">agent-tests/</code> folder and smoke-runs it.</li>
         </ul>
         {roots && roots.roots.length > 0 && (
-          <div className="mt-4 border-t border-line pt-3 text-[12px] text-dim">This server can read: {roots.roots.join(", ")}</div>
+          <div className="mt-4 space-y-1 border-t border-line pt-3 text-[12px] text-dim">
+            <div>This server can read: {roots.roots.join(", ")}</div>
+            {roots.mounted?.map((m) => (
+              <div key={m.host}><code className="font-mono text-mute">{m.host}</code> on this machine is <code className="font-mono text-mute">{m.path}</code>: paste either path.</div>
+            ))}
+          </div>
         )}
       </Card>
     </div>
@@ -275,9 +410,11 @@ const clock = (s: number) => {
 function phaseOf(job: ImportJob, elapsed: number) {
   const msgs = job.progress;
   const last = msgs[msgs.length - 1];
-  const smokeAt = msgs.findIndex((p) => p.message.startsWith("Smoke run: one attempt"));
+  const smokeAt = msgs.findLastIndex((p) => p.message.startsWith("Smoke run: one attempt"));  // a re-check starts a new one
   if (job.status === "applying") {
-    const total = (job.discovery?.scenarios ?? []).filter((s) => s.include).length;
+    // agents that can't start yet are left out of the smoke run; the server says how many tests it runs
+    const counted = smokeAt >= 0 ? /\((\d+) tests?\)/.exec(msgs[smokeAt].message) : null;
+    const total = counted ? Number(counted[1]) : (job.discovery?.scenarios ?? []).filter((s) => s.include).length;
     if (smokeAt >= 0) {
       const results = msgs.slice(smokeAt + 1).filter((p) => /^[✓✗]/.test(p.message));
       const done = results.length;
@@ -302,8 +439,10 @@ function Progress({ job, title }: { job: ImportJob; title: string }) {
   const running = job.status === "scanning" || job.status === "applying";
   const now = useNow(running);
   const elapsed = now / 1000 - job.started;
+  const phaseStart = job.phase_started ?? job.started;
   const last = job.progress[job.progress.length - 1];
-  const quiet = last ? elapsed - last.t : 0;
+  // a review can sit open for hours: count quiet time from this step's start, not from the scan
+  const quiet = last ? now / 1000 - Math.max(job.started + last.t, phaseStart) : 0;
   const phase = phaseOf(job, elapsed);
   const logRef = useRef<HTMLOListElement>(null);
   useEffect(() => {
@@ -311,8 +450,8 @@ function Progress({ job, title }: { job: ImportJob; title: string }) {
     if (el) el.scrollTop = el.scrollHeight; // follow the newest line
   }, [job.progress.length]);
   const expect = job.status === "applying"
-    ? `Usually 5–10 minutes on a local model: each of the ${phase.total} tests runs once against your agent, and a model grades some of them. You can leave this page; the import keeps going and you can come back to it.`
-    : "Reading the code takes seconds. If a model writes the descriptions, add a few minutes on a local model.";
+    ? `Each of the ${phase.total} tests runs once against your agent, and a model grades some of them: minutes with a local model on a laptop, much less with a hosted one. You can leave this page; the import keeps going and you can come back to it.`
+    : "Reading the code takes seconds on a small repository and a minute or two on a big one. Model descriptions come after the review opens.";
   return (
     <Card className="p-5 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -325,7 +464,7 @@ function Progress({ job, title }: { job: ImportJob; title: string }) {
         </div>
         {running && (
           <div className="text-right" aria-live="off">
-            <div className="font-mono text-[20px] font-semibold tabular-nums">{clock(elapsed)}</div>
+            <div className="font-mono text-[20px] font-semibold tabular-nums">{clock(now / 1000 - phaseStart)}</div>
             <div className="text-[11.5px] text-dim">elapsed</div>
           </div>
         )}
@@ -357,7 +496,7 @@ function Progress({ job, title }: { job: ImportJob; title: string }) {
             <span className="mr-2 text-dim">{p.t.toFixed(1)}s</span>{p.message}
           </li>
         ))}
-        {running && <li className="text-dim">… {clock(elapsed)}</li>}
+        {running && <li className="text-dim">… {clock(now / 1000 - phaseStart)}</li>}
       </ol>
       {job.error && <p className="mt-3 text-[13px] text-bad">{job.error}</p>}
     </Card>
@@ -423,8 +562,23 @@ function Review({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =>
     ["graph", "Knowledge graph", null],
   ];
 
+  const lastStep = job.progress[job.progress.length - 1]?.message ?? "";
   return (
     <>
+      {job.describing && (
+        <Card className="mb-5 flex items-start gap-3 border-info/30 p-4 text-[13px]" aria-live="polite">
+          <Spinner />
+          <div className="min-w-0">
+            <div className="font-medium text-fg">
+              {job.describing.model} is writing descriptions in the background
+            </div>
+            <p className="mt-0.5 text-mute">
+              Everything below comes from the code and is ready to review and approve now. Agent and tool descriptions fill
+              in as the model answers ({/^Model (request|answers)/.test(lastStep) ? lastStep.toLowerCase() : `${job.describing.requests} requests`}).
+            </p>
+          </div>
+        </Card>
+      )}
       <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Summary label="Agents to test" value={included.length} sub={`${d.agents.length} found · ${d.repo.frameworks.join(", ") || "no framework"}`} />
         <Summary label="Tools" value={d.tools.length} sub={`${d.tools.filter((t) => t.effects.includes("destructive")).length} destructive (mocked by default)`} />
@@ -448,19 +602,34 @@ function Review({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =>
       {tab === "connection" && <Connection d={d} patch={patch} disabled={!canWrite || saving} />}
       {tab === "tests" && <Tests d={d} patch={patch} disabled={!canWrite || saving} />}
       {tab === "graph" && <JobGraph jobId={job.id} />}
-      <div className="sticky bottom-0 mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-ink/90 px-4 py-3 backdrop-blur">
-        <div className="text-[13px] text-mute">
-          {included.length} agent{included.length === 1 ? "" : "s"} · {scenarios.length} tests will be written to{" "}
-          <code className="font-mono text-[12px] text-fg">{d.repo.root.replace(/[\\/]$/, "")}/agent-tests</code>, then smoke-run once each.
-          {d.documents.length > 0 && <> RAG tests answer from a snapshot of {d.documents.length} document{d.documents.length === 1 ? "" : "s"} in the repo.</>}
-          <label className="mt-1.5 flex items-center gap-2 text-[12.5px]" title="Commits the tests (and accepted code changes) to a new branch from your current commit, pushes it and opens a pull request with the GitHub CLI when it's logged in. Your working tree isn't touched.">
-            <input type="checkbox" checked={pr} onChange={(e) => setPr(e.target.checked)} className="accent-[#ff6b35]" disabled={!canWrite || saving} />
-            Also open a pull request with the tests (needs a git repository with a remote)
-          </label>
+      <div className="sticky bottom-3 z-10 mt-6">
+        <div className="flex flex-col gap-3 rounded-2xl border border-line bg-panel/95 py-3 pl-4 pr-3 shadow-[0_-10px_40px_-8px_rgba(0,0,0,0.7)] backdrop-blur-md sm:flex-row sm:items-center">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2 text-[14px]">
+              <span className="shrink-0 font-semibold text-fg">
+                {included.length} agent{included.length === 1 ? "" : "s"} · {scenarios.length} test{scenarios.length === 1 ? "" : "s"}
+              </span>
+              <IconArrow className="h-3.5 w-3.5 shrink-0 text-dim" />
+              <code className="truncate font-mono text-[12.5px] text-mute" title={`${d.repo.root.replace(/[\\/]$/, "")}/agent-tests`}>
+                {d.repo.name}/agent-tests
+              </code>
+            </div>
+            <p className="mt-0.5 text-[12px] text-dim sm:truncate">
+              Nothing is written until you approve; then each test runs once
+              {d.documents.length > 0 && <> · RAG tests use a snapshot of {d.documents.length} document{d.documents.length === 1 ? "" : "s"}</>}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <label title="Commits the tests (and accepted code changes) to a new branch from your current commit, pushes it and opens a pull request with the GitHub CLI. Needs a git repository with a remote; your working tree isn't touched."
+              className={`flex cursor-pointer select-none items-center gap-2 rounded-full border px-3 py-2 text-[12.5px] transition-colors ${pr ? "border-ember/50 bg-ember/10 text-fg" : "border-line text-mute hover:text-fg"} ${!canWrite || saving ? "pointer-events-none opacity-50" : ""}`}>
+              <input type="checkbox" checked={pr} onChange={(e) => setPr(e.target.checked)} className="accent-[#ff6b35]" disabled={!canWrite || saving} />
+              <IconGit className="h-3.5 w-3.5" /><span className="whitespace-nowrap"><span className="sm:hidden">PR</span><span className="hidden sm:inline">Open a pull request</span></span>
+            </label>
+            <Button onClick={approve} disabled={!canWrite || saving || included.length === 0} className="flex-1 justify-center whitespace-nowrap sm:flex-none">
+              {saving ? <Spinner /> : <IconCheck className="h-3.5 w-3.5" />} Write tests &amp; smoke-run
+            </Button>
+          </div>
         </div>
-        <Button onClick={approve} disabled={!canWrite || saving || included.length === 0}>
-          {saving ? <Spinner /> : <IconCheck className="h-3.5 w-3.5" />} Looks good: write tests and smoke-run
-        </Button>
       </div>
     </>
   );
@@ -587,9 +756,12 @@ function MapRow({ d, a, open }: { d: Discovery; a: DAgent; open: (t: Tab, id: st
 }
 
 function Agents({ d, patch, disabled }: { d: Discovery; patch: (b: Record<string, unknown>) => void; disabled: boolean }) {
+  // agents to test first, then the ones left out (test fixtures, scripts...); fixed on open so a card doesn't jump when ticked
+  const [order] = useState(() => [...d.agents].sort((a, b) => Number(b.include) - Number(a.include)).map((a) => a.id));
+  const rank = (id: string) => (order.indexOf(id) + 1 || order.length + 1);
   return (
     <div className="space-y-3">
-      {d.agents.map((a) => (
+      {[...d.agents].sort((a, b) => rank(a.id) - rank(b.id)).map((a) => (
         <Card key={a.id} id={`agent-${a.id}`} className={`p-5 transition-shadow ${a.include ? "" : "opacity-70"}`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
@@ -642,13 +814,28 @@ function Row({ k, children }: { k: string; children: React.ReactNode }) {
   );
 }
 
+/** 0: used by an agent being tested · 1: only by agents left out · 2: by none (scanned, but nothing exercises it) */
+function toolRank(d: Discovery, t: DTool): number {
+  const included = new Set(d.agents.filter((a) => a.include).map((a) => a.id));
+  return t.agents.some((a) => included.has(a)) ? 0 : t.agents.length ? 1 : 2;
+}
+
+function sortedTools(d: Discovery): DTool[] {
+  return d.tools.map((t, i) => ({ t, i, r: toolRank(d, t) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.t);
+}
+
 function Tools({ d, patch, disabled }: { d: Discovery; patch: (b: Record<string, unknown>) => void; disabled: boolean }) {
   return (
     <Card>
       <CardHeader title="Tools" sub="Click a badge to correct what a tool does. Destructive tools are mocked in the drafted tests until you change that." />
       <ul className="divide-y divide-line/70">
-        {d.tools.map((t) => (
-          <li key={t.name} id={`tool-${t.name}`} className="scroll-mt-24 rounded-lg px-5 py-3.5 transition-shadow">
+        {sortedTools(d).map((t, i, all) => (<Fragment key={t.name}>
+          {toolRank(d, t) === 2 && (i === 0 || toolRank(d, all[i - 1]) < 2) && (
+            <li className="bg-panel-2/40 px-5 py-2 text-[12px] text-dim">
+              Not used by any agent being tested ({all.length - i}): found in the code, but nothing here exercises them
+            </li>
+          )}
+          <li id={`tool-${t.name}`} className="scroll-mt-24 rounded-lg px-5 py-3.5 transition-shadow">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="min-w-0">
                 <span className="font-mono text-[13.5px] font-semibold">{t.name}</span>
@@ -690,7 +877,7 @@ function Tools({ d, patch, disabled }: { d: Discovery; patch: (b: Record<string,
             })()}
             <Evidence d={d} ids={t.evidence} />
           </li>
-        ))}
+        </Fragment>))}
       </ul>
     </Card>
   );
@@ -705,7 +892,7 @@ function Questions({ d, patch, disabled }: { d: Discovery; patch: (b: Record<str
   if (!d.questions.length) return <Card><Empty icon={<IconCheck />} title="No open questions">Everything was found in the code.</Empty></Card>;
   return (
     <div className="space-y-3">
-      {d.questions.map((q) => (
+      {[...d.questions].sort((a, b) => Number(!!a.answer) - Number(!!b.answer)).map((q) => (
         <Card key={q.id} className="p-5">
           <div className="flex items-start gap-3">
             <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${q.answer ? "bg-ok/15 text-ok" : "bg-warn/15 text-warn"}`}>
@@ -902,6 +1089,18 @@ function Results({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =
   const { canWrite } = useProject();
   const [adding, setAdding] = useState<string | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
+  const [rechecking, setRechecking] = useState(false);
+  async function recheck() {
+    setRechecking(true);
+    setAddError(null);
+    try {
+      onChange(await api<ImportJob>(`/api/discover/${job.id}/smoke`, { method: "POST" }));
+    } catch (e) {
+      setAddError((e as Error).message);
+    } finally {
+      setRechecking(false);
+    }
+  }
   async function addTool(agent: string, tool: string) {
     setAdding(tool);
     setAddError(null);
@@ -931,20 +1130,31 @@ function Results({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =
           </div>
         </Card>
       )}
-      <Card className={`p-5 ${rep && !rep.ok ? "border-warn/40" : "border-ok/30"}`}>
+      <Card className={`p-5 ${(rep && !rep.ok) || r.smoke_skipped ? "border-warn/40" : "border-ok/30"}`}>
         <div className="flex items-start gap-3">
-          <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${rep && !rep.ok ? "bg-warn/15 text-warn" : "bg-ok/15 text-ok"}`}>
-            {rep && !rep.ok ? "!" : <IconCheck className="h-4 w-4" />}
+          <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${(rep && !rep.ok) || r.smoke_skipped ? "bg-warn/15 text-warn" : "bg-ok/15 text-ok"}`}>
+            {(rep && !rep.ok) || r.smoke_skipped ? "!" : <IconCheck className="h-4 w-4" />}
           </span>
           <div>
             <div className="text-[16px] font-semibold">
-              {rep ? `Smoke run: ${rep.passed} of ${rep.episodes} scenarios passed${rep.errors ? `, ${rep.errors} errors` : ""}` : "Tests written"}
+              {rep ? `Smoke run: ${rep.passed} of ${rep.episodes} scenarios passed${rep.errors ? `, ${rep.errors} errors` : ""}`
+                : r.smoke_skipped ? "Tests written; the smoke run was skipped" : "Tests written"}
             </div>
             <p className="mt-1 text-[13.5px] text-mute">
               {r.files.length} files written to <code className="font-mono text-[12.5px] text-fg">{r.out}</code>.
+              {r.smoke_skipped && <> {r.smoke_skipped.replace(/^None of the agents/, "none of the agents")}</>}
               {rep && (rep.ok ? " What the agents did matches what was found." : " Some things didn't match what was found; see below.")}
-              {rep && rep.passed < rep.episodes && " Failed scenarios are about the agent's behaviour: read why below before treating them as broken tests."}
+              {rep && rep.episodes > 0 && rep.errors >= rep.episodes ? " None of the scenarios got as far as the agent: the errors below say why (often a missing dependency)."
+                : rep && rep.passed < rep.episodes && " Failed scenarios are about the agent's behaviour: read why below before treating them as broken tests."}
             </p>
+            {canWrite && (r.smoke_skipped || (r.connection ?? []).some((c) => !c.ok) || (rep && rep.episodes > 0 && rep.errors >= rep.episodes)) && (
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <Button onClick={recheck} disabled={rechecking}>
+                  {rechecking ? <><Spinner /> Starting…</> : <><IconRefresh className="h-3.5 w-3.5" /> Check again and smoke-run</>}
+                </Button>
+                <span className="text-[12.5px] text-dim">After installing dependencies (Setup → Python for the agents) or fixing a setting.</span>
+              </div>
+            )}
           </div>
         </div>
       </Card>
@@ -963,7 +1173,7 @@ function Results({ job, onChange }: { job: ImportJob; onChange: (j: ImportJob) =
       )}
       {(r.connection || (r.code_changes && r.code_changes.length > 0)) && (
         <Card>
-          <CardHeader title="Before the smoke run" sub="Connection check: the model server, every MCP server and every agent's start command." />
+          <CardHeader title="Before the smoke run" sub="Connection check: the model server, every MCP server, and each agent's start command and code (imported once)." />
           <ul className="divide-y divide-line/70 text-[13px]">
             {(r.code_changes ?? []).map((c) => (
               <li key={c} className="flex flex-wrap items-center gap-2 px-5 py-2.5"><Badge tone="info">code change</Badge> applied at <code className="font-mono text-[12.5px]">{c}</code></li>

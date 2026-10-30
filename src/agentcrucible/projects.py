@@ -169,11 +169,22 @@ class Workspace:
             self._save()
             return True
 
+    def _scenario_count(self, p: Project) -> int:
+        """How many scenarios a project has, re-counted only when its config or a suite folder changes (parsing every
+        YAML file on each project listing was slow on a large imported project)."""
+        cfg = p.cfg
+        dirs = [cfg.resolve(s.path) for s in cfg.suites.values()]
+        key = (p.path.stat().st_mtime_ns, tuple(d.stat().st_mtime_ns if d.exists() else 0 for d in dirs))
+        cache = self.__dict__.setdefault("_counts", {})
+        if cache.get(p.id, (None,))[0] != key:
+            cache[p.id] = (key, len(load_scenarios(cfg)))
+        return cache[p.id][1]
+
     def summary(self, p: Project) -> dict[str, Any]:
         out: dict[str, Any] = {**p.entry(), "home": p.id == HOME}
         try:
             cfg = p.cfg
-            out.update(name=cfg.project, agents=agent_names(cfg), scenarios=len(load_scenarios(cfg)),
+            out.update(name=cfg.project, agents=agent_names(cfg), scenarios=self._scenario_count(p),
                        root=str(cfg.root), discovery=p.discovery_file.is_file(), error=None)
         except Exception as e:  # noqa: BLE001
             out.update(name=p.path.parent.name, agents=[], scenarios=0, root=str(p.path.parent), discovery=False,

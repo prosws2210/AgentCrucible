@@ -72,6 +72,26 @@ def version() -> None:
 
 
 @app.command()
+def env(config: Path = typer.Option(None, "--config", "-c", help="Path to crucible.yaml"),
+        install: bool = typer.Option(False, "--install", help="Build the managed environment from the code's requirements")) -> None:
+    """Show which Python runs the agents (`python` in their commands), or build one with the code's dependencies."""
+    from .pyenv import install as build
+    from .pyenv import managed_env, project_python, requirements_files
+    cfg = load_config(config)
+    if install:
+        python = build(cfg.root, lambda m: console.print(f"[dim]{m}[/]"))
+        console.print(f"[green]OK[/] agents run with {python}")
+        return
+    python, source = project_python(cfg)
+    console.print(f"Agents run with [bold]{python}[/] ({source})")
+    reqs = requirements_files(cfg.root)
+    if reqs:
+        console.print("Dependencies: " + ", ".join(str(r) for r in reqs))
+    if source == "AgentCrucible's own Python" and reqs:
+        console.print(f"Install them into {managed_env(cfg.root)} with [bold]crucible env --install[/]")
+
+
+@app.command()
 def validate(config: Path = typer.Option(None, "--config", "-c", help="Path to crucible.yaml")) -> None:
     """Validate crucible.yaml and every scenario file."""
     cfg = load_config(config)
@@ -143,7 +163,7 @@ def run(
         (runner.run_dir / "comparison.json").write_text(json.dumps(comparison, indent=2), encoding="utf-8")
     _print_run(result, comparison)
     _write_reports(runner.run_dir, result, comparison, html)
-    ok, reasons = gate(comparison, result, cfg.ci.fail_on)
+    ok, reasons = gate(comparison, result, cfg.ci.fail_on, cfg.ci.max_error_rate)
     console.print(f"\nRun saved: {runner.run_dir}")
     if shard_t:
         return  # gating happens on the merged run
@@ -167,7 +187,7 @@ def compare_cmd(
     (run_dir / "comparison.json").write_text(json.dumps(comparison, indent=2), encoding="utf-8")
     _print_run(c, comparison)
     _write_reports(run_dir, c, comparison, html)
-    ok, reasons = gate(comparison, c, cfg.ci.fail_on)
+    ok, reasons = gate(comparison, c, cfg.ci.fail_on, cfg.ci.max_error_rate)
     if not ok:
         console.print("[bold red]GATE FAILED:[/] " + "; ".join(reasons))
         raise typer.Exit(1)
@@ -368,7 +388,7 @@ def merge(
         (run_dir / "comparison.json").write_text(json.dumps(comparison, indent=2), encoding="utf-8")
     _print_run(merged, comparison)
     _write_reports(run_dir, merged, comparison, True)
-    ok, reasons = gate(comparison, merged, cfg.ci.fail_on)
+    ok, reasons = gate(comparison, merged, cfg.ci.fail_on, cfg.ci.max_error_rate)
     if not ok:
         console.print("[bold red]GATE FAILED:[/] " + "; ".join(reasons))
         raise typer.Exit(1)

@@ -50,13 +50,13 @@ Changelog = "https://github.com/prosws2210/AgentCrucible/blob/main/CHANGELOG.md"
 Issues = "https://github.com/prosws2210/AgentCrucible/issues"
 
 [project.optional-dependencies]
-examples = ["openai>=1.40", "anthropic>=0.40", "pytest>=8"]
+examples = ["openai>=1.40", "anthropic>=2.3", "pytest>=8"]
 
 [project.scripts]
 crucible = "agentcrucible.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5", "openai>=1.40", "anthropic>=0.40"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5", "openai>=1.40", "anthropic>=2.3"]
 
 [build-system]
 requires = ["hatchling"]

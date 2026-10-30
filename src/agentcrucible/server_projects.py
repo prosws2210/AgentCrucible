@@ -262,13 +262,19 @@ def register(app: FastAPI, ws: Workspace, store: Store, current: Callable[[Reque
         cached = graphs.get(p.id)
         if cached and cached[0] == stamp and not refresh:
             return cached[1]
-        if d is not None:
+        saved = p.root / "knowledge-graph.json"  # written by the import: reading it beats rebuilding a big repo's graph
+        fresh = saved.is_file() and not refresh and d is not None and saved.stat().st_mtime_ns >= max(stamp, default=0)
+        if fresh:
+            g = json.loads(saved.read_text(encoding="utf-8"))
+            codebase = Path(p.codebase) if p.codebase else Path(d.repo.root)
+        elif d is not None:
             codebase = Path(p.codebase) if p.codebase else Path(d.repo.root)
         else:  # a hand-written project: read its code (no model) to map it
             codebase = Path(p.codebase) if p.codebase else p.root
             d = discover(codebase)
             build_plan(d, codebase)
-        g = build_graph(d, codebase if codebase.is_dir() else None)
+        if not fresh:
+            g = build_graph(d, codebase if codebase.is_dir() else None)
         # which of the project's agents each agent node is, so the viewer can open its page
         cfg = p.cfg
         named = cfg.agents or ({"agent": cfg.agent} if cfg.agent else {})
@@ -282,7 +288,8 @@ def register(app: FastAPI, ws: Workspace, store: Store, current: Callable[[Reque
             hit = next((name for name, spec in named.items() if base and base in (spec.command or "")), None)
             n["project_agent"] = hit or (next(iter(named)) if len(named) == 1 and n.get("included", True) else None)
         try:  # keep a copy in the repository, next to the tests
-            write_graph(d, codebase, p.root)
+            if not fresh:
+                write_graph(d, codebase, p.root)
         except OSError:
             pass
         graphs[p.id] = (stamp, g)

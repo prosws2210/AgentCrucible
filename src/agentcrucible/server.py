@@ -22,6 +22,9 @@ import asyncio
 import datetime as dt
 import json
 import os
+import re
+import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -72,6 +75,9 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     lock = asyncio.Lock()
     progress: dict[str, dict[str, int]] = {}
     tasks: set[asyncio.Task] = set()
+    runners: dict[str, Runner] = {}  # run id -> the runner executing it (for Cancel)
+    cancelled: set[str] = set()
+    store.interrupt_unfinished("The server stopped while this run was going")  # a restart leaves nothing running
 
     def current(request: Request) -> Project:
         pid = request.headers.get("x-crucible-project") or request.query_params.get("project")
@@ -150,7 +156,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
                 finished_at=dt.datetime.fromisoformat(r["created_at"]) + dt.timedelta(seconds=r["duration_s"]),
                 k=s["k"], n_episodes=s["n_episodes"], pass_at_1=s["pass_at_1"], pass_pow_k=s["pass_pow_k"],
                 compare_to=cmp["base_run"] if cmp else None, verdict=cmp["overall"]["verdict"] if cmp else None,
-                gate=("pass" if gate(cmp, r, cfg.ci.fail_on)[0] else "fail"), params={"imported": True, "agent": r.get("agent")},
+                gate=("pass" if gate(cmp, r, cfg.ci.fail_on, cfg.ci.max_error_rate)[0] else "fail"), params={"imported": True, "agent": r.get("agent")},
                 summary=_slim_summary(s),
             )
 
@@ -190,24 +196,21 @@ def create_app(config_path: Path | None = None) -> FastAPI:
         presets = sorted(p.relative_to(root).as_posix() for p in prompts_dir.glob("*.md")) if prompts_dir.exists() else []
         fixtures = sorted(p.relative_to(root).as_posix() for p in (root / "fixtures").glob("*.sql")) \
             if (root / "fixtures").exists() else []
+        from .runner import scaffold_pending
         agents = [{"name": n, "scenarios": sum(1 for a in amap.values() if a == n),
-                    "suites": [s for s in cfg.suites if (cfg.suites[s].agent or agent_names(cfg)[0]) == n]}
-                   for n in agent_names(cfg)]
+                   "suites": [s for s in cfg.suites if (cfg.suites[s].agent or agent_names(cfg)[0]) == n],
+                   # its adapter is still the generated scaffold: a run skips its scenarios
+                   "scaffold": scaffold_pending(cfg, n if cfg.agents else None)}
+                  for n in agent_names(cfg)]
         return {"id": p.id, "source": p.source, "codebase": p.codebase, "root": str(root), "project": cfg.project,
                 "model": cfg.model, "suites": suites, "agents": agents, "discovery": p.discovery_file.is_file(),
                 "mcp_servers": list(cfg.mcp_servers), "prompt_presets": presets, "fixtures": fixtures}
 
     @app.get("/api/models")
     async def models(p: Project = Depends(current)) -> dict[str, Any]:
-        cfg = p.cfg
-        base = cfg.llm.upstream_base_url.rstrip("/")
-        async with httpx.AsyncClient(timeout=10) as http:
-            try:
-                r = await http.get(base + "/models", headers={"Authorization": f"Bearer {cfg.llm.api_key}"})
-                r.raise_for_status()
-                return {"ok": True, "models": sorted(m["id"] for m in r.json().get("data", []))}
-            except Exception as e:
-                return {"ok": False, "models": [], "error": str(e)}
+        from .gateway import list_models
+        ok, names, error = await list_models(p.cfg.llm.upstream_base_url, p.cfg.llm.api_key)
+        return {"ok": ok, "models": names, **({"error": error} if error else {})}
 
     # ---------------------------------------------------------------- setup
 
@@ -235,8 +238,46 @@ def create_app(config_path: Path | None = None) -> FastAPI:
             "gate": {"fail_on": cfg.ci.fail_on, "alpha": cfg.ci.alpha},
         }
 
+    env_jobs: dict[str, dict[str, Any]] = {}  # project id -> its dependency install
+
+    @app.get("/api/env")
+    async def env_status(p: Project = Depends(current)) -> dict[str, Any]:
+        """The interpreter that runs this project's agents, and the dependency files it could be built from."""
+        from .pyenv import managed_env, project_python, requirements_files
+        python, source = project_python(p.cfg)
+        reqs = await asyncio.to_thread(requirements_files, p.root)
+        repo = p.root.parent if p.root.name == "agent-tests" else p.root
+        return {"python": python, "source": source, "managed": str(managed_env(p.root)),
+                "requirements": [str(r.relative_to(repo)) if r.is_relative_to(repo) else str(r) for r in reqs],
+                "install": env_jobs.get(p.id)}
+
+    @app.post("/api/env/install", status_code=202)
+    async def env_install(p: Project = Depends(current)) -> dict[str, Any]:
+        """Build the project's managed environment from the code's requirements (in the background)."""
+        from .pyenv import install
+        job = env_jobs.get(p.id)
+        if job and job["status"] == "running":
+            raise HTTPException(409, "the dependencies are already being installed")
+        job = env_jobs[p.id] = {"status": "running", "log": [], "started": time.time(), "error": None}
+
+        def say(msg: str) -> None:
+            job["log"] = (job["log"] + [{"t": round(time.time() - job["started"], 1), "message": msg}])[-200:]
+
+        def work() -> None:
+            try:
+                install(p.root, say)
+                job["status"] = "done"
+            except Exception as e:  # noqa: BLE001 - shown on the Setup page
+                job["status"], job["error"] = "failed", f"{type(e).__name__}: {str(e)[:600]}"
+                say(job["error"])
+
+        threading.Thread(target=work, daemon=True).start()
+        return job
+
+    import_checks: dict[str, tuple[Any, float, dict[str, Any]]] = {}  # project -> (version, when, agent imports)
+
     @app.get("/api/doctor")
-    async def doctor(p: Project = Depends(current)) -> dict[str, Any]:
+    async def doctor(p: Project = Depends(current), fresh: bool = False) -> dict[str, Any]:
         """Live checks that everything a run needs is reachable."""
         from .audit import Target
         cfg, root = p.cfg, p.root
@@ -255,9 +296,17 @@ def create_app(config_path: Path | None = None) -> FastAPI:
                                                                else f"unreachable: {m.get('error', '')[:120]}")),
         })
 
+        from .pyenv import project_python, requirements_files
+        python, source = project_python(cfg)
+        own = source == "AgentCrucible's own Python"
+        reqs = await asyncio.to_thread(requirements_files, root) if own else []
+        checks.append({"id": "python", "label": "Python for the agents", "ok": not source.endswith("(not found)") and not (own and reqs),
+                       "detail": f"{python} · {source}" + (f" · the code needs {', '.join(r.name for r in reqs)}: install its "
+                                                           "dependencies (Install dependencies, or crucible env install)" if own and reqs else "")})
+
         for name, spec in cfg.mcp_servers.items():
             cwd = str((root / spec.cwd).resolve()) if spec.cwd else str(root)
-            t = Target(spec.command, spec.url, spec.env, cwd, spec.headers, spec.transport)
+            t = Target(spec.command, spec.url, spec.env, cwd, spec.headers, spec.transport, python)
             try:
                 await asyncio.wait_for(t.connect(), 30)
                 tools = (await t.session.list_tools()).tools  # type: ignore[union-attr]
@@ -288,8 +337,28 @@ def create_app(config_path: Path | None = None) -> FastAPI:
                 ok = script is None or (cwd / script).exists()
                 how = "started once per run" if a.transport == "http" else "started once per episode"
                 detail = f"`{a.command}` ({a.transport}, {how})" + ("" if ok else f" · {script} not found")
+            from .runner import scaffold_pending
+            if ok and scaffold_pending(cfg, name if cfg.agents else None):
+                ok, detail = False, f"{detail} · its adapter is still the generated scaffold: fill in `turn` in the adapter file"
             checks.append({"id": f"agent:{name}" if cfg.agents else "agent",
                            "label": f"Agent · {name}" if cfg.agents else "Agent", "ok": ok, "detail": detail})
+        # an imported project: import each agent's code the way a run will, so a missing dependency shows here
+        disc = root / "discovery.json"
+        if disc.is_file():
+            from .discover.apply import _import_check
+            from .discover.schema import Discovery
+            key = (p.id, python, disc.stat().st_mtime_ns, p.path.stat().st_mtime_ns)
+            hit = import_checks.get(p.id)
+            if hit and hit[0] == key and time.time() - hit[1] < 120 and not fresh:
+                imported = hit[2]  # importing heavy code takes a while: reuse a recent answer
+            else:
+                d = Discovery.model_validate_json(await asyncio.to_thread(disc.read_text, encoding="utf-8"))
+                imported = await _import_check(cfg, root, d, Path(d.repo.root) if Path(d.repo.root).is_dir() else root.parent)
+                import_checks[p.id] = (key, time.time(), imported)
+            for c in checks:
+                r = imported.get(c["id"].removeprefix("agent:")) if c["id"].startswith("agent:") else None
+                if r and c["ok"]:
+                    c.update(ok=r["ok"], detail=f"{c['detail']} · {r['detail']}")
         return {"ok": all(c["ok"] for c in checks), "checks": checks}
 
     @app.get("/api/scenarios")
@@ -322,6 +391,18 @@ def create_app(config_path: Path | None = None) -> FastAPI:
         f = p.runs_dir / run_id / ep["trajectory"]
         return {**ep, "events": load_events(f) if f.exists() else []}
 
+    @app.get("/api/runs/{run_id}/logs/{name}")
+    async def run_log(run_id: str, name: str) -> dict[str, Any]:
+        """The end of one agent log of a run (what it printed, its traceback). Secrets in it are redacted."""
+        from .discover.scan import redact
+        if not re.fullmatch(r"[\w.-]+\.log", name):
+            raise HTTPException(400, "not a log name")
+        f = project_of_run(run_id).runs_dir / run_id / "logs" / name
+        if not f.is_file():
+            raise HTTPException(404, "log not found")
+        text = await asyncio.to_thread(f.read_text, encoding="utf-8", errors="replace")
+        return {"name": name, "size": len(text), "text": redact(text[-20000:])}
+
     # ---------------------------------------------------------------- runs
 
     @app.get("/api/runs")
@@ -348,6 +429,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
                 amap = {}
             detail["scenarios"] = [{"id": sid, **v} for sid, v in r["summary"]["scenarios"].items()]
             detail["summary"] = r["summary"]
+            detail["skipped"] = r.get("skipped") or []  # scenarios of agents that couldn't run (an unfinished adapter)
             detail["episodes"] = [{k: e[k] for k in ("episode_id", "scenario_id", "attempt", "passed", "error",
                                                      "checks", "totals")} for e in r["episodes"]]
             detail["scenario_meta"] = {sc["id"]: {"description": sc["description"], "tags": sc["tags"],
@@ -360,7 +442,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
             cmp_f = p.runs_dir / run_id / "comparison.json"
             if cmp_f.exists():
                 cmp = json.loads(cmp_f.read_text(encoding="utf-8"))
-                detail["comparison"] = {"overall": {k: cmp["overall"][k] for k in ("verdict", "delta", "ci")},
+                detail["comparison"] = {"overall": {k: cmp["overall"][k] for k in ("verdict", "delta", "ci", "note") if k in cmp["overall"]},
                                         "counts": cmp["counts"], "scenarios": cmp["scenarios"]}
         return detail
 
@@ -394,6 +476,11 @@ def create_app(config_path: Path | None = None) -> FastAPI:
             if not k.replace("_", "").isalnum():
                 raise HTTPException(400, f"invalid env var name {k!r}")
         pairs = [(sc, req.runs) for sc, _ in pairs]
+        from .runner import scaffold_pending
+        pending = {a for a in {sc.agent for sc, _ in pairs} if scaffold_pending(cfg, a)}
+        if pending and all(sc.agent in pending for sc, _ in pairs):
+            raise HTTPException(400, f"{', '.join(sorted(a or 'agent' for a in pending))}: the generated adapter isn't filled in yet "
+                                     "(it still raises NotImplementedError). Finish it in agent-tests/adapters/, then run.")
         run_id = f"run_{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}_{uuid.uuid4().hex[:4]}"
         model = req.model or cfg.model
         await asyncio.to_thread(
@@ -401,8 +488,9 @@ def create_app(config_path: Path | None = None) -> FastAPI:
             status="queued", created_at=now(), k=req.runs, compare_to=req.compare,
             params=req.model_dump(),
         )
-        progress[run_id] = {"done": 0, "total": sum(r for _, r in pairs), "failed": 0}
+        progress[run_id] = {"done": 0, "total": sum(r for sc, r in pairs if sc.agent not in pending), "failed": 0}
         task = asyncio.create_task(_execute(p, run_id, req, pairs, model))
+        task.set_name(run_id)
         tasks.add(task)
         task.add_done_callback(tasks.discard)
         return await asyncio.to_thread(store.get_run, run_id)  # type: ignore[return-value]
@@ -417,25 +505,32 @@ def create_app(config_path: Path | None = None) -> FastAPI:
                 p["done"] += 1
                 p["failed"] += 0 if res.passed else 1
 
+            if run_id in cancelled:  # cancelled while it waited for the previous run
+                await asyncio.to_thread(store.update_run, run_id, status="cancelled", finished_at=now())
+                progress.pop(run_id, None)
+                return
             try:
                 runner = Runner(load_config(p.path), RunOptions(  # no --model: each agent keeps its own
                     label=req.label, parallel=req.parallel, model=req.model, agent_env=req.agent_env, run_id=run_id,
                 ), on_episode)
+                runners[run_id] = runner
                 # Own thread + event loop: episodes spawn processes and grade synchronously in places,
                 # and must never stall API requests.
                 result = await asyncio.to_thread(asyncio.run, runner.run(pairs, req.suite))
                 cmp = None
-                if req.compare:
+                stopped = bool(result.get("cancelled"))  # a partial sample: no comparison and no gate verdict
+                if req.compare and not stopped:
                     cmp = compare_runs(load_run_json(req.compare), result, cfg.ci.alpha)
                     (runner.run_dir / "comparison.json").write_text(json.dumps(cmp, indent=2), encoding="utf-8")
                 write_html(runner.run_dir, result, cmp)
                 (runner.run_dir / "summary.md").write_text(markdown_summary(result, cmp), encoding="utf-8")
-                ok, _ = gate(cmp, result, cfg.ci.fail_on)
+                ok, _ = gate(cmp, result, cfg.ci.fail_on, cfg.ci.max_error_rate)
                 s = result["summary"]
                 await asyncio.to_thread(
-                    store.update_run, run_id, status="done", finished_at=now(), n_episodes=s["n_episodes"],
+                    store.update_run, run_id, status="cancelled" if stopped else "done", finished_at=now(),
+                    n_episodes=s["n_episodes"],
                     pass_at_1=s["pass_at_1"], pass_pow_k=s["pass_pow_k"], k=s["k"],
-                    verdict=cmp["overall"]["verdict"] if cmp else None, gate="pass" if ok else "fail",
+                    verdict=cmp["overall"]["verdict"] if cmp else None, gate=None if stopped else "pass" if ok else "fail",
                     summary=_slim_summary(s),
                 )
             except Exception as e:
@@ -443,6 +538,24 @@ def create_app(config_path: Path | None = None) -> FastAPI:
                                         error=f"{type(e).__name__}: {e}")
             finally:
                 progress.pop(run_id, None)
+                runners.pop(run_id, None)
+
+    @app.post("/api/runs/{run_id}/cancel")
+    async def cancel_run(run_id: str) -> dict[str, Any]:
+        """Stop a queued or running run. Episodes that finished are kept; the rest don't run."""
+        r = await asyncio.to_thread(store.get_run, run_id)
+        if not r:
+            raise HTTPException(404, "run not found")
+        if r["status"] not in ("queued", "running"):
+            raise HTTPException(409, f"the run is already {r['status']}")
+        cancelled.add(run_id)
+        runner = runners.get(run_id)
+        if runner is not None:
+            runner.cancel()  # the run finishes on its own thread and is saved as cancelled
+        elif not any(t.get_name() == run_id for t in tasks):  # nothing is running it any more (the server restarted)
+            await asyncio.to_thread(store.update_run, run_id, status="interrupted", finished_at=now(),
+                                    error="Nothing was running it any more")
+        return {"ok": True, "run": run_id}
 
     # ---------------------------------------------------------------- audits
 
@@ -477,7 +590,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
 
     from .server_discover import register as register_discover
     from .server_projects import register as register_projects
-    register_discover(app, ws, lock, index_runs)
+    register_discover(app, ws, lock, index_runs, store.delete_runs)
     register_projects(app, ws, store, current, lock, latest_results, agent_map, index_runs)
 
     return app

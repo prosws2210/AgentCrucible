@@ -45,7 +45,8 @@ svg.dragging { cursor: grabbing; }
 .node.hot text, .node.sel text { fill: var(--fg); font-weight: 600; }
 .node.sel .shape { stroke: var(--fg); stroke-width: 2.5; }
 .node .shape { stroke: var(--bg); stroke-width: 1.5; }
-aside { border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 14px; }
+aside { border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; overflow-x: hidden; padding: 14px; min-width: 0; }
+aside > div > code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 aside h2 { margin: 0 0 2px; font-size: 15px; word-break: break-word; }
 aside .kind { font: 11px ui-monospace, Consolas, monospace; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
 aside dl { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; margin: 12px 0; font-size: 12px; }
@@ -54,7 +55,8 @@ aside dd { margin: 0; word-break: break-word; }
 code { font: 11.5px ui-monospace, Consolas, monospace; background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; padding: 0 4px; }
 .group { margin-top: 12px; }
 .group h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: 600; }
-.link { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: 0; background: none; padding: 3px 4px; border-radius: 6px; cursor: pointer; }
+.link { display: flex; flex-wrap: wrap; align-items: center; gap: 0 7px; width: 100%; min-width: 0; text-align: left; border: 0; background: none; padding: 3px 4px; border-radius: 6px; cursor: pointer; }
+.link .sub { flex-basis: 100%; padding-left: 14px; color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
 .link:hover { background: var(--panel-2); }
 .empty { color: var(--dim); }
 .legend { position: absolute; left: 10px; bottom: 10px; background: color-mix(in srgb, var(--panel) 85%, transparent); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 11px; color: var(--mute); max-width: calc(100% - 20px); }
@@ -134,13 +136,18 @@ function start(g) {
   }
   $("legend").innerHTML = Object.entries(KINDS).filter(([k]) => c[k]).map(([, [l, col]]) => `<span><span class="dot" style="background:var(${col})"></span> ${l}</span>`).join("");
 
-  // files that matter for agents and MCP: where they're defined, what they use, who imports them
+  // "Agents & MCP only": agents and MCP servers, what they touch directly (their files, tools, prompts, services),
+  // and what those tools touch. Tools nothing uses and files with no agent drop out.
   const core = new Set();
-  for (const n of nodes) if (n.kind !== "file") core.add(n.id);
+  const hubs = nodes.filter((n) => (n.kind === "agent" && n.included !== false) || n.kind === "mcp_server");
+  for (const n of hubs) core.add(n.id);
+  const first = new Set();
   for (const e of edges) {
-    if (e.kind === "defines" || e.kind === "configures") core.add(e.source);
-    if (e.kind === "imports" && (core.has(e.target) && e.t.kind === "file" && adj.get(e.target).some((x) => x.kind === "defines" && ["agent", "mcp_server"].includes(x.t.kind)))) core.add(e.source);
+    if (core.has(e.source) && !core.has(e.target)) first.add(e.target);
+    if (core.has(e.target) && !core.has(e.source)) first.add(e.source);
   }
+  for (const id of first) core.add(id);
+  for (const e of edges) if (first.has(e.source) && byId.get(e.source)?.kind === "tool" && e.kind === "touches") core.add(e.target);
 
   // ---- layout: a small force simulation, run in frames so the page stays responsive
   const W = () => $("stage").clientWidth || 800, H = () => $("stage").clientHeight || 600;
@@ -300,7 +307,9 @@ function start(g) {
   function panel() {
     const p = $("panel");
     if (!selected) {
-      const agents = nodes.filter((n) => n.kind === "agent"), mcps = nodes.filter((n) => n.kind === "mcp_server");
+      // agents being tested first; ones left out (test fixtures, scripts…) after them, dimmed
+      const agents = nodes.filter((n) => n.kind === "agent").sort((a, b) => Number(a.included === false) - Number(b.included === false));
+      const mcps = nodes.filter((n) => n.kind === "mcp_server");
       p.innerHTML = `<div class="kind">Codebase</div><h2>${esc(g.repo?.name ?? "")}</h2>
         <p class="empty">Pick an agent or MCP server to light up every file, tool and service it touches.</p>
         <div class="group"><h3>Agents</h3>${agents.map(link).join("") || '<div class="empty">none found</div>'}</div>
@@ -328,7 +337,7 @@ function start(g) {
     bindLinks();
     if (canOpen) $("open").onclick = () => window.parent.postMessage({ type: "crucible:open", kind: n.kind, id: n.id, label: n.label, agent: n.project_agent }, "*");
   }
-  function link(n) { return `<button class="link" data-id="${esc(n.id)}"><span class="dot" style="background:var(${KINDS[n.kind]?.[1] ?? "--file"})"></span>${esc(n.label)}${n.kind === "file" && n.file !== n.label ? ` <span class="empty">${esc(n.file)}</span>` : ""}</button>`; }
+  function link(n) { return `<button class="link" data-id="${esc(n.id)}"><span class="dot" style="background:var(${KINDS[n.kind]?.[1] ?? "--file"})"></span>${esc(n.label)}${n.kind === "file" && n.file !== n.label ? `<span class="sub" title="${esc(n.file)}">${esc(n.file)}</span>` : ""}${n.kind === "agent" && n.included === false ? ' <span class="empty">left out</span>' : ""}</button>`; }
   function bindLinks() { for (const b of document.querySelectorAll("[data-id]")) b.onclick = () => select(b.dataset.id); }
   function select(id) { selected = id; render(); fit(id ? reach(id) : null); }
 

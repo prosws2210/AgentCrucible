@@ -5,6 +5,63 @@ All notable changes to AgentCrucible. Versions follow [Semantic Versioning](http
 ## [Unreleased]
 
 ### Added
+- **Python for the agents:** `python:` in `crucible.yaml`, a managed per-project environment
+  (`crucible env [--install]`, `GET /api/env`, `POST /api/env/install`, **Setup → Python for the agents**) and an `envs`
+  volume in Docker Compose. The connection check imports each agent's code and names the missing package; the smoke run
+  is skipped with that message until it's installed, and **Check again and smoke-run** (`POST /api/discover/{id}/smoke`)
+  retries it.
+- **Cancel a run:** a Cancel button on running runs (`POST /api/runs/{id}/cancel`) stops its agent processes; runs cut
+  off by a server restart show as "interrupted".
+- **Why an episode crashed:** the last error line of the agent's log is in the episode error, and **Show log**
+  (`GET /api/runs/{id}/logs/{name}`, redacted) shows the rest.
+- **Class agents that take a task dict** get a working adapter when their code reads a message-like key
+  (`user_message`, `task_description`, …); otherwise the scaffold lists the keys the code reads.
+
+### Changed
+- **Minimal environment for code under test:** agents, MCP servers and checks no longer inherit the server's
+  environment. `inherit_env: [NAME]` on an agent or MCP server, or `CRUCIBLE_PASS_ENV`, passes variables through.
+  Credential-like variables from the repository's `.env` are blanked in drafted configs.
+- **Gate:** a run where more than `ci.max_error_rate` (default 0.2) of episodes crashed is "inconclusive", not a pass
+  or a regression; a run where nothing ran says so.
+- **Import review:** fewer, more relevant questions (only about included agents, their tools and real databases);
+  scripts, benchmarks and test files no longer produce tools or datastores; evals and the "says it doesn't know"
+  scenario are drafted only where they fit; functions that don't take a message aren't offered as chat agents;
+  Postgres fixtures for Postgres code; scenarios whose fixtures are still scaffolds are skipped instead of failing.
+- Faster review on big repositories (cached graph and documents, slimmer job payloads) and a model list cached for
+  5 minutes.
+
+### Fixed
+- Model listing for Anthropic keys (`x-api-key`), sampling parameters a model rejects are dropped and retried, and the
+  dashboard reconnects by itself after the API was unreachable.
+- **Imported class agents actually run:** their adapters get the fixture and mock settings (`env_map`), traced tools,
+  a chat model on the gateway when the constructor takes `llm=` (`chat_model()`), and the conversation so far with each
+  message (`as_message()`). Drafted smoke tests require a model call (new `budget.min_llm_calls`), so an agent that
+  answers without its model no longer passes.
+- **Postgres fixtures from real repositories load:** only the agents' own service's schema files, no one-off data
+  scripts, psql-only syntax left out, `search_path` respected, and drafted rows that follow the schema's names, types
+  (UUID, arrays, booleans) and foreign keys. Drafted tasks name ids that exist in those rows, and leave out optional
+  inputs that would steer the agent to another tool.
+- "Uses" scenarios have a simulated user who supplies details when the agent asks for them; the simulator and the judge
+  drop parameters a model rejects (`temperature` on newer Claude models), like the gateway.
+- Agents keep one event loop for the whole conversation, so async clients don't fail with "Event loop is closed" on
+  the second turn.
+- Code under test starts with tracing and telemetry off (LangSmith, Langfuse, OpenTelemetry, Sentry, ...), even when it
+  loads the repository's `.env` at run time.
+- `trajectory.no_tool_errors` also catches tools that return their failure (`{"success": false, "error": ...}`).
+- Cancel: episodes cut short are not counted as failures, and a cancelled run gets no comparison or gate verdict.
+  "Run again" compares with the run it repeats.
+- Dashboard: run page notices redesigned, the scenario table no longer clips its columns, the run form counts agents and
+  leaves skipped scenarios out of its estimate, pages revalidate after an upgrade (`Cache-Control: no-cache`), and the
+  knowledge graph's side panel wraps long paths.
+- **Import with Docker on Windows:** set `CRUCIBLE_IMPORT_DIR` in `.env` to the folder holding your repositories and
+  paste paths exactly as Windows shows them (`D:\code\my-repo`); they're found at `/import/my-repo`. A path the
+  container can't see now says how to mount it instead of "Can't preview this folder".
+- **Descriptions with OpenAI or Claude:** the import's Options can use an OpenAI or Anthropic API key instead of the
+  local model. Requests are bigger and run four at a time; Claude is called through the Anthropic SDK
+  (`claude-opus-5-5` by default, with server-side fallback on a refusal). The key is used for that import only and is
+  never written to disk.
+- **The review opens before the model finishes:** the map comes from the code alone and descriptions fill in from the
+  background, so a slow local model no longer holds up the review.
 - **Knowledge graph:** every import writes `agent-tests/knowledge-graph.json` and a self-contained
   `knowledge-graph.html` (no server or network): files and their imports, agents, tools, MCP servers, prompts, databases,
   APIs and vector stores, and what uses what, each with its file and line. Click an agent or MCP server to see everywhere
@@ -95,6 +152,16 @@ All notable changes to AgentCrucible. Versions follow [Semantic Versioning](http
   - `/start/` offers importing a codebase first, and setting up one agent by hand second.
 
 ### Fixed
+- **Big repositories:** listing a 3,900-file repo on a Docker Desktop mount took 40 s and is now about 3 s (no stat per
+  entry, sizes fetched in parallel, files read in parallel); analysis runs each module's syntax tree walk once.
+- **Model step on big repositories:** requests are sized to fit a local model's 4,096-token window (prompts were cut
+  from the front, losing the instructions), only tools without a docstring are sent, and one timed-out request no
+  longer throws away the others.
+- **Agents built on a repository's own base class** (`class InvoiceAgent(BaseAgent)`, where `BaseAgent.__init__` takes
+  `tools`) are found, with their tools; agents and tools in test files and `scripts/` are no longer offered as the
+  product's, and private one-call model helpers are left unticked.
+- **Monorepos:** a service with its own `pyproject.toml` or `requirements.txt` is imported from its folder
+  (`src.agents.x`, not `services.ai-api.src.agents.x`), so adapters can import it and cross-file tools resolve.
 - LlamaIndex (and older LangChain / LiteLLM) agents read `OPENAI_API_BASE`, so their calls skipped the gateway; it
   is now set next to `OPENAI_BASE_URL`.
 - Agent commands like `npx`, `go` or `mvn` failed to start on Windows (`.cmd` files on PATH).

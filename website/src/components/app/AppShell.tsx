@@ -82,9 +82,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setState("ready");
       api<{ models: string[] }>("/api/models").then((m) => setModels(m.models)).catch(() => setModels([]));
     } catch (e) {
-      if (e instanceof ApiError) setState(e.status === 401 ? "login" : "offline");
+      // a server that's restarting fails with a network error, not an API one: offline either way (it retries itself)
+      setState(e instanceof ApiError && e.status === 401 ? "login" : "offline");
     }
   }, []);
+
+  useEffect(() => {  // while the server is unreachable, keep trying, so a restart doesn't need a manual reload
+    if (state !== "offline") return;
+    const t = setInterval(refresh, 3000);
+    return () => clearInterval(t);
+  }, [state, refresh]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load; state is set after the requests resolve

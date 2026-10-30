@@ -55,11 +55,109 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def split_command(command: str) -> list[str]:
-    """Split a command line; a leading `python` means the interpreter running AgentCrucible."""
+# What a child process (an agent, an MCP server, a check's shell command) inherits from the server's environment:
+# enough to find programs, certificates, proxies and toolchains, and nothing else. The server's own database URL,
+# API keys and tokens never reach the code under test; a spec's `env` or `inherit_env` (or CRUCIBLE_PASS_ENV, a
+# comma-separated list of names) passes anything else on purpose.
+_PASS_ENV = {
+    "PATH", "PATHEXT", "HOME", "USER", "USERNAME", "LOGNAME", "SHELL", "TERM", "LANG", "LANGUAGE", "TZ",
+    "TMPDIR", "TEMP", "TMP", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "OS", "USERPROFILE", "HOMEDRIVE",
+    "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy",
+    "no_proxy", "JAVA_HOME", "GOROOT", "GOPATH", "GOCACHE", "GOMODCACHE", "GOFLAGS", "NVM_DIR", "UV_CACHE_DIR",
+    "PIP_CACHE_DIR", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL",
+}
+_PASS_PREFIXES = ("LC_", "XDG_")
+# Tracing and telemetry off: test conversations must not reach LangSmith, Langfuse, Sentry and the like, even when the
+# code loads the repository's own .env at run time (load_dotenv doesn't override what's already set). A spec's env can
+# turn one back on.
+QUIET_ENV = {
+    "LANGCHAIN_TRACING_V2": "false", "LANGSMITH_TRACING": "false", "LANGSMITH_TRACING_V2": "false", "LANGCHAIN_TRACING": "false",
+    "LANGFUSE_ENABLED": "false", "LANGFUSE_TRACING_ENABLED": "false", "OTEL_SDK_DISABLED": "true", "SENTRY_DSN": "",
+    "ANONYMIZED_TELEMETRY": "False", "DO_NOT_TRACK": "1", "POSTHOG_DISABLED": "1", "HF_HUB_DISABLE_TELEMETRY": "1",
+    "WANDB_MODE": "disabled", "AGENTOPS_API_KEY": "", "HELICONE_API_KEY": "",
+}
+
+
+# sampling knobs a model may refuse ("`temperature` is deprecated for this model"); safe to drop when forcing a model
+SAMPLING_PARAMS = ("temperature", "top_p", "top_k", "frequency_penalty", "presence_penalty", "seed", "logit_bias",
+                   "logprobs", "top_logprobs", "repetition_penalty", "min_p", "parallel_tool_calls", "reasoning_effort")
+
+
+_HELPER_DROPPED: dict[str, set[str]] = {}  # model -> parameters it rejected, for AgentCrucible's own calls
+
+
+async def post_chat(http: httpx.AsyncClient, base_url: str, api_key: str, body: dict[str, Any],
+                    timeout: float = 300) -> httpx.Response:
+    """A chat completion for AgentCrucible itself (user simulator, judge). Like the gateway, a parameter the model
+    rejects (`temperature` is deprecated for this model) is dropped and the call retried, then left out from then on."""
+    body = {k: v for k, v in body.items() if k not in _HELPER_DROPPED.get(body.get("model", ""), set())}
+    for _ in range(3):
+        r = await http.post(base_url.rstrip("/") + "/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
+                            json=body, timeout=timeout)
+        bad = rejected_param(r.text, body) if r.status_code == 400 else None
+        if not bad:
+            break
+        _HELPER_DROPPED.setdefault(body.get("model", ""), set()).add(bad)
+        body.pop(bad)
+    r.raise_for_status()
+    return r
+
+
+def rejected_param(error: str, body: dict[str, Any]) -> str | None:
+    """The request parameter an upstream 400 complains about, if it's one that can be dropped."""
+    low = error.lower()
+    if not any(w in low for w in ("not support", "unsupported", "deprecated", "not allowed", "unknown", "invalid", "extra")):
+        return None
+    return next((p for p in SAMPLING_PARAMS if p in body and p in low), None)
+
+
+class _Replay:
+    """An upstream response whose body was already read (handed back unchanged)."""
+
+    def __init__(self, status_code: int, content: bytes):
+        self.status_code, self._content = status_code, content
+
+    async def aread(self) -> bytes:
+        return self._content
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def list_models(base_url: str, api_key: str = "", timeout: float = 10) -> tuple[bool, list[str], str]:
+    """(answered, model ids, error) for an OpenAI-compatible server. Anthropic's endpoint wants its key as x-api-key,
+    so a refused Bearer request is tried that way too."""
+    url = base_url.rstrip("/") + "/models"
+    async with httpx.AsyncClient(timeout=timeout) as http:
+        try:
+            r = await http.get(url, headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
+            if r.status_code in (400, 401, 403) and api_key:
+                r2 = await http.get(url, headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"})
+                if r2.status_code == 200:
+                    r = r2
+            r.raise_for_status()
+            return True, sorted(m["id"] for m in r.json().get("data", []) if m.get("id")), ""
+        except Exception as e:  # noqa: BLE001 - the caller says what's wrong
+            return False, [], f"{type(e).__name__}: {str(e)[:200]}"
+
+
+def child_env(*layers: dict[str, str], inherit: list[str] | tuple[str, ...] = ()) -> dict[str, str]:
+    """A minimal environment for code under test, with `layers` (spec env, gateway URLs...) on top, in order."""
+    extra = {n.strip() for n in os.environ.get("CRUCIBLE_PASS_ENV", "").split(",") if n.strip()} | set(inherit)
+    env = {**QUIET_ENV, **{k: v for k, v in os.environ.items()
+                           if k in _PASS_ENV or k.upper() in _PASS_ENV or k.startswith(_PASS_PREFIXES) or k in extra}}
+    for layer in layers:
+        env.update(layer)
+    return env
+
+
+def split_command(command: str, python: str | None = None) -> list[str]:
+    """Split a command line; a leading `python` means the project's interpreter (`python`), else AgentCrucible's."""
     parts = shlex.split(command, posix=True)
     if parts and parts[0] in ("python", "python3"):
-        parts[0] = sys.executable
+        parts[0] = python or sys.executable
     elif parts and os.name == "nt" and not any(c in parts[0] for c in "/\\"):
         # Windows can't start `npx`, `go` or `mvn` by bare name when they are .cmd/.exe files found through PATH
         parts[0] = shutil.which(parts[0]) or parts[0]
@@ -108,8 +206,9 @@ class McpProxy:
     """Spawns one real MCP server (stdio) for an episode and exposes it over Streamable HTTP."""
 
     def __init__(self, name: str, spec: McpServerSpec, env: dict[str, str], rec: Recorder,
-                 environment: Environment, root: Path):
+                 environment: Environment, root: Path, python: str | None = None):
         self.name, self.spec, self.env, self.rec, self.environment, self.root = name, spec, env, rec, environment, root
+        self.python = python
         self.tools: list[mt.Tool] = []
         self.manager: StreamableHTTPSessionManager | None = None
         self._stack = AsyncExitStack()
@@ -123,11 +222,11 @@ class McpProxy:
                 read, write, _ = await self._stack.enter_async_context(
                     streamablehttp_client(self.spec.url, headers=self.spec.headers))
         else:  # local server, started fresh for this episode
-            cmd = split_command(self.spec.command or "")
+            cmd = split_command(self.spec.command or "", self.python)
             cwd = self.spec.cwd and str((self.root / self.spec.cwd).resolve())
             params = StdioServerParameters(
                 command=cmd[0], args=cmd[1:], cwd=cwd or str(self.root),
-                env={**os.environ, **self.spec.env, **self.env},
+                env=child_env(self.spec.env, self.env, inherit=self.spec.inherit_env),
             )
             read, write = await self._stack.enter_async_context(stdio_client(params, errlog=open(os.devnull, "w")))
         self.session = await self._stack.enter_async_context(ClientSession(read, write))
@@ -205,6 +304,7 @@ class Gateway:
         self.llm = llm
         self.cache_dir = cache_dir
         self.force_model = force_model
+        self._dropped: dict[str, set[str]] = {}  # model -> request parameters it rejected (dropped from then on)
         self.episodes: dict[str, EpisodeRoutes] = {}
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(600.0))
         self.port = free_port()
@@ -319,12 +419,26 @@ class Gateway:
 
         url, up_headers = self._upstream(api, headers)
         cache_state = "miss" if self.llm.cache == "read_write" else "off"
-        try:
-            upstream = await self.client.send(self.client.build_request("POST", url, json=body, headers=up_headers),
-                                              stream=stream)
-        except httpx.HTTPError as e:
-            rec.add("llm_call", api=api, model=body.get("model"), error=f"upstream unreachable: {e}")
-            return JSONResponse({"error": {"message": str(e)}}, 502)
+        model = str(body.get("model") or "")
+        for name in self._dropped.get(model, ()):
+            body.pop(name, None)
+        for attempt in range(3):  # each retry drops one parameter the model said it doesn't take
+            try:
+                upstream = await self.client.send(self.client.build_request("POST", url, json=body, headers=up_headers),
+                                                  stream=stream)
+            except httpx.HTTPError as e:
+                rec.add("llm_call", api=api, model=body.get("model"), error=f"upstream unreachable: {e}")
+                return JSONResponse({"error": {"message": str(e)}}, 502)
+            if upstream.status_code != 400 or attempt == 2:
+                break
+            content = await upstream.aread()
+            bad = rejected_param(content.decode(errors="replace"), body)
+            if bad is None:
+                upstream = _Replay(400, content)
+                break
+            await upstream.aclose()
+            body.pop(bad, None)  # the agent's code sent it for its own model; the forced model doesn't take it
+            self._dropped.setdefault(model, set()).add(bad)
         if upstream.status_code != 200:
             content = await upstream.aread()
             await upstream.aclose()

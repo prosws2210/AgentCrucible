@@ -68,3 +68,68 @@ def test_runner_picks_the_model_per_agent(tmp_path):
     assert r.model_for(cfg.agents["a"]) == "project-model" and r.model_for(cfg.agents["b"]) == "qwen2.5:3b"
     forced = Runner(cfg, RunOptions(model="other"))
     assert forced.model_for(cfg.agents["b"]) == "other"  # --model compares models across every agent
+
+
+def test_gateway_drops_sampling_parameters_the_forced_model_rejects(tmp_path):
+    bodies: list[dict] = []
+    app = FastAPI()
+
+    @app.post("/v1/chat/completions")
+    async def chat(req: Request):
+        body = await req.json()
+        bodies.append(body)
+        if "temperature" in body:  # what Claude answers since temperature was removed
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"error": {"message": "`temperature` is deprecated for this model."}}, 400)
+        return {"model": body["model"], "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    port = free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    threading.Thread(target=server.run, daemon=True).start()
+    while not server.started:
+        time.sleep(0.05)
+    gw = Gateway(LLMSettings(upstream_base_url=f"http://127.0.0.1:{port}/v1", cache="off"), tmp_path, force_model="claude-x")
+
+    async def calls() -> None:
+        gw.episodes["e"] = EpisodeRoutes(Recorder("e", "s", 1))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gw), base_url="http://gw") as c:
+            for _ in range(2):
+                r = await c.post("/ep/e/v1/chat/completions", json={"model": "gpt-4o", "temperature": 0.2,
+                                                                    "messages": [{"role": "user", "content": "hi"}]})
+                assert r.status_code == 200, r.text
+        await gw.client.aclose()
+
+    try:
+        asyncio.run(calls())
+        # first call: rejected once, retried without it; second call: dropped up front
+        assert ["temperature" in b for b in bodies] == [True, False, False]
+    finally:
+        server.should_exit = True
+
+
+def test_models_are_listed_on_anthropic_style_servers_too():
+    from fastapi.responses import JSONResponse
+
+    from agentcrucible.gateway import list_models
+
+    app = FastAPI()
+
+    @app.get("/v1/models")
+    async def models(req: Request):
+        if req.headers.get("x-api-key") != "k":  # Anthropic refuses a Bearer key here
+            return JSONResponse({"error": "invalid x-api-key"}, 401)
+        return {"data": [{"id": "claude-haiku-5-5"}, {"id": "claude-opus-5-5"}]}
+
+    port = free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    threading.Thread(target=server.run, daemon=True).start()
+    while not server.started:
+        time.sleep(0.05)
+    try:
+        ok, names, _ = asyncio.run(list_models(f"http://127.0.0.1:{port}/v1", "k"))
+        assert ok and names == ["claude-haiku-5-5", "claude-opus-5-5"]
+        ok, names, error = asyncio.run(list_models(f"http://127.0.0.1:{port}/v1", "wrong"))
+        assert not ok and "401" in error
+    finally:
+        server.should_exit = True

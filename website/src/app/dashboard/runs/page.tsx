@@ -124,9 +124,15 @@ function NewRun({ runs, onClose }: { runs: Run[]; onClose: () => void }) {
 
   const nScenarios = scope === "all" ? allScenarios.length : scope === "agent" ? project.agents.find((a) => a.name === agent)?.scenarios ?? 0
     : scope === "suite" ? project.suites[suite]?.scenarios.length ?? 0 : picked.length;
-  const episodes = nScenarios * k;
+  // scenarios of an agent whose adapter is still the generated scaffold are skipped by the run
+  const scaffoldSuites = new Set(project.agents.filter((a) => a.scaffold).flatMap((a) => a.suites));
+  const chosen = scope === "all" ? allScenarios : scope === "agent" ? allScenarios.filter((s) => project.agents.find((a) => a.name === agent)?.suites.includes(s.suite))
+    : scope === "suite" ? allScenarios.filter((s) => s.suite === suite) : allScenarios.filter((s) => picked.includes(s.id));
+  const nSkipped = chosen.filter((s) => scaffoldSuites.has(s.suite)).length;
+  const episodes = (nScenarios - nSkipped) * k;
   const perEpisode = useMemo(() => {
-    const done = runs.filter((r) => r.status === "done" && r.finished_at && r.n_episodes);
+    // only runs whose agents actually ran: episodes that crash at once would make every estimate look instant
+    const done = runs.filter((r) => r.status === "done" && r.finished_at && r.n_episodes && (r.summary?.errors ?? 0) < r.n_episodes / 2);
     if (!done.length) return null;
     const secs = done.map((r) => (new Date(r.finished_at!).getTime() - new Date(r.created_at).getTime()) / 1000 / r.n_episodes!);
     return secs.reduce((a, b) => a + b, 0) / secs.length;
@@ -178,7 +184,7 @@ function NewRun({ runs, onClose }: { runs: Run[]; onClose: () => void }) {
         <div className="space-y-5">
           <Field label="What to test">
             <div className="flex flex-wrap gap-2">
-              {([["all", multi ? `All agents (${allScenarios.length})` : `Everything (${allScenarios.length})`], ...(multi ? [["agent", "One agent"]] : []), ["suite", "One suite"], ["pick", "Pick scenarios"]] as [typeof scope, string][]).map(([v, l]) => (
+              {([["all", multi ? `All agents (${project.agents.length})` : `Everything (${allScenarios.length})`], ...(multi ? [["agent", "One agent"]] : []), ["suite", "One suite"], ["pick", "Pick scenarios"]] as [typeof scope, string][]).map(([v, l]) => (
                 <Chip key={v} on={scope === v} onClick={() => pick(v)}>{l}</Chip>
               ))}
             </div>
@@ -256,7 +262,8 @@ function NewRun({ runs, onClose }: { runs: Run[]; onClose: () => void }) {
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-panel/60 px-5 py-4">
         <div className="text-[13px] text-mute">
-          <b className="text-fg">{episodes} episodes</b> ({nScenarios} scenarios × {k})
+          <b className="text-fg">{episodes} episodes</b> ({nScenarios - nSkipped} scenarios × {k})
+          {nSkipped > 0 && <> · {nSkipped} skipped: their agent&apos;s adapter is still a scaffold (Setup)</>}
           {perEpisode && episodes > 0 ? <> · about {duration(perEpisode * episodes)} based on past runs</> : null}
         </div>
         <div className="flex items-center gap-3">

@@ -198,6 +198,12 @@ class TsModule:
     def exported(self, name: str | None) -> bool:
         if not name:
             return False
+        cache = self.__dict__.setdefault("_exported_cache", {})  # asked once per call expression: big files have thousands
+        if name not in cache:
+            cache[name] = self._exported(name)
+        return cache[name]
+
+    def _exported(self, name: str) -> bool:
         return bool(re.search(rf"export\s+(default\s+)?(async\s+)?(function\*?\s+|const\s+|let\s+|class\s+){re.escape(name)}\b",
                               self.sf.text) or re.search(rf"export\s*\{{[^}}]*\b{re.escape(name)}\b", self.sf.text)
                     or re.search(rf"module\.exports\s*=.*\b{re.escape(name)}\b", self.sf.text))

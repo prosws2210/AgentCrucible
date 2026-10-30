@@ -155,6 +155,22 @@ Agent SDK, MCP servers and raw OpenAI/Anthropic tool loops in Python; Vercel AI 
 LangChain JS and MCP in TypeScript; and Spring AI, LangChain4j and Go SDK agents. Every finding cites its file and line,
 destructive tools are mocked in the drafted tests, and a smoke run compares what was found with what the agents
 actually did. The approved project then appears in the dashboard's project switcher with all its agents.
+With Docker on Windows, set `CRUCIBLE_IMPORT_DIR=D:/code` in `.env` and paste paths as Windows shows them. One-line
+descriptions come from the local model by default (the review opens first and they fill in later); for speed, choose
+OpenAI or Claude under **Options** and paste an API key, which is used for that import only and never saved.
+
+**The agents' own Python.** Imported code needs its own dependencies. `python` in an agent's command means the
+project's interpreter: `python:` in `crucible.yaml` if set, else a managed environment AgentCrucible creates for the
+project outside the repository (`crucible env --install`, or **Setup → Python for the agents → Install dependencies**,
+which installs every `requirements*.txt` and `pyproject.toml` it finds). Until then the smoke run is skipped with the
+missing package named; **Check again and smoke-run** on the results page retries it. With Docker Compose the
+environments live in the `envs` volume, so they survive rebuilds.
+
+**Isolation.** Agents, MCP servers and checks start with a minimal environment: system basics (`PATH`, `HOME`, locale,
+proxy and certificate settings) and AgentCrucible's own `CRUCIBLE_*` addresses, never the server's API keys. Pass a
+variable through with `inherit_env: [NAME]` on the agent or MCP server, or `CRUCIBLE_PASS_ENV=NAME,OTHER` for all of
+them. Variables from the repository's `.env` that look like credentials or service URLs are blanked in the drafted
+config (names only are read, never values), with a note on the review's **How it runs** tab.
 
 **Knowledge graph.** Every import also writes `agent-tests/knowledge-graph.json` and `knowledge-graph.html`: the files,
 how they import each other, and every agent, tool, MCP server, prompt, database and API, with which agent uses what.
@@ -244,6 +260,7 @@ checks:
 | `trajectory.max_tool_calls`, `no_tool_errors`, `no_blocked_calls` | Efficiency and robustness |
 | `output.contains`, `not_contains`, `regex` | Agent replies |
 | `budget.max_llm_calls`, `max_tokens`, `max_duration_s`, `max_cost_usd` | Cost and latency |
+| `budget.min_llm_calls` | The answer came from the model (catches an agent with no model configured) |
 | `judge.rubric` | LLM judge 1–5 against criteria; auto-demoted if calibration κ < 0.6 |
 
 Any check can be `hard: false` (reported, never fails the episode).
@@ -314,6 +331,7 @@ The chart runs the suite as an **Indexed Job** (one shard per pod via `JOB_COMPL
 | `crucible label` / `calibrate` | Human labels → judge agreement (κ) |
 | `crucible discover` | Find the agents in a repository and draft their tests (`--apply`, `--use-draft`, `--check --report`, `--update`, `--json`, `--no-llm`) |
 | `crucible graph` | Write the codebase knowledge graph (`agent-tests/knowledge-graph.json` + `.html`; `--rescan`, `--out`) |
+| `crucible env` | Show which Python runs the agents and their dependency files (`--install` installs them into a managed environment) |
 | `crucible import-traces` | Production traces → draft scenarios |
 
 ## Development

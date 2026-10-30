@@ -2,7 +2,7 @@
 // Same origin behind nginx (/api → backend). For `npm run dev`, set NEXT_PUBLIC_API_BASE=http://localhost:8000
 export const API = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
-export type RunStatus = "queued" | "running" | "done" | "failed";
+export type RunStatus = "queued" | "running" | "done" | "failed" | "cancelled" | "interrupted";
 
 export type Run = {
   id: string;
@@ -19,8 +19,9 @@ export type Run = {
   compare_to: string | null;
   verdict: string | null;
   gate: string | null;
+  summary?: { errors?: number; n_episodes?: number } | null;
   error: string | null;
-  params?: { agent_env?: Record<string, string>; scenarios?: string[] | null; agent?: string | null };
+  params?: { agent_env?: Record<string, string>; scenarios?: string[] | null; agent?: string | null; runs?: number };
   progress?: { done: number; total: number; failed: number };
 };
 
@@ -53,7 +54,7 @@ export type Project = {
   codebase: string | null;
   root: string;
   discovery: boolean;
-  agents: { name: string; scenarios: number; suites: string[] }[];
+  agents: { name: string; scenarios: number; suites: string[]; scaffold?: boolean }[];
   project: string;
   model: string;
   suites: Record<string, { runs: number; scenarios: { id: string; description: string; tags: string[] }[] }>;
@@ -143,6 +144,7 @@ export type ComparisonRow = {
 
 export type RunDetail = {
   run: Run;
+  skipped?: { scenario_id: string; agent: string | null; reason: string }[];
   progress?: Run["progress"] | null;
   scenarios?: { id: string; n: number; passed: number; pass_rate: number; flaky: boolean }[];
   summary?: {
@@ -162,7 +164,7 @@ export type RunDetail = {
   scenario_meta?: Record<string, { description: string; tags: string[]; agent?: string | null }>;
   failures?: { scenario_id: string; attempt: number; error: string | null; failed_checks: string[] }[];
   comparison?: {
-    overall: { verdict: string; delta: number; ci: [number, number] };
+    overall: { verdict: string; delta: number; ci: [number, number]; note?: string };
     counts: Record<string, number>;
     scenarios: ComparisonRow[];
   };
@@ -271,9 +273,11 @@ export type ScenarioOutcome = {
 export type ImportJob = {
   id: string; status: "scanning" | "review" | "failed" | "applying" | "applied" | "apply_failed"; source: string; root: string;
   progress: { t: number; message: string }[]; error: string | null; discovery: Discovery | null; started: number;
+  describing?: { model: string; requests: number } | null; // a model is writing descriptions in the background
+  phase_started?: number; // when the current step (scan, approval, a re-check) began
   result: null | {
     out: string; files: string[]; validate: { agents: string[]; scenarios: number; suites: string[] };
-    run_id?: string; code_changes?: string[]; project?: string;
+    run_id?: string; code_changes?: string[]; project?: string; smoke_skipped?: string;
     pull_request?: { branch?: string; base?: string; commit?: string; files?: string[]; pushed?: boolean; pr_url?: string | null;
       compare_url?: string | null; note?: string | null; error?: string };
     connection?: { id: string; ok: boolean; detail: string }[];

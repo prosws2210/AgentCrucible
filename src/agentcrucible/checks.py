@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import json
-import os
 import re
 import sqlite3
 import subprocess
@@ -17,6 +16,7 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from .config import Check, HelperModel, Scenario
+from .gateway import child_env
 from .trajectory import Recorder
 
 
@@ -39,6 +39,7 @@ class GradeContext:
     http: httpx.AsyncClient
     judge_status: dict[str, dict[str, Any]] = field(default_factory=dict)  # criteria_id -> calibration
     workspace: Path | None = None  # the episode's repo copy (environment.workspace)
+    python: str | None = None  # the project's interpreter: what `python` in a command check means
 
 
 Grader = Callable[[Check, Recorder, GradeContext], Awaitable[tuple[bool, str, float | None]]]
@@ -163,16 +164,16 @@ def _in_workspace(ws: Path, rel: str) -> Path:
     return p
 
 
-def _run_shell(cmd: str, cwd: Path, timeout: float) -> tuple[int, str]:
-    # a leading `python` means the interpreter running AgentCrucible (has the project's deps)
+def _run_shell(cmd: str, cwd: Path, timeout: float, python: str | None = None) -> tuple[int, str]:
+    # a leading `python` means the project's interpreter (the one with the code's dependencies)
     for prefix in ("python ", "python3 "):
         if cmd.startswith(prefix):
-            cmd = f'"{sys.executable}" ' + cmd[len(prefix):]
+            cmd = f'"{python or sys.executable}" ' + cmd[len(prefix):]
             break
     try:
         r = subprocess.run(cmd, cwd=cwd, shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, text=True, timeout=timeout,
-                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                           env=child_env({"PYTHONDONTWRITEBYTECODE": "1"}))
         return r.returncode, r.stdout
     except subprocess.TimeoutExpired:
         return -1, f"timed out after {timeout}s"
@@ -183,7 +184,7 @@ async def _state_command(c: Check, rec: Recorder, ctx: GradeContext):
     """Run a command in the workspace (e.g. the test suite) and check its exit code / output."""
     p = c.params if isinstance(c.params, dict) else {"run": c.params}
     ws = _workspace(ctx)
-    code, out = await asyncio.to_thread(_run_shell, p["run"], ws, float(p.get("timeout_s", 120)))
+    code, out = await asyncio.to_thread(_run_shell, p["run"], ws, float(p.get("timeout_s", 120)), ctx.python)
     want = int(p.get("expect_exit", 0))
     problems = []
     if code != want:
@@ -313,9 +314,16 @@ async def _max_tool_calls(c: Check, rec: Recorder, ctx: GradeContext):
     return n <= int(_num(c.params)), f"{n} tool calls (max {_num(c.params)})", None
 
 
+# a tool that returns its failure instead of raising: {"success": false, "error": "..."} (JSON or a Python dict)
+REPORTED_FAILURE = re.compile(r"""^\s*\{.*?["'](?:success|ok)["']\s*:\s*(?:false|False)\b"""
+                              r"""|^\s*\{.*?["']error["']\s*:\s*["'][^"']+["']"""
+                              r"""|^\s*\{.*?["']status["']\s*:\s*["'](?:error|failed|failure)["']""", re.S)
+
+
 @grader("trajectory.no_tool_errors")
 async def _no_tool_errors(c: Check, rec: Recorder, ctx: GradeContext):
-    errs = [e["tool"] for e in rec.of("tool_result") if e.get("is_error")]
+    errs = [e["tool"] for e in rec.of("tool_result")
+            if e.get("is_error") or REPORTED_FAILURE.search(str(e.get("content") or "")[:2000])]
     return not errs, f"tool errors: {errs}" if errs else "no tool errors", None
 
 
@@ -370,6 +378,13 @@ async def _max_llm(c: Check, rec: Recorder, ctx: GradeContext):
     return n <= int(_num(c.params)), f"{n} LLM calls (max {_num(c.params)})", None
 
 
+@grader("budget.min_llm_calls")
+async def _min_llm(c: Check, rec: Recorder, ctx: GradeContext):
+    """At least this many model calls: an agent that answers without its model (none configured) is broken, not fast."""
+    n = rec.totals()["llm_calls"]
+    return n >= int(_num(c.params)), f"{n} LLM calls (min {_num(c.params)})", None
+
+
 @grader("budget.max_tokens")
 async def _max_tokens(c: Check, rec: Recorder, ctx: GradeContext):
     t = rec.totals()
@@ -404,14 +419,10 @@ Respond with JSON only: {{"score": <1-5>, "reason": "<one sentence>"}}"""
 
 async def judge_score(ctx: GradeContext, criteria: str, transcript: str) -> tuple[int, str]:
     j = ctx.judge
-    r = await ctx.http.post(
-        j.base_url.rstrip("/") + "/chat/completions",
-        headers={"Authorization": f"Bearer {j.api_key}"},
-        json={"model": j.model, "temperature": j.temperature, "response_format": {"type": "json_object"},
-              "messages": [{"role": "user", "content": JUDGE_PROMPT.format(criteria=criteria, transcript=transcript)}]},
-        timeout=300,
-    )
-    r.raise_for_status()
+    from .gateway import post_chat
+    r = await post_chat(ctx.http, j.base_url, j.api_key, {
+        "model": j.model, "temperature": j.temperature, "response_format": {"type": "json_object"},
+        "messages": [{"role": "user", "content": JUDGE_PROMPT.format(criteria=criteria, transcript=transcript)}]})
     text = r.json()["choices"][0]["message"]["content"] or ""
     try:
         data = json.loads(text)

@@ -21,7 +21,7 @@ RUN uv pip install --system ".[examples]"
 COPY examples /workspace/examples
 RUN useradd --create-home --uid 10001 runner \
  && for d in /workspace/examples/*/; do mkdir -p "$d.crucible"; done \
- && chown -R runner /workspace
+ && mkdir -p /home/runner/.cache/agentcrucible/envs  && chown -R runner /workspace /home/runner/.cache
 USER 10001
 WORKDIR /workspace/examples/support-agent
 

@@ -167,11 +167,18 @@ def compare_runs(base: dict[str, Any], cand: dict[str, Any], alpha: float = 0.05
         overall = "improved"
     else:
         overall = "unchanged"
+    # a run whose episodes all crashed measured nothing: no difference against it means nothing either
+    crashed = [name for name, r in (("baseline", base), ("this run", cand))
+               if r["summary"].get("n_episodes") and (r["summary"].get("errors") or 0) >= r["summary"]["n_episodes"]]
+    if crashed:
+        overall = "inconclusive"
     counts = {v: sum(1 for r in rows if r["verdict"] == v) for v in ("regressed", "improved", "inconclusive", "unchanged")}
     return {
         "base_run": base["run_id"], "cand_run": cand["run_id"], "alpha": alpha,
         "overall": {"verdict": overall, "delta": delta, "ci": [lo, hi],
-                    "base": base["summary"], "cand": cand["summary"]},
+                    "base": base["summary"], "cand": cand["summary"],
+                    **({"note": f"Every episode of {' and '.join(crashed)} errored, so the comparison can't tell anything."}
+                       if crashed else {})},
         "counts": counts,
         "scenarios": sorted(rows, key=lambda r: ({"regressed": 0, "inconclusive": 1, "improved": 2}.get(r["verdict"], 3), r["delta"])),
         "only_in_base": sorted(set(bb) - set(cc)),
@@ -179,9 +186,14 @@ def compare_runs(base: dict[str, Any], cand: dict[str, Any], alpha: float = 0.05
     }
 
 
-def gate(comparison: dict[str, Any] | None, run: dict[str, Any], fail_on: list[str]) -> tuple[bool, list[str]]:
-    """Return (ok, reasons) for CI."""
+def gate(comparison: dict[str, Any] | None, run: dict[str, Any], fail_on: list[str],
+         max_error_rate: float = 0.2) -> tuple[bool, list[str]]:
+    """Return (ok, reasons) for CI. A run whose episodes mostly crashed measured nothing, so it never passes."""
     reasons = []
+    s = run["summary"]
+    errors, n = s.get("errors") or 0, s.get("n_episodes") or 0
+    if n and (errors >= n or errors / n > max_error_rate):
+        reasons.append(f"{errors} of {n} episodes errored before they could be graded" + (": nothing ran" if errors >= n else ""))
     if "any_failure" in fail_on and run["summary"]["pass_at_1"] < 1.0:
         reasons.append("some episodes failed")
     if comparison:

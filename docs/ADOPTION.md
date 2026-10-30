@@ -192,6 +192,7 @@ checks:
 | `trajectory.tool_called` / `tool_not_called` / `call_order` / `not_before_turn` / `max_tool_calls` / `no_tool_errors` / `no_blocked_calls` | What the agent did, in which order and in which turn |
 | `output.contains` / `not_contains` / `regex` | What the agent said |
 | `budget.max_llm_calls` / `max_tokens` / `max_duration_s` / `max_cost_usd` | Cost and latency ceilings |
+| `budget.min_llm_calls` | At least N model calls: catches an agent that answers without its model |
 | `judge.rubric` | LLM judge 1–5; demoted to non-blocking if calibration κ < 0.6 |
 
 Any check takes `hard: false` to report without failing the episode.

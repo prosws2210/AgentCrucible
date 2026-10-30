@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import AsyncExitStack
@@ -27,17 +28,18 @@ import uvicorn
 from .calibration import load_statuses
 from .checks import CheckResult, GradeContext, grade
 from .config import AgentSpec, ProjectConfig, Scenario
-from .gateway import EpisodeRoutes, Gateway, McpProxy, split_command
+from .gateway import EpisodeRoutes, Gateway, McpProxy, child_env, post_chat, split_command
+from .pyenv import project_python
 from .stats import summarize_run
 from .trajectory import Recorder
 
 DONE = "[DONE]"
 
-SIM_PROMPT = """You are role-playing a CUSTOMER chatting with an online shop's support agent.
+SIM_PROMPT = """You are role-playing the PERSON talking to an AI agent (a customer, an employee, a user of an app).
 Your persona and goal: {persona}
 
-Write ONLY the customer's next message: short, natural, in character.
-Do not invent order ids or emails beyond what your persona says.
+Write ONLY your next message: short, natural, in character.
+Don't invent ids, emails or other details unless your persona says you may.
 If your goal is achieved, or the agent clearly cannot help further, reply with exactly {done}"""
 
 
@@ -129,12 +131,46 @@ def rmtree(path: Path) -> None:
         shutil.rmtree(path, onerror=_force)
 
 
+# SQL that only PostgreSQL runs: DO blocks, :: casts, SERIAL/JSONB/BYTEA types, extensions, dollar quoting
+POSTGRES_SQL = re.compile(r"(?i)\bDO\s+\$|\$\$|::\s*(int\w*|bigint|text|varchar|jsonb?|uuid|timestamp\w*|date|numeric|boolean|regclass)\b|\b(BIG)?SERIAL\b|\bJSONB\b|\bBYTEA\b|CREATE\s+EXTENSION|"
+                          r"\bTIMESTAMPTZ\b|\bUUID\s+(PRIMARY|NOT|DEFAULT)|gen_random_uuid\(")
+
+
+SCAFFOLD_MARK = 'raise NotImplementedError("call '  # what `crucible discover` writes into an adapter you must finish
+
+
+def scaffold_pending(cfg: ProjectConfig, name: str | None) -> bool:
+    """Is this agent's adapter still the generated scaffold (it raises NotImplementedError until filled in)?"""
+    spec = cfg.agent_for(name)
+    script = next((x for x in (spec.command or "").split()[1:] if x.endswith(".py")), None) if spec else None
+    if not script:
+        return False
+    f = (cfg.root / (spec.cwd or ".") / script).resolve()
+    try:
+        return SCAFFOLD_MARK in f.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
+def _log_cause(path: Path) -> str:
+    """The line in an agent's log that says why it stopped ("ModuleNotFoundError: No module named 'loguru'")."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    hits = [ln.strip() for ln in lines if re.match(r"\s*[\w.]*(Error|Exception|Exit)\b[^:]*:", ln)]
+    return f": {hits[-1][:300]}" if hits else ""
+
+
 class Runner:
     def __init__(self, cfg: ProjectConfig, opts: RunOptions, on_episode: Callable[[EpisodeResult], None] | None = None):
         self.cfg, self.opts, self.on_episode = cfg, opts, on_episode
         if opts.cache:
             cfg.llm.cache = opts.cache  # type: ignore[assignment]
         self.model = opts.model or cfg.model
+        self.python = project_python(cfg)[0]  # what `python` in agent and MCP server commands means
+        self.cancelled = threading.Event()  # set from another thread (the dashboard's Cancel) to stop the run
+        self._live: set[asyncio.subprocess.Process] = set()  # agent processes running right now
         self.models_used: set[str] = set()
         self.out_root = opts.out_root or (cfg.root / ".crucible")
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -145,6 +181,13 @@ class Runner:
         self.gateway = Gateway(cfg.llm, self.out_root / "cache" / "llm", force_model=self.model)
         self.http = httpx.AsyncClient(timeout=300)
         self.judge_status = load_statuses(cfg.root)
+
+    def cancel(self) -> None:
+        """Stop the run (callable from any thread): no new episodes start and running agents are stopped."""
+        self.cancelled.set()
+        for proc in list(self._live):
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.kill()
 
     async def run(self, scenarios: list[tuple[Scenario, int]], suite: str | None = None) -> dict[str, Any]:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -159,14 +202,22 @@ class Runner:
 
         started = dt.datetime.now(dt.timezone.utc)
         sem = asyncio.Semaphore(max(1, self.opts.parallel))
-        jobs = [(sc, a) for sc, runs in scenarios for a in range(1, runs + 1)]
+        # agents whose generated adapter is still the scaffold can't run: their scenarios are skipped, not failed
+        pending = {name for name in {sc.agent for sc, _ in scenarios} if scaffold_pending(self.cfg, name)}
+        skipped = [{"scenario_id": sc.id, "agent": sc.agent, "reason": "the agent's adapter isn't filled in yet"}
+                   for sc, _ in scenarios if sc.agent in pending]
+        jobs = [(sc, a) for sc, runs in scenarios if sc.agent not in pending for a in range(1, runs + 1)]
         if self.opts.shard:
             i, n = self.opts.shard
             jobs = jobs[i::n]
 
-        async def guarded(sc: Scenario, attempt: int) -> EpisodeResult:
+        async def guarded(sc: Scenario, attempt: int) -> EpisodeResult | None:
             async with sem:
+                if self.cancelled.is_set():
+                    return None  # cancelled before it started: not run, not counted
                 res = await self.run_episode(sc, attempt)
+            if self.cancelled.is_set() and not res.passed:
+                return None  # stopped mid-episode by Cancel: the agent didn't fail, the run never finished it
             if self.on_episode:
                 self.on_episode(res)
             return res
@@ -174,7 +225,7 @@ class Runner:
         services: list[asyncio.subprocess.Process] = []
         try:
             services = await self._start_services()
-            results = await asyncio.gather(*(guarded(sc, a) for sc, a in jobs))
+            results = [r for r in await asyncio.gather(*(guarded(sc, a) for sc, a in jobs)) if r is not None]
         finally:
             for proc in services:
                 await self._stop_service(proc)
@@ -186,6 +237,8 @@ class Runner:
             await self.gateway.client.aclose()
 
         run = {
+            "cancelled": self.cancelled.is_set(),
+            "skipped": skipped,
             "run_id": self.run_id,
             "project": self.cfg.project,
             "label": self.opts.label,
@@ -238,10 +291,10 @@ class Runner:
         log_name = "agent-service.log" if name == "agent" else f"agent-service-{name}.log"
         log = open(log_dir / log_name, "w", encoding="utf-8")
         self._service_logs = [*getattr(self, "_service_logs", []), log]
-        env = {**os.environ, **agent.env, **self.opts.agent_env, "CRUCIBLE_MODEL": self.model_for(agent),
-               "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+        env = child_env(agent.env, self.opts.agent_env, {"CRUCIBLE_MODEL": self.model_for(agent),
+                        "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}, inherit=agent.inherit_env)
         cwd = str((self.cfg.root / agent.cwd).resolve()) if agent.cwd else str(self.cfg.root)
-        proc = await asyncio.create_subprocess_exec(*split_command(agent.command or ""), cwd=cwd, env=env,
+        proc = await asyncio.create_subprocess_exec(*split_command(agent.command or "", self.python), cwd=cwd, env=env,
                                                     stdout=log, stderr=log)
         try:
             await self._wait_ready(agent.url or "", agent.ready_timeout_s, proc, log_name)
@@ -306,7 +359,7 @@ class Runner:
                     env = dict(shared_env)
                     if name in dbs:  # SQLite path or Postgres URL for this server's fresh database
                         env["CRUCIBLE_DB" if isinstance(dbs[name], Path) else "CRUCIBLE_DB_URL"] = str(dbs[name])
-                    proxy = McpProxy(name, spec, env, rec, sc.environment, self.cfg.root)
+                    proxy = McpProxy(name, spec, env, rec, sc.environment, self.cfg.root, self.python)
                     routes.proxies[name] = await stack.enter_async_context(proxy)
                 self.gateway.episodes[eid] = routes
                 stack.callback(self.gateway.episodes.pop, eid, None)
@@ -316,7 +369,7 @@ class Runner:
                     error = f"{type(e).__name__}: {e}"
                     rec.add("error", message=error)
             rec.add("episode_end", reason="error" if error else "done", turns=rec.turn)
-            checks = await grade(sc, rec, GradeContext(dbs=dbs, judge=self.cfg.judge, http=self.http,
+            checks = await grade(sc, rec, GradeContext(dbs=dbs, judge=self.cfg.judge, http=self.http, python=self.python,
                                                        judge_status=self.judge_status, workspace=workspace))
         except Exception as e:  # infrastructure failure (fixture, MCP server failed to start, ...)
             error = error or f"setup: {type(e).__name__}: {e}"
@@ -344,6 +397,12 @@ class Runner:
         dbs: dict[str, Path | str] = {}
         for server, fx in sc.environment.fixtures.items():
             sql = self._resolve(sc, fx.seed).read_text(encoding="utf-8")
+            if fx.kind == "sqlite" and POSTGRES_SQL.search(sql):
+                if not self.cfg.postgres.admin_url:
+                    raise RuntimeError(f"{fx.seed} is PostgreSQL (it won't run on SQLite): set `kind: postgres` on the fixture "
+                                       "and give a server in `postgres.admin_url` or CRUCIBLE_POSTGRES_URL")
+                dbs[server] = self._create_postgres(sql, pg_created)  # a Postgres seed gets a Postgres database
+                continue
             if fx.kind == "postgres":
                 dbs[server] = self._create_postgres(sql, pg_created)
                 continue
@@ -439,8 +498,7 @@ class Runner:
                            http_urls: dict[str, str], workspace: Path | None, stack: AsyncExitStack,
                            extra: dict[str, str]) -> Callable[[str], Awaitable[str]]:
         """One agent process per episode; gateway URLs arrive as environment variables."""
-        env = {
-            **os.environ, **agent.env, **self.opts.agent_env, **extra,
+        env = child_env(agent.env, self.opts.agent_env, extra, {
             "OPENAI_BASE_URL": f"{base}/v1", "OPENAI_API_KEY": "agentcrucible",
             "OPENAI_API_BASE": f"{base}/v1",  # LlamaIndex, older LangChain and LiteLLM read this name
             "ANTHROPIC_BASE_URL": base, "ANTHROPIC_API_KEY": "agentcrucible",
@@ -449,17 +507,20 @@ class Runner:
             **({"CRUCIBLE_WORKSPACE": str(workspace)} if workspace else {}),
             **{f"CRUCIBLE_HTTP_{n.upper()}_URL": url for n, url in http_urls.items()},
             **{f"CRUCIBLE_MCP_{n.upper()}_URL": url for n, url in mcp_urls.items()},
-        }
+        }, inherit=agent.inherit_env)
         log_path = self.run_dir / "logs" / f"{eid}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = stack.enter_context(open(log_path, "w", encoding="utf-8"))
         cwd = str((self.cfg.root / agent.cwd).resolve()) if agent.cwd else str(self.cfg.root)
         proc = await asyncio.create_subprocess_exec(
-            *split_command(agent.command or ""), cwd=cwd, env=env, stdin=asyncio.subprocess.PIPE,
+            *split_command(agent.command or "", self.python), cwd=cwd, env=env, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=log, limit=2**22,
         )
 
+        self._live.add(proc)
+
         async def _stop() -> None:
+            self._live.discard(proc)
             if proc.returncode is None:
                 with contextlib.suppress(Exception):
                     proc.stdin.write(b'{"type": "end"}\n')  # type: ignore[union-attr]
@@ -478,7 +539,9 @@ class Runner:
             while True:
                 line = await asyncio.wait_for(proc.stdout.readline(), agent.turn_timeout_s)  # type: ignore[union-attr]
                 if not line:
-                    raise RuntimeError(f"agent exited (code {proc.returncode}); see logs/{log_path.name}")
+                    await proc.wait()
+                    log.flush()
+                    raise RuntimeError(f"agent exited (code {proc.returncode})" + _log_cause(log_path) + f"; see logs/{log_path.name}")
                 try:
                     msg = json.loads(line)
                 except json.JSONDecodeError:
@@ -527,10 +590,7 @@ class Runner:
         # From the simulator's point of view it is the assistant and the agent is the user.
         msgs = [{"role": "system", "content": SIM_PROMPT.format(persona=persona, done=DONE)}]
         msgs += [{"role": "assistant" if who == "user" else "user", "content": text} for who, text in history]
-        r = await self.http.post(s.base_url.rstrip("/") + "/chat/completions",
-                                 headers={"Authorization": f"Bearer {s.api_key}"},
-                                 json={"model": s.model, "messages": msgs, "temperature": s.temperature})
-        r.raise_for_status()
+        r = await post_chat(self.http, s.base_url, s.api_key, {"model": s.model, "messages": msgs, "temperature": s.temperature})
         text = (r.json()["choices"][0]["message"]["content"] or "").strip().strip('"')
         if not text or DONE in text:
             return None

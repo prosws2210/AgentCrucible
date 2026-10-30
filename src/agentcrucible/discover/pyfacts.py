@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import re
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -80,9 +81,9 @@ SAAS_SDKS = {"stripe": "stripe", "twilio": "twilio", "sendgrid": "sendgrid", "sl
              "salesforce": "salesforce", "simple_salesforce": "salesforce", "zendesk": "zendesk", "resend": "resend"}
 
 
-def module_name(rel: str) -> str:
+def module_name(rel: str, strip_src: bool = True) -> str:
     parts = rel[:-3].split("/") if rel.endswith(".py") else rel.split("/")
-    if parts and parts[0] in ("src", "lib") and len(parts) > 1:
+    if strip_src and parts and parts[0] in ("src", "lib") and len(parts) > 1:
         parts = parts[1:]
     if parts[-1] == "__init__":
         parts = parts[:-1]
@@ -98,10 +99,11 @@ class Scope:
 
 
 class PyModule:
-    def __init__(self, sf: SourceFile, tree: ast.Module):
+    def __init__(self, sf: SourceFile, tree: ast.Module, import_root: str = "", strip_src: bool = True):
         self.sf = sf
         self.tree = tree
-        self.module = module_name(sf.rel)
+        self.import_root = import_root  # the folder Python runs from (a monorepo's service folder), "" for the repo root
+        self.module = module_name(sf.rel[len(import_root) + 1:] if import_root else sf.rel, strip_src)
         self.aliases: dict[str, str] = {}  # local name -> dotted import path
         self.consts: dict[str, ast.AST] = {}  # module-level NAME = value
         self.var_types: dict[str, str] = {}  # var -> dotted constructor it was assigned from
@@ -109,7 +111,8 @@ class PyModule:
         self.parents: dict[ast.AST, ast.AST] = {}
         self.top_packages: set[str] = set()
         self.local_llm: set[str] = set()  # packages in this repo that wrap an LLM library (set by detect_python)
-        for node in ast.walk(tree):
+        self.nodes: list[ast.AST] = list(ast.walk(tree))  # walked once: the detectors scan the whole module many times
+        for node in self.nodes:
             for child in ast.iter_child_nodes(node):
                 self.parents[child] = node
             if isinstance(node, ast.Import):
@@ -300,7 +303,7 @@ class PyModule:
         if isinstance(node, ast.Call) and node.args:  # list(...), ToolNode(tools)
             return self.list_items(node.args[0])
         if isinstance(node, ast.Name):  # a local variable: find its assignment in the same function or module
-            for n in ast.walk(self.tree):
+            for n in self.nodes:
                 if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == node.id for t in n.targets):
                     items = self.list_items(n.value)
                     if items:
@@ -328,7 +331,8 @@ class PyDetector:
 
     def _fact(self, fact_kind: str, fact_name: str, framework: str, at: ast.AST, /, **attrs: Any) -> str:
         return self.add(Fact(kind=fact_kind, name=fact_name, framework=framework, evidence=[self.m.ev(at)],  # type: ignore[arg-type]
-                             attrs={"module": self.m.module, "file": self.m.sf.rel, "line": self.m.line(at), **attrs}))
+                             attrs={"module": self.m.module, "file": self.m.sf.rel, "line": self.m.line(at),
+                                    **({"import_root": self.m.import_root} if self.m.import_root else {}), **attrs}))
 
     def _model(self, node: ast.AST | None) -> dict[str, Any]:
         """A model reference: literal, env var, or a chat-model object's `model=`."""
@@ -341,7 +345,7 @@ class PyDetector:
             return {"env": env}
         if isinstance(node, ast.Name) and node.id in self.m.var_types:
             # llm = ChatOpenAI(model="gpt-4o"); agent(llm=llm)
-            for n in ast.walk(self.m.tree):
+            for n in self.m.nodes:
                 if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == node.id for t in n.targets) and isinstance(n.value, ast.Call):
                     return self._model(self.m.kw(n.value, "model", "model_name", "model_id", "deployment_name") or self.m.arg(n.value, 0))
         if isinstance(node, ast.Call):
@@ -415,7 +419,7 @@ class PyDetector:
             if e.id in self.tool_funcs:
                 return self.tool_funcs[e.id]["name"]
             # search_tool = FunctionTool.from_defaults(fn=search_docs): the tool is search_docs
-            for n in ast.walk(self.m.tree):
+            for n in self.m.nodes:
                 if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == e.id for t in n.targets) \
                         and isinstance(n.value, ast.Call):
                     q = self.m.qual(n.value.func) or ""
@@ -441,6 +445,22 @@ class PyDetector:
             return q.rsplit(".", 1)[-1]  # a built-in tool class such as TavilySearchResults
         return None
 
+    @staticmethod
+    def _signature(fn: ast.FunctionDef | ast.AsyncFunctionDef | None) -> list[dict[str, Any]]:
+        """The parameters a caller fills: name, positional or keyword-only, required, annotation."""
+        if fn is None:
+            return []
+        a = fn.args
+        pos = [*a.posonlyargs, *a.args]
+        n_required = len(pos) - len(a.defaults)
+        out = [{"name": p.arg, "kind": "pos", "required": i < n_required,
+                "type": ast.unparse(p.annotation) if p.annotation is not None else ""}
+               for i, p in enumerate(pos) if p.arg not in ("self", "cls")]
+        out += [{"name": p.arg, "kind": "kw", "required": d is None,
+                 "type": ast.unparse(p.annotation) if p.annotation is not None else ""}
+                for p, d in zip(a.kwonlyargs, a.kw_defaults, strict=True)]
+        return out
+
     def _func_params(self, fn: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, str]:
         out: dict[str, str] = {}
         for a in fn.args.args + fn.args.kwonlyargs:
@@ -455,7 +475,7 @@ class PyDetector:
         self._decorated_tools()
         self._tool_objects()
         self._mcp_servers()
-        for node in ast.walk(self.m.tree):
+        for node in self.m.nodes:
             if isinstance(node, ast.Call):
                 self._call(node)
         self._dispatch_tables()
@@ -509,7 +529,7 @@ class PyDetector:
                        import_ref=self.m.qual(fn_node).lstrip("$") if fn is None and isinstance(fn_node, ast.Attribute) else None)
 
     def _mcp_servers(self) -> None:
-        for node in ast.walk(self.m.tree):
+        for node in self.m.nodes:
             if not isinstance(node, ast.Call):
                 continue
             q = self.m.qual(node.func) or ""
@@ -528,7 +548,7 @@ class PyDetector:
                                           "effects": py_effects(fn, self.m, tname), "line": fn.lineno})
                 if last == "Server":  # low-level server: Tool(name="...") objects returned from list_tools
                     branches = self._call_tool_branches(var)
-                    for n in ast.walk(self.m.tree):
+                    for n in self.m.nodes:
                         if isinstance(n, ast.Call) and (self.m.qual(n.func) or "").endswith("Tool") and self.m.kw(n, "name") is not None:
                             tn = self.m.string(self.m.kw(n, "name"))
                             if tn:
@@ -649,8 +669,10 @@ class PyDetector:
             cls = self.m.enclosing_class(call)
             name = fn.name if fn else self.m.module.rsplit(".", 1)[-1]
             obj = f"{cls.name}.{fn.name}" if cls and fn else name
+            outer = self.m.enclosing_function(fn) if fn else None  # a closure can't be imported on its own
             self._fact("agent", name, "raw-" + (provider or "llm"), call, role="loop", object=obj, factory=False,
-                       function=fn.name if fn else None, cls=cls.name if cls else None,
+                       function=fn.name if fn else None, cls=cls.name if cls else None, params=self._signature(fn),
+                       **({"local_to": outer.name} if outer and not cls else {}),
                        tools=self._tool_names(tools_node), tool_refs=self._tool_refs(tools_node),
                        model=self._model(self.m.kw(call, "model")), prompt=self._prompt(call),
                        description=_first_sentence(ast.get_docstring(fn)) if fn else "", confidence="medium")
@@ -666,7 +688,8 @@ class PyDetector:
                 var = self.m.assigned_name(call)
                 fn = self.m.enclosing_function(call)
                 self._fact("agent", var or (fn.name if fn else last), "generic", call, role="fallback", ctor=q,
-                           object=var, factory=False, tools=tools, tool_refs=self._tool_refs(self.m.kw(call, "tools")),
+                           object=var, factory=False, in_function=fn.name if fn else None,
+                           tools=tools, tool_refs=self._tool_refs(self.m.kw(call, "tools")),
                            model=self._model(self.m.kw(call, "model", "llm")),
                            prompt=self._prompt(call), confidence="low",
                            description=f"Built with {q.lstrip('$')}(…, tools=…); no detector for this framework yet.")
@@ -772,7 +795,7 @@ class PyDetector:
         if last == "stdio_client":
             params = m.resolve(m.arg(call, 0))
             if isinstance(params, ast.Name):
-                for n in ast.walk(m.tree):
+                for n in m.nodes:
                     if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == params.id for t in n.targets):
                         params = n.value
             cmd = None
@@ -804,7 +827,8 @@ class PyDetector:
             pairs = [(self.m.string(k), v) for k, v in zip(value.keys, value.values, strict=False) if k is not None]
             impls = [(k, v.id) for k, v in pairs if k and isinstance(v, ast.Name)
                      and (v.id in self.m.functions or v.id in self.m.aliases)]
-            if len(impls) >= 1 and len(impls) == len(pairs) and len(pairs) <= 200:
+            named = all(TOOL_NAME.match(k) and re.search(r"[A-Za-z]", k) for k, _ in impls)  # not {"1": gen_1, ...}
+            if len(impls) >= 1 and len(impls) == len(pairs) and len(pairs) <= 200 and named:
                 for tname, fname in impls:
                     if fname in self.tool_funcs:
                         continue
@@ -825,7 +849,11 @@ class PyDetector:
                         d = {self.m.string(k): v for k, v in zip(e.keys, e.values, strict=False) if k is not None}
                         fd = d.get("function")
                         fdd = {self.m.string(k): v for k, v in zip(fd.keys, fd.values, strict=False) if k is not None} if isinstance(fd, ast.Dict) else d
+                        if not (isinstance(fd, ast.Dict) or "parameters" in fdd or "input_schema" in fdd) or not TOOL_NAME.match(tn):
+                            continue  # a table of records with a "name" (GST returns, menu items), not tool schemas
                         params = fdd.get("parameters") or fdd.get("input_schema")
+                        if isinstance(params, ast.Name):  # parameters=SCHEMA, defined elsewhere in the module
+                            params = self.m.resolve(params)
                         pnames: dict[str, str] = {}
                         if isinstance(params, ast.Dict):
                             pd = {self.m.string(k): v for k, v in zip(params.keys, params.values, strict=False) if k is not None}
@@ -934,7 +962,7 @@ class PyDetector:
 
     def _orm_models(self) -> None:
         m = self.m
-        for node in ast.walk(m.tree):
+        for node in m.nodes:
             if not isinstance(node, ast.ClassDef):
                 continue
             table = None
@@ -959,7 +987,7 @@ class PyDetector:
 
     def _settings_env(self) -> None:
         m = self.m
-        for node in ast.walk(m.tree):
+        for node in m.nodes:
             if isinstance(node, ast.ClassDef) and any((m.qual(b) or "").endswith("BaseSettings") for b in node.bases):
                 for st in node.body:
                     if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
@@ -971,7 +999,7 @@ class PyDetector:
 
     def _imports_deps(self) -> None:
         m = self.m
-        for node in ast.walk(m.tree):
+        for node in m.nodes:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""]
                 for n in names:
@@ -995,6 +1023,8 @@ def _host(url: str | None) -> str | None:
 
 def _sql_type(t: str | None) -> str:
     t = (t or "").lower()
+    if "uuid" in t:
+        return "UUID"
     if "int" in t:
         return "INTEGER"
     if any(x in t for x in ("float", "numeric", "decimal", "double", "real")):
@@ -1016,12 +1046,15 @@ def detect_python(inv: Inventory, add: Callable[[Fact], str]) -> int:
         return add(f)
 
     modules: list[PyModule] = []
+    roots = import_roots(inv)
     for sf in inv.code("python"):
         try:
-            tree = ast.parse(sf.text, filename=sf.rel)
+            with warnings.catch_warnings():  # the repo's own invalid escapes etc. are not ours to report
+                warnings.simplefilter("ignore")
+                tree = ast.parse(sf.text, filename=sf.rel)
         except (SyntaxError, ValueError):
             continue
-        mod = PyModule(sf, tree)
+        mod = PyModule(sf, tree, *roots(sf.rel))
         modules.append(mod)
     local_llm = {m.module.split(".")[0] for m in modules if m.llm_module} - {""}
     for mod in modules:
@@ -1030,7 +1063,144 @@ def detect_python(inv: Inventory, add: Callable[[Fact], str]) -> int:
     _resolve_imported_tools(modules, produced)
     _imported_tool_lists(modules, produced)
     _function_tools(modules, produced, collect)
+    _custom_base_agents(modules, produced, collect)
+    _fill_tool_params(modules, produced)
     return len(modules)
+
+
+def _fill_tool_params(modules: list[PyModule], facts: list[Fact]) -> None:
+    """Tools whose parameters weren't visible where they're registered (a dispatch table naming a handler from another
+    module, a schema without `properties`): take them from the handler function's signature."""
+    index = {f"{m.module}.{n}": fn for m in modules for n, fn in m.functions.items()}
+    by_name: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+    for key, fn in index.items():
+        by_name.setdefault(key.rsplit(".", 1)[-1], []).append(fn)
+    for f in facts:
+        a = f.attrs
+        if f.kind != "tool" or a.get("params") or not (a.get("import_ref") or a.get("function")):
+            continue
+        ref = (a.get("import_ref") or f"{a.get('module')}.{a.get('function')}").lstrip(".")
+        fn = index.get(ref) or next((index[k] for k in index if k.endswith("." + ref)), None)
+        if fn is None and len(by_name.get(ref.rsplit(".", 1)[-1], [])) == 1:  # a unique function of that name
+            fn = by_name[ref.rsplit(".", 1)[-1]][0]
+        if fn is not None:
+            a["params"] = PyDetector._func_params(None, fn)  # type: ignore[arg-type]
+            if not a.get("description"):
+                a["description"] = _first_sentence(ast.get_docstring(fn))
+
+
+PROJECT_FILES = ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt")
+IMPORTS_SRC = re.compile(r"^\s*(from|import)\s+src(\.|\s)", re.M)
+
+
+def import_roots(inv: Inventory) -> Callable[[str], tuple[str, bool]]:
+    """Where each file is imported from. In a monorepo a service folder with its own pyproject.toml or
+    requirements.txt is run from that folder, so `services/api/src/app.py` is `src.app` (if the code imports
+    `src.`) or `app` (src layout), not `services.api.src.app`. Returns rel -> (import root, strip "src.")."""
+    roots = sorted({f.rel.rsplit("/", 1)[0] for f in inv.files if "/" in f.rel and f.rel.rsplit("/", 1)[1] in PROJECT_FILES},
+                   key=len, reverse=True)
+    roots = [r for r in roots if not TEST_FILE.search(r + "/")]
+    keeps_src: dict[str, bool] = {}
+
+    def keep(root: str) -> bool:
+        if root not in keeps_src:
+            prefix = root + "/" if root else ""
+            keeps_src[root] = any(IMPORTS_SRC.search(f.text) for f in inv.code("python") if f.rel.startswith(prefix))
+        return keeps_src[root]
+
+    def of(rel: str) -> tuple[str, bool]:
+        root = next((r for r in roots if rel.startswith(r + "/")), "")
+        return root, not keep(root)
+
+    return of
+
+
+TOOL_NAME = re.compile(r"^[A-Za-z_][\w.-]{0,63}$")  # what model APIs accept as a tool name
+TEST_FILE = re.compile(r"(^|/)(tests?/|test_[^/]*\.py$|[^/]*_test\.py$|conftest\.py$)")
+
+
+TASK_METHODS = ("_execute_task", "execute_task", "execute", "process", "run", "_run", "invoke", "ainvoke", "handle")
+
+
+def _input_keys(classes: list[ast.ClassDef]) -> list[str]:
+    """The keys a class agent's task methods read from their input dict: `input.get("task_type")`, `payload["text"]`."""
+    keys: list[str] = []
+    for cls in classes:
+        for fn in cls.body:
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.name not in TASK_METHODS:
+                continue
+            args = [a.arg for a in fn.args.args if a.arg not in ("self", "cls")]
+            if not args:
+                continue
+            arg = args[0]
+            for n in ast.walk(fn):
+                k = None
+                if isinstance(n, ast.Subscript) and isinstance(n.value, ast.Name) and n.value.id == arg:
+                    k = n.slice.value if isinstance(n.slice, ast.Constant) else None
+                elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "get" \
+                        and isinstance(n.func.value, ast.Name) and n.func.value.id == arg and n.args \
+                        and isinstance(n.args[0], ast.Constant):
+                    k = n.args[0].value
+                if isinstance(k, str) and k not in keys:
+                    keys.append(k)
+    return keys[:12]
+
+
+def _init_params(classes: list[ast.ClassDef]) -> list[str]:
+    """The named parameters a class agent's constructor accepts (`llm`, `tools`, ...), so an adapter can pass what it
+    needs: its own `__init__`'s, plus its base class's when it has none or passes `**kwargs` on."""
+    params: list[str] = []
+    for cls in classes:
+        init = next((f for f in cls.body if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name == "__init__"), None)
+        if init:
+            params += [a.arg for a in [*init.args.args, *init.args.kwonlyargs] if a.arg not in ("self", "cls", *params)]
+            if not init.args.kwarg:
+                break
+    return params[:16]
+
+
+def _custom_base_agents(modules: list[PyModule], facts: list[Fact], add: Callable[[Fact], str]) -> None:
+    """`class InvoiceAgent(BaseAgent)` where BaseAgent is the repository's own agent class (its __init__ takes
+    `tools`): each subclass is an agent. Tools come from `super().__init__(tools=...)` or a module-level `tools` list."""
+    bases: dict[str, ast.ClassDef] = {}
+    for mod in modules:
+        if TEST_FILE.search(mod.sf.rel):
+            continue
+        for node in mod.nodes:
+            if isinstance(node, ast.ClassDef) and "Agent" in node.name:
+                init = next((s for s in node.body if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)) and s.name == "__init__"), None)
+                if init and any(a.arg == "tools" for a in [*init.args.args, *init.args.kwonlyargs]):
+                    bases[node.name] = node
+    if not bases:
+        return
+    have = {(f.attrs.get("file"), f.attrs.get("cls") or f.attrs.get("object") or f.name) for f in facts if f.kind == "agent"}
+    for mod in modules:
+        if TEST_FILE.search(mod.sf.rel):
+            continue
+        for node in mod.nodes:
+            if not isinstance(node, ast.ClassDef) or (mod.sf.rel, node.name) in have:
+                continue
+            base = next(((mod.qual(b) or "").rsplit(".", 1)[-1] for b in node.bases
+                         if (mod.qual(b) or "").rsplit(".", 1)[-1] in bases and (mod.qual(b) or "").rsplit(".", 1)[-1] != node.name), None)
+            if base is None:
+                continue
+            det = PyDetector(mod, add)
+            sup = next((n for n in ast.walk(node) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                        and n.func.attr == "__init__" and isinstance(n.func.value, ast.Call)
+                        and isinstance(n.func.value.func, ast.Name) and n.func.value.func.id == "super"), None)
+            tools_node = mod.kw(sup, "tools") if sup is not None else None
+            tools = det._tool_names(tools_node) if tools_node is not None else []
+            if not tools and "tools" in mod.consts:
+                tools_node = mod.consts["tools"]
+                tools = det._tool_names(tools_node)
+            runnable = any("Runnable" in (mod.qual(b) or "") or "Runnable" in ast.unparse(b) for b in bases[base].bases)
+            det._fact("agent", node.name, "langchain" if runnable else "custom", node, role="class", object=node.name,
+                      factory=node.name, cls=node.name, tools=tools, tool_refs=det._tool_refs(tools_node),
+                      input_keys=_input_keys([node, bases[base]]), runnable=runnable, init_params=_init_params([node, bases[base]]),
+                      model=det._model(mod.kw(sup, "llm", "model")) if sup is not None else {},
+                      description=_first_sentence(ast.get_docstring(node))
+                      or f"Built on {base}, the repository's own agent class{' (a LangChain Runnable)' if runnable else ''}.",
+                      confidence="medium")
 
 
 def _imported_tool_lists(modules: list[PyModule], facts: list[Fact]) -> None:

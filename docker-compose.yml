@@ -79,10 +79,17 @@ services:
       CRUCIBLE_VIEWER_TOKEN: ${CRUCIBLE_VIEWER_TOKEN:-}
       # Import codebase: folders the dashboard may read (your code is mounted at /import)
       CRUCIBLE_DISCOVER_ROOTS: /import:/workspace
+      # so a path pasted from the host (D:\code\my-repo) is found at /import/my-repo
+      CRUCIBLE_PATH_MAP: ${CRUCIBLE_IMPORT_DIR:-}=/import
+      # optional: describe imported code with Claude or OpenAI instead of the local model (or paste a key in the import)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - results:/workspace/examples/${CRUCIBLE_PROJECT:-support-agent}/.crucible
       # the folder holding the repositories you want to import; approved tests are written into them (agent-tests/)
       - ${CRUCIBLE_IMPORT_DIR:-./examples}:/import
+      # Python environments built for imported projects (Setup → Install dependencies): survive rebuilds
+      - envs:/home/runner/.cache/agentcrucible/envs
     ports:
       - "8000:8000"
     depends_on:
@@ -104,3 +111,4 @@ volumes:
   results:
     name: agentcrucible_results_${CRUCIBLE_PROJECT:-support-agent}   # one results volume per project
   ollama-models:
+  envs:

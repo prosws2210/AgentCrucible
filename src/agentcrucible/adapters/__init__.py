@@ -63,20 +63,22 @@ def serve(turn: Turn) -> None:
         out.flush()
 
 
+_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _loop() -> asyncio.AbstractEventLoop:
+    """One event loop for the whole conversation, on its own thread. A loop per turn (asyncio.run) closes when the turn
+    ends, and clients the agent created on it (httpx, the OpenAI SDK) fail on the next turn: "Event loop is closed"."""
+    global _LOOP
+    if _LOOP is None:
+        _LOOP = asyncio.new_event_loop()
+        threading.Thread(target=_LOOP.run_forever, daemon=True, name="agentcrucible-loop").start()
+    return _LOOP
+
+
 def run_sync(value: Any) -> Any:
     if inspect.isawaitable(value):
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(_await(value))
-        result: dict[str, Any] = {}
-
-        def runner() -> None:
-            result["v"] = asyncio.run(_await(value))
-        t = threading.Thread(target=runner)
-        t.start()
-        t.join()
-        return result["v"]
+        return asyncio.run_coroutine_threadsafe(_await(value), _loop()).result()
     return value
 
 
@@ -107,6 +109,33 @@ def as_text(reply: Any) -> str:
     if isinstance(reply, list) and reply:
         return as_text(reply[-1])
     return str(reply)
+
+
+def as_message(history: list[dict[str, str]]) -> str:
+    """The latest user message, with the conversation so far in front of it, for agents that take one message per call
+    and keep no memory between calls (a task dict): without it, details given two turns ago are lost."""
+    if len(history) <= 1:
+        return history[-1]["content"] if history else ""
+    earlier = "\n".join(f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}" for m in history[:-1])
+    return f"Conversation so far:\n{earlier}\n\nLatest message from the user:\n{history[-1]['content']}"
+
+
+def chat_model() -> Any:
+    """A LangChain chat model on AgentCrucible's gateway, for agents that take one (`Agent(llm=chat_model())`).
+    Uses the OpenAI-format endpoint with langchain_openai, else the Anthropic one with langchain_anthropic."""
+    model = os.environ.get("CRUCIBLE_MODEL") or "agentcrucible"
+    try:
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model=model, base_url=os.environ.get("OPENAI_BASE_URL"), api_key=os.environ.get("OPENAI_API_KEY") or "agentcrucible")
+    except ImportError:
+        pass
+    try:
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(model=model, base_url=os.environ.get("ANTHROPIC_BASE_URL"),  # type: ignore[call-arg]
+                             api_key=os.environ.get("ANTHROPIC_API_KEY") or "agentcrucible")
+    except ImportError:
+        raise ImportError("chat_model() needs langchain_openai or langchain_anthropic in the agent's environment; "
+                          "or pass your own client to the agent in this adapter") from None
 
 
 # ---------------------------------------------------------------- environment

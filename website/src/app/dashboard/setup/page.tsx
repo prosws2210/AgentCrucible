@@ -4,19 +4,31 @@ import Link from "next/link";
 import { PageHeader, useProject } from "@/components/app/AppShell";
 import { useResource } from "@/components/app/hooks";
 import { IconCheck, IconRefresh, IconX } from "@/components/Icons";
+import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, Card, CardHeader, Code, Spinner } from "@/components/ui";
-import type { AuthStatus, Config, Doctor } from "@/lib/api";
+import { api, type AuthStatus, type Config, type Doctor } from "@/lib/api";
 import { GITHUB } from "@/lib/site";
 
 const FIX: Record<string, string> = {
-  model: "Start your model server (e.g. `ollama serve` and `ollama pull <model>`), or point `llm.upstream_base_url` in crucible.yaml at your provider. Keys go in CRUCIBLE_LLM_API_KEY / CRUCIBLE_ANTHROPIC_API_KEY.",
+  model: "Local model: start the server (e.g. `ollama serve`, then `ollama pull <model>`). Hosted provider: check `llm.upstream_base_url` in crucible.yaml, the model name, and the key in CRUCIBLE_LLM_API_KEY / CRUCIBLE_ANTHROPIC_API_KEY.",
   agent: "Check `agent.command` (stdio) or `agent.url` (http) in crucible.yaml. Paths are relative to the folder that holds crucible.yaml.",
   config: "Add scenario YAML files under the paths listed in `suites`.",
+  python: "Install the code's dependencies below (Python for the agents), or set `python:` in crucible.yaml to the virtual environment that has them.",
   mcp: "Local server: run its command by hand in the project folder to see the error; it must speak MCP over stdio. Remote server: check the URL, that it serves Streamable HTTP (or set `transport: sse`), and its `headers`.",
 };
 
+// an agent row fails for different reasons; the generic hint only fits a wrong command or URL
+function fixFor(ch: Doctor["checks"][number]): string {
+  const kind = ch.id.split(":")[0];
+  if (kind === "agent" && /No module named|ModuleNotFoundError|ImportError/.test(ch.detail)) return FIX.python;
+  if (kind === "agent" && /scaffold/.test(ch.detail)) return "Open the adapter file named in its command and fill in `turn`: send `message` to the agent and return its reply as text.";
+  return FIX[kind] ?? "See the adoption guide.";
+}
+
 export default function SetupPage() {
-  const doctor = useResource<Doctor>("/api/doctor");
+  const [nonce, setNonce] = useState(0);  // Re-check (or a finished install) asks for a fresh check, not a cached one
+  const doctor = useResource<Doctor>(`/api/doctor${nonce ? `?fresh=true&n=${nonce}` : ""}`);
+  const recheck = useCallback(() => setNonce((n) => n + 1), []);
   const cfg = useResource<Config>("/api/config");
   const auth = useResource<AuthStatus>("/api/auth/status");
   const { canWrite } = useProject();
@@ -35,7 +47,7 @@ export default function SetupPage() {
         <CardHeader
           title="Connection check"
           sub="Starts each local MCP server once, connects to remote ones, and asks the model server for its models."
-          action={<Button variant="secondary" onClick={doctor.reload}><IconRefresh className="h-3.5 w-3.5" /> Re-check</Button>}
+          action={<Button variant="secondary" onClick={recheck}><IconRefresh className="h-3.5 w-3.5" /> Re-check</Button>}
         />
         {!doctor.data ? (
           <div className="flex items-center gap-2 px-5 py-8 text-[13px] text-dim"><Spinner /> Checking…</div>
@@ -49,13 +61,15 @@ export default function SetupPage() {
                 <div className="min-w-0">
                   <div className="text-[13.5px] font-medium">{ch.label}</div>
                   <div className="break-words text-[12.5px] text-mute">{ch.detail}</div>
-                  {!ch.ok && <div className="mt-1.5 text-[12.5px] text-warn">How to fix: {FIX[ch.id.split(":")[0]] ?? "See the adoption guide."}</div>}
+                  {!ch.ok && <div className="mt-1.5 text-[12.5px] text-warn">How to fix: {fixFor(ch)}</div>}
                 </div>
               </li>
             ))}
           </ul>
         )}
       </Card>
+
+      <PythonEnv canWrite={canWrite} onReady={recheck} />
 
       <div className="mt-5 grid gap-5 lg:grid-cols-2">
         <Card>
@@ -146,6 +160,82 @@ export default function SetupPage() {
         </Card>
       </div>
     </>
+  );
+}
+
+type EnvStatus = {
+  python: string; source: string; managed: string; requirements: string[];
+  install: null | { status: "running" | "done" | "failed"; log: { t: number; message: string }[]; error: string | null };
+};
+
+/** Which Python runs the agents, and a button that builds one with the code's own dependencies. */
+function PythonEnv({ canWrite, onReady }: { canWrite: boolean; onReady: () => void }) {
+  const [env, setEnv] = useState<EnvStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const running = env?.install?.status === "running";
+  useEffect(() => {
+    let live = true;
+    const load = () => api<EnvStatus>("/api/env").then((e) => {
+      if (!live) return;
+      setEnv((old) => {
+        if (old?.install?.status === "running" && e.install?.status === "done") onReady();  // re-check the agents with it
+        return e;
+      });
+    }).catch((e) => live && setError((e as Error).message));
+    load();
+    const t = running ? setInterval(load, 2000) : undefined;
+    return () => { live = false; if (t) clearInterval(t); };
+  }, [running, onReady]);
+
+  async function install() {
+    setError(null);
+    try {
+      const job = await api<EnvStatus["install"]>("/api/env/install", { method: "POST" });
+      setEnv((e) => (e ? { ...e, install: job } : e));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  const own = env?.source === "AgentCrucible's own Python";
+  return (
+    <Card className="mt-5">
+      <CardHeader title="Python for the agents"
+        sub="What `python` in an agent's command means. The agents' code needs its own dependencies; AgentCrucible can install them into an environment of their own."
+        action={env && env.requirements.length > 0 ? (
+          <Button variant={own ? "primary" : "secondary"} onClick={install} disabled={!canWrite || running}>
+            {running ? <><Spinner /> Installing…</> : own ? "Install dependencies" : "Reinstall dependencies"}
+          </Button>
+        ) : undefined} />
+      {!env ? <Loading /> : (
+        <div className="space-y-2.5 px-5 py-4 text-[13px]">
+          <EnvRow k="Interpreter"><code className="break-all font-mono text-[12px]">{env.python}</code></EnvRow>
+          <EnvRow k="From">{env.source}{own && env.requirements.length > 0 && <span className="text-warn"> · the code&apos;s dependencies aren&apos;t installed here</span>}</EnvRow>
+          <EnvRow k="Dependencies">{env.requirements.length ? env.requirements.map((r) => <code key={r} className="mr-2 font-mono text-[12px]">{r}</code>) : <span className="text-dim">none found</span>}</EnvRow>
+          {env.install && (
+            <div className={`mt-3 rounded-lg border p-3 ${env.install.status === "failed" ? "border-bad/40" : "border-line"} bg-panel-2/40`}>
+              <div className="mb-1.5 text-[12.5px] font-medium">
+                {env.install.status === "running" ? "Installing (big dependencies like torch take several minutes)…"
+                  : env.install.status === "done" ? "Installed: the agents now run with it" : "The install failed"}
+              </div>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11.5px] text-mute">
+                {env.install.log.slice(-12).map((l) => `${l.t}s  ${l.message}`).join("\n")}
+              </pre>
+            </div>
+          )}
+          {error && <p className="text-[12.5px] text-bad">{error}</p>}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function EnvRow({ k, children }: { k: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <span className="w-28 shrink-0 text-mute">{k}</span>
+      <span className="min-w-0 flex-1">{children}</span>
+    </div>
   );
 }
 

@@ -94,6 +94,17 @@ class Store:
         with self.engine.begin() as c:
             c.execute(update(runs).where(runs.c.id == run_id).values(**values))
 
+    def delete_runs(self, project: str) -> int:
+        """Forget a project's runs in the index (their files are archived by the caller)."""
+        with self.engine.begin() as c:
+            return c.execute(runs.delete().where(runs.c.project == project)).rowcount
+
+    def interrupt_unfinished(self, why: str) -> int:
+        """Runs left queued or running by a server that stopped: nothing will finish them."""
+        with self.engine.begin() as c:
+            return c.execute(update(runs).where(runs.c.status.in_(("queued", "running")))
+                             .values(status="interrupted", error=why)).rowcount
+
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self.engine.connect() as c:
             r = c.execute(select(runs).where(runs.c.id == run_id)).first()
