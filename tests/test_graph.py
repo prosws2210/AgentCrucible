@@ -78,3 +78,22 @@ def test_graph_api_for_hand_written_and_imported_projects(tmp_path, monkeypatch)
         jg = c.get(f"/api/discover/{jid}/graph").json()
         assert jg["counts"]["agent"] == 1
         assert "Knowledge graph" in c.get(f"/api/discover/{jid}/graph.html").text
+
+
+def test_agents_found_in_tests_and_scripts_stay_off_the_map(tmp_path):
+    repo = tmp_path / "acme"
+    shutil.copytree(DEMO, repo, ignore=shutil.ignore_patterns("agent-tests", "__pycache__"))
+    d = discover(repo)
+    build_plan(d, repo)
+    real = next(a for a in d.agents if a.include)
+    fixture = real.model_copy(update={"id": "fixture-agent", "name": "Fixture Agent", "include": False})
+    d.agents.append(fixture)
+    ev = d.facts[real.evidence[0]].model_copy(deep=True)
+    ev.evidence[0].file = "tests/unit/test_agent.py"
+    ev.attrs["file"] = "tests/unit/test_agent.py"
+    d.facts["fixture-fact"] = ev
+    fixture.evidence = ["fixture-fact"]
+    ids = {n["id"] for n in build_graph(d, repo)["nodes"]}
+    assert f"agent:{real.id}" in ids and "agent:fixture-agent" not in ids
+    fixture.include = True  # ticked in the review: then it's part of what's tested, and shown
+    assert "agent:fixture-agent" in {n["id"] for n in build_graph(d, repo)["nodes"]}

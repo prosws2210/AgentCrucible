@@ -117,9 +117,13 @@ def build_graph(d: Discovery, root: Path | None = None) -> dict[str, Any]:
             return None
         return node(f"file:{rel}", "file", Path(rel).name, rel, None, path=rel)
 
-    # the things discovery found, each defined in a file
+    # the things discovery found, each defined in a file; an unticked "agent" in a test or a script is a fixture, not
+    # part of the system, so it stays in the review (where it can be ticked) but not on the map
+    from .synthesize import SCRIPT_FILE, TEST_FILE
     for ag in d.agents:
         f, ln = _file_of(d, ag.evidence)
+        if not ag.include and f and (TEST_FILE.search(f) or SCRIPT_FILE.search(f)):
+            continue
         node(f"agent:{ag.id}", "agent", ag.name, f, ln, framework=ag.framework, purpose=ag.purpose,
              included=ag.include, model=ag.model.value or ag.model.env, service=ag.service, memory=ag.memory)
         edge(file_node(f) or "", f"agent:{ag.id}", "defines")

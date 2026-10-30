@@ -62,6 +62,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [health, setHealth] = useState<Health | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [auth, setAuth] = useState<AuthStatus | null>(null);
+  // the connection dropped while a page was open: keep the page (and anything typed) and reconnect behind a banner
+  const [lost, setLost] = useState(false);
+  const shown = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -80,18 +83,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setHealth(h);
       setProject(p);
       setState("ready");
+      shown.current = true;
+      setLost(false);
       api<{ models: string[] }>("/api/models").then((m) => setModels(m.models)).catch(() => setModels([]));
     } catch (e) {
       // a server that's restarting fails with a network error, not an API one: offline either way (it retries itself)
-      setState(e instanceof ApiError && e.status === 401 ? "login" : "offline");
+      if (e instanceof ApiError && e.status === 401) setState("login");
+      else if (shown.current) setLost(true);
+      else setState("offline");
     }
   }, []);
 
   useEffect(() => {  // while the server is unreachable, keep trying, so a restart doesn't need a manual reload
-    if (state !== "offline") return;
+    if (state !== "offline" && !lost) return;
     const t = setInterval(refresh, 3000);
     return () => clearInterval(t);
-  }, [state, refresh]);
+  }, [state, lost, refresh]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load; state is set after the requests resolve
@@ -128,6 +135,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           )}
           {state === "offline" && <Offline onRetry={refresh} />}
+          {lost && state === "ready" && (
+            <div role="status" className="mb-4 flex items-center gap-2 rounded-lg border border-warn/40 bg-warn/[0.06] px-3 py-2 text-[12.5px] text-mute">
+              <Spinner /> Lost the connection to the server. Reconnecting… nothing on this page is lost.
+            </div>
+          )}
           {state === "login" && <Login onDone={refresh} />}
           {state === "ready" && project && health && (
             <ProjectCtx.Provider value={{ project, projects, health, models, refresh, switchProject, canWrite: auth?.role !== "viewer" }}>
