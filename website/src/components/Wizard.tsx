@@ -142,7 +142,7 @@ export function Wizard() {
         <ul className="mt-4 grid gap-2 text-[12.5px] text-mute sm:grid-cols-3">
           <Li icon={<IconServer className="h-3.5 w-3.5" />}>Runs on your machine. Nothing leaves it.</Li>
           <Li icon={<IconGit className="h-3.5 w-3.5" />}>Config and tests live in your repo.</Li>
-          <Li icon={<IconCheck className="h-3.5 w-3.5" />}>Open source, Apache-2.0.</Li>
+          <Li icon={<IconCheck className="h-3.5 w-3.5" />}>Source available (FSL-1.1): free for your own team.</Li>
         </ul>
       </div>
     </div>

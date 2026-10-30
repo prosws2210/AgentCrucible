@@ -433,4 +433,12 @@ or in the dashboard, or [open an issue](https://github.com/prosws2210/AgentCruci
 
 ## License
 
-Apache-2.0
+AgentCrucible is **source-available** under the [Functional Source License, Version 1.1, ALv2 Future License
+(FSL-1.1-ALv2)](LICENSE). You may use, copy, modify and redistribute it for any purpose except a **Competing Use**:
+offering it, or something substantially similar, to others as a commercial product or service. Using it inside your
+own company, for education or research, or while providing professional services to a licensee is allowed. Each
+version also becomes available under the Apache License 2.0 two years after its release.
+
+Versions up to and including **v0.2.0** were released under Apache-2.0 and remain under it.
+
+The license doesn't grant any right to use the AgentCrucible name for other products.

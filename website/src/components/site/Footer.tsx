@@ -36,7 +36,7 @@ export function Footer() {
               <a href={`${GITHUB}/releases/tag/v${VERSION}`} className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-1 text-mute transition-colors hover:border-ember/50 hover:text-fg">
                 <span className="h-1.5 w-1.5 rounded-full bg-ok" /> v{VERSION} released
               </a>
-              <span className="rounded-full border border-line bg-panel px-2.5 py-1 text-mute">Apache-2.0</span>
+              <span className="rounded-full border border-line bg-panel px-2.5 py-1 text-mute">FSL-1.1</span>
               <span className="rounded-full border border-line bg-panel px-2.5 py-1 text-mute">Self-hosted</span>
             </div>
             <div className="mt-6">
@@ -70,7 +70,7 @@ export function Footer() {
 
         {/* bottom bar */}
         <div className="mt-14 flex flex-col-reverse gap-4 border-t border-line/70 py-6 text-[12.5px] text-dim sm:flex-row sm:items-center sm:justify-between">
-          <div>© {new Date().getFullYear()} Shakti Swaroop Sahu · Open source under the <a href={blob("LICENSE")} className="text-mute hover:text-fg">Apache-2.0 license</a></div>
+          <div>© {new Date().getFullYear()} Shakti Swaroop Sahu · Source available under the <a href={blob("LICENSE")} className="text-mute hover:text-fg">Functional Source License (FSL-1.1-ALv2)</a></div>
           <div className="flex items-center gap-1">
             <BugReport className="mr-2 text-mute transition-colors hover:text-fg" />
             <a href={GITHUB} aria-label="GitHub" className="rounded-lg p-2 text-mute transition-colors hover:bg-white/5 hover:text-fg"><GitHubIcon className="h-[18px] w-[18px]" /></a>

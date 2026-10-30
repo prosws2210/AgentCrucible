@@ -22,7 +22,7 @@ export default function Features() {
   return (
     <>
       <PageHero eyebrow="Features" toc={[["dashboard", "Dashboard"], ["cli", "CLI"], ["ci", "Pull-request gate"], ["more", "Audits, judges, replay…"], ["integrations", "Integrations"]]} title={<>Everything you need to <Serif>trust</Serif> an agent change</>}
-        lead="A dashboard for the team, a CLI for your terminal, a gate for your pull requests and an audit for your tool servers. All self-hosted, all open source.">
+        lead="A dashboard for the team, a CLI for your terminal, a gate for your pull requests and an audit for your tool servers. All self-hosted, all source-available.">
         <Cta href="/start/" primary>Get started free</Cta>
         <Cta href="/demo/">See a real run</Cta>
       </PageHero>

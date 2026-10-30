@@ -803,7 +803,7 @@ const outro: Scene = {
   duration: 9,
   cues: [
     { at: 0, text: "That's AgentCrucible: agents imported from your code, checks on what they actually did, and a verdict you can trust." },
-    { at: 5, text: "Free, open source, and running on your own machine. Get started in five minutes." },
+    { at: 5, text: "Free for your own team, and running on your own machine. Get started in five minutes." },
   ],
   render: (t) => (
     <div className="flex h-full flex-col items-center justify-center text-center">

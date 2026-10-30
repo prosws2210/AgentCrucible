@@ -10,7 +10,7 @@ export const FAQ_GROUPS: [string, [string, React.ReactNode][]][] = [
   ]],
   ["Data, security and cost", [
     ["Does my data leave my machine?", "No. AgentCrucible is self-hosted: the CLI, the dashboard and the database run where you run them. The only outside calls are the ones your agent already makes to your model provider."],
-    ["What does it cost?", "The software is free and open source (Apache-2.0). Running tests costs whatever your model provider charges; with local models it is free, and recorded responses can be replayed at no cost."],
+    ["What does it cost?", "The software is free for your own team: it is source-available under the Functional Source License (FSL-1.1-ALv2), which allows any use except offering it, or something substantially similar, as a competing commercial product or service. Each version becomes Apache-2.0 two years after its release, and versions up to v0.2.0 are Apache-2.0 already. Running tests costs whatever your model provider charges; with local models it is free, and recorded responses can be replayed at no cost."],
     ["Can I share the dashboard with my team?", "Yes. Set CRUCIBLE_API_TOKEN (full access) and optionally CRUCIBLE_VIEWER_TOKEN (read-only) and the dashboard asks for a token. For per-person accounts, put your SSO proxy in front of it."],
     ["Is it safe to run an untrusted agent?", "Agents and MCP servers run as child processes with a fresh temp directory per episode. For untrusted code use the container or the Kubernetes setup (non-root, read-only filesystem, egress limited by a NetworkPolicy)."],
   ]],

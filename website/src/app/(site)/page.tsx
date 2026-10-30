@@ -41,7 +41,7 @@ function Hero() {
         <div className="animate-rise">
           <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-line bg-panel/80 px-3 py-1 text-[12.5px] text-mute">
             <span className="h-1.5 w-1.5 rounded-full bg-ok" />
-            Open source · runs on your machine · free with local models
+            Source available · runs on your machine · free with local models
           </div>
           <h1 className="text-balance text-[42px] font-semibold leading-[1.04] tracking-[-0.03em] sm:text-[58px]">
             Catch your AI agent&apos;s mistakes <Serif><span className="ember-text pr-1">before your users do</span></Serif>
@@ -286,7 +286,7 @@ crucible run --label baseline -k 5`} />
 const TEAMS = [
   { icon: IconServer, t: "Self-hosted", b: "Runs on your laptop, your CI or your cluster. Prompts, data and results never leave your infrastructure." },
   { icon: IconShield, t: "Access control", b: "Full-access and read-only tokens for the dashboard and API, with HttpOnly session cookies." },
-  { icon: IconBolt, t: "Free to run", b: "Apache-2.0, with local models through Ollama. Recorded responses replay at no cost." },
+  { icon: IconBolt, t: "Free to run", b: "Free for your own team (FSL-1.1), with local models through Ollama. Recorded responses replay at no cost." },
   { icon: IconScenarios, t: "Tests live in your repo", b: "Scenarios are YAML files, reviewed in pull requests like any other code." },
   { icon: IconGit, t: "CI and Kubernetes", b: "A GitHub Action for every pull request, and a Helm chart that shards big suites across pods." },
   { icon: IconCheck, t: "No lock-in", b: "No SDK in your agent: any framework, any OpenAI- or Anthropic-compatible model, any MCP server." },

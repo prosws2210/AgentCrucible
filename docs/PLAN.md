@@ -129,7 +129,7 @@ Companion docs: [ARCHITECTURE.md](./ARCHITECTURE.md) · [USER-EXPERIENCE.md](./U
 | # | Decision | Options | My recommendation |
 |---|----------|---------|-------------------|
 | **D1** | Package / product name (`crucible` is taken on PyPI and npm) | `agentcrucible` (free on both), or your own idea; I'll check availability | Pick something memorable; keep "AgentCrucible" only as a description |
-| **D2** | License | Apache-2.0, MIT, AGPL | **Apache-2.0**: companies can adopt it, patent grant included |
+| **D2** | License | Apache-2.0, MIT, AGPL | **Apache-2.0**: companies can adopt it, patent grant included. *Changed after v0.2.0 to FSL-1.1-ALv2 (source-available, Apache-2.0 after two years); see [LICENSE](../LICENSE).* |
 | **D3** | Public from day 1? | Public repo now, or private until v0.1 | **Public from week 1**: commit history is itself evidence |
 | **D4** | Model providers | OpenRouter (one key, many models), OpenAI, Anthropic, Groq (free tier), local Ollama | **OpenRouter + Ollama**: one bill, plus free local runs |
 | **D5** | API budget for 12 weeks | — | **$40–80** total (caching + local models keep it low) |

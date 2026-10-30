@@ -7,7 +7,7 @@
   <version>0.3.0</version>
   <name>AgentCrucible adapters for Java</name>
   <description>Drive Java agents (Spring AI, LangChain4j, plain classes) from AgentCrucible: stdio protocol, tool tracing, mocks and blocked tools. No dependencies.</description>
-  <licenses><license><name>Apache-2.0</name></license></licenses>
+  <licenses><license><name>FSL-1.1-ALv2</name><url>https://fsl.software/FSL-1.1-ALv2.template.md</url></license></licenses>
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

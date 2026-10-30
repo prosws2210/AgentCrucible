@@ -4,6 +4,11 @@ All notable changes to AgentCrucible. Versions follow [Semantic Versioning](http
 
 ## [Unreleased]
 
+### Changed
+- **License:** new versions are source-available under the Functional Source License (FSL-1.1-ALv2): any use except
+  offering AgentCrucible, or something substantially similar, as a competing commercial product or service; each
+  version becomes Apache-2.0 two years after its release. v0.2.0 and earlier remain Apache-2.0.
+
 ### Added
 - **Report a bug:** a form in the site footer and the dashboard sidebar (phone header too) that mails the maintainer
   "BUG REPORTED : <project>" with the report, through Web3Forms when `BUG_REPORT_KEY` is set at build time (`.env` for

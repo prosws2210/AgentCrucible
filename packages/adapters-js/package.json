@@ -2,7 +2,7 @@
   "name": "@agentcrucible/adapters",
   "version": "0.3.0",
   "description": "Drive TypeScript and JavaScript agents (Vercel AI SDK, Mastra, OpenAI Agents JS, LangGraph JS, plain functions) from AgentCrucible: stdio protocol, tool tracing, mocks and blocked tools.",
-  "license": "Apache-2.0",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

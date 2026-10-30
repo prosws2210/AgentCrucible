@@ -93,7 +93,7 @@ export function Tile({ icon, title, children, className = "" }: { icon?: React.R
   );
 }
 
-export function CtaBand({ title = <>Know your agent works <Serif>before</Serif> you ship it</>, sub = "Five minutes to connect. Free, open source and running on your own machine." }: {
+export function CtaBand({ title = <>Know your agent works <Serif>before</Serif> you ship it</>, sub = "Five minutes to connect. Free for your own team and running on your own machine." }: {
   title?: React.ReactNode;
   sub?: string;
 }) {

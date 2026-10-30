@@ -3,14 +3,13 @@ name = "agentcrucible"
 dynamic = ["version"]
 description = "Regression testing for AI agents and MCP servers: sandboxed episodes, trajectory checks, calibrated judges and statistically sound comparisons."
 readme = "README.md"
-license = "Apache-2.0"
+license = "FSL-1.1-ALv2"
 authors = [{ name = "Shakti Swaroop Sahu" }]
 requires-python = ">=3.11"
 keywords = ["ai-agents", "llm", "evaluation", "regression-testing", "mcp", "model-context-protocol", "llmops"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
