@@ -36,9 +36,13 @@ def test_the_repos_dotenv_is_neutralised_in_tests_without_reading_values(tmp_pat
     assert "sk-live-very-secret" not in d.model_dump_json() and "prod-db" not in d.model_dump_json()
     build_plan(d, repo)
     p = d.plans[0]
-    assert {p.env.get(n) for n in ("DATABASE_URL", "LLM_GATEWAY_ENABLED", "OPENAI_API_KEY")} == {""}
+    # harmless values of the right shape: a switch stays off, a key is fake, the database is mapped to the test one
+    assert p.env["DATABASE_URL"] == "" and p.env["LLM_GATEWAY_ENABLED"] == "" and p.env["OPENAI_API_KEY"] == "agentcrucible-test"
     assert "UPLOAD_DIR" not in p.env  # harmless settings keep the code's own value
-    assert any(".env" in w and "blank" in w for w in p.warnings)
+    assert any(".env" in w and "test values" in w for w in p.warnings)
+    from agentcrucible.discover.plan import test_placeholder
+    assert test_placeholder("DO_SPACES_ENDPOINT") == "http://127.0.0.1:9"  # boto3 rejects "" at import
+    assert test_placeholder("HTTPS_PROXY") == "" and test_placeholder("SENTRY_DSN") == ""
 
 
 def test_passing_a_variable_through_is_explicit(monkeypatch):

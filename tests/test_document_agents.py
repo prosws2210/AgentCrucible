@@ -57,3 +57,15 @@ def test_an_agent_that_reads_a_file_gets_the_document_named_in_the_conversation(
                           capture_output=True, text=True, timeout=60)
     reply = json.loads(proc.stdout.splitlines()[0])["content"]
     assert reply.startswith("invoice_sample.txt: INVOICE 42"), proc.stderr[-500:]
+
+
+def test_a_constructor_that_takes_keys_gets_the_gateway_s():
+    from agentcrucible.discover.plan import _class_py
+    from agentcrucible.discover.schema import Agent
+
+    code = _class_py(Agent(id="x", name="X", framework="custom"), "m", "A", "message", ["message"], False, ["."], [],
+                     "llm", api_keys=["anthropic_api_key", "openai_api_key"])
+    line = next(ln for ln in code.splitlines() if ln.startswith("agent = "))
+    assert 'llm=chat_model()' in line and 'anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY")' in line
+    assert 'openai_api_key=os.environ.get("OPENAI_API_KEY")' in line and "import os" in code
+    compile(code, "adapter.py", "exec")
