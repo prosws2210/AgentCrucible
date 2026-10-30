@@ -107,3 +107,19 @@ def test_episodes_cut_short_by_cancel_are_not_counted_as_failures(tmp_path):
     run = asyncio.run(runner.run(pairs))
     assert run["cancelled"] and len(calls) == 2  # the third never started
     assert [e["passed"] for e in run["episodes"]] == [True]  # the killed one isn't a failure
+
+
+def test_the_repo_s_other_services_are_named_as_dependencies(tmp_path):
+    import shutil
+    from pathlib import Path
+
+    from agentcrucible.discover import build_plan, discover
+
+    repo = tmp_path / "acme"
+    shutil.copytree(Path(__file__).resolve().parent.parent / "examples" / "import-demo", repo,
+                    ignore=shutil.ignore_patterns("agent-tests", "__pycache__"))
+    (repo / ".env").write_text("REGISTRATION_SERVICE_URL=http://registration:8001\nAUTH_SERVICE_URL=http://auth:8002\n")
+    d = discover(repo)
+    build_plan(d, repo)
+    assert any("AUTH_SERVICE_URL, REGISTRATION_SERVICE_URL" in w for w in d.plans[0].warnings)
+    assert d.plans[0].env["REGISTRATION_SERVICE_URL"] == "http://127.0.0.1:9"  # pointing nowhere, never the real one

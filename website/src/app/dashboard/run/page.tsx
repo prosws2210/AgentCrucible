@@ -31,6 +31,8 @@ function RunView() {
   if (!data) return <div className="flex items-center justify-center gap-2 py-40 text-[13px] text-dim"><Spinner /> Loading run…</div>;
 
   const r = data.run;
+  const gaps = (data.episodes ?? []).filter((e) => isDataGap(e.error));
+  const gapAgents = [...new Set(gaps.map((e) => data.scenario_meta?.[e.scenario_id]?.agent).filter(Boolean))];
   return (
     <>
       <Link href="/dashboard/runs/" className="text-[13px] text-mute hover:text-fg">← All runs</Link>
@@ -51,7 +53,7 @@ function RunView() {
       </div>
 
       {(r.status === "queued" || r.status === "running") && <Progress detail={data} />}
-      {(r.status === "failed" || r.status === "cancelled" || r.status === "interrupted" || !!data.skipped?.length) && (
+      {(r.status === "failed" || r.status === "cancelled" || r.status === "interrupted" || !!data.skipped?.length || gaps.length > 0) && (
         <div className="mb-5 space-y-2.5">
           {r.status === "failed" && (
             <Notice tone="bad" icon={<IconX className="h-3.5 w-3.5" />} title="The run stopped with an error">
@@ -78,6 +80,17 @@ function RunView() {
               title={`${data.skipped.length} scenario${data.skipped.length === 1 ? " was" : "s were"} skipped`}>
               {[...new Set(data.skipped.map((x) => x.agent ?? "the agent"))].join(", ")}: {data.skipped[0].reason}. Finish the adapter
               in <code className="font-mono text-[12px] text-fg/80">agent-tests/adapters/</code> and run again.
+            </Notice>
+          )}
+          {gaps.length > 0 && (
+            <Notice tone="warn" icon={<IconAlert className="h-3.5 w-3.5" />}
+              title={`${gaps.length} episode${gaps.length === 1 ? "" : "s"} stopped for something tests don't provide`}>
+              {gapAgents.length ? `${gapAgents.join(", ")} ran` : "The agent ran"} but couldn&apos;t find something it looked up
+              ({(gaps[0].error ?? "").replace(/^\w*Error: /, "").replace(/; see logs\/[\w.-]+\.log$/, "").slice(0, 120)}): rows the
+              test database doesn&apos;t have, or one of your other services, which don&apos;t run in tests (Show log on an episode says
+              which). Add rows to the project&apos;s <code className="font-mono text-[12px] text-fg/80">fixtures/*.sql</code> using the id
+              {" "}<code className="font-mono text-[12px] text-fg/80">00000000-0000-4000-8000-000000000001</code> for the person asking, or point
+              the service&apos;s setting at a staging instance in the agent&apos;s env.
             </Notice>
           )}
         </div>
@@ -348,6 +361,23 @@ function Verdict({ detail }: { detail: RunDetail }) {
 /* ------------------------------------------------------------------ one scenario */
 
 /** An episode's error, with the agent's log one click away (the traceback is usually what you need). */
+// an agent that ran but looked something up that the test database doesn't have (a tenant, a company, a record)
+const DATA_GAP = /unresolved|not found|does ?n[o']t exist|no such (row|record|user|tenant|company|org)|no (row|record|profile) for|missing (row|record|profile)|DoesNotExist|NoResultFound/i;
+const NOT_DATA = /ModuleNotFoundError|ImportError|SyntaxError|No module named|command not found/i;
+const isDataGap = (error: string | null | undefined) => !!error && DATA_GAP.test(error) && !NOT_DATA.test(error);
+
+function DataGapHint() {
+  return (
+    <p className="mt-2 text-[12px] leading-relaxed text-mute">
+      The agent ran but looked up something tests don&apos;t provide: data the test database doesn&apos;t have, or one of your other
+      services (Show log says which; How it runs lists them). For data, add the rows it needs to the project&apos;s
+      {" "}<code className="font-mono text-[11.5px] text-fg/80">fixtures/*.sql</code>: drafted rows use the id
+      {" "}<code className="font-mono text-[11.5px] text-fg/80">00000000-0000-4000-8000-000000000001</code> for the person asking
+      (an adapter&apos;s <code className="font-mono text-[11.5px] text-fg/80">TEST_VALUES</code> use it too), so give your rows that id.
+    </p>
+  );
+}
+
 function EpisodeError({ runId, error }: { runId: string; error: string }) {
   const name = /logs\/([\w.-]+\.log)/.exec(error)?.[1];
   const [log, setLog] = useState<string | null>(null);
@@ -369,6 +399,7 @@ function EpisodeError({ runId, error }: { runId: string; error: string }) {
         <span className="min-w-0 break-words">{error.replace(/; see logs\/[\w.-]+\.log$/, "")}</span>
         {name && <button type="button" onClick={toggle} className="shrink-0 text-[12px] text-mute underline-offset-2 hover:text-fg hover:underline">{open ? "Hide log" : "Show log"}</button>}
       </div>
+      {isDataGap(error) && <DataGapHint />}
       {open && (failed ? <p className="mt-2 text-mute">{failed}</p> : (
         <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-ink/70 p-2.5 font-mono text-[11.5px] text-mute">{log ?? "Loading…"}</pre>
       ))}

@@ -97,6 +97,8 @@ async def post_chat(http: httpx.AsyncClient, base_url: str, api_key: str, body: 
         r = await http.post(base_url.rstrip("/") + "/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
                             json=body, timeout=timeout)
         bad = rejected_param(r.text, body) if r.status_code == 400 else None
+        if r.status_code == 400 and not bad and "response_format" in body and "response_format" in r.text:
+            bad = "response_format"  # Anthropic's OpenAI-format endpoint takes only `json_schema`; callers parse text anyway
         if not bad:
             break
         _HELPER_DROPPED.setdefault(body.get("model", ""), set()).add(bad)

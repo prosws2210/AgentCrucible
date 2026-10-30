@@ -46,8 +46,9 @@ def test_an_agent_that_reads_a_file_gets_the_document_named_in_the_conversation(
     plan = next(p for p in d.plans if p.agent == ag.id)
     assert plan.strategy == "code" and "document_from(history)" in plan.adapter_code
     assert '"original_filename": os.path.basename(path)' in plan.adapter_code
-    tasks = [s.yaml for s in d.scenarios if s.agent == ag.id]
-    assert tasks and all("tests/fixtures/invoice_sample.txt" in t for t in tasks)  # never the broken one
+    drafts = [s for s in d.scenarios if s.agent == ag.id]
+    assert [s.id for s in drafts] == [f"{ag.id}-extracts-invoice-sample"]  # what it's for, not chat about its tools
+    assert "tests/fixtures/invoice_sample.txt" in drafts[0].yaml and "judge.rubric" in drafts[0].yaml  # never the broken one
 
     # the generated adapter runs: it finds the path in the message and hands the file to the agent
     from agentcrucible.discover.apply import write_project

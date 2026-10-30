@@ -104,7 +104,9 @@ def _seed_raw(col: str, typ: str, i: int) -> str:
     return f"'{col}-{i + 1}'"
 
 
-def seed_sql(tables: dict[str, dict[str, str]], create: bool = True) -> str:
+def seed_sql(tables: dict[str, dict[str, str]], create: bool = True, guard: bool = False) -> str:
+    """CREATE (optionally) and three drafted rows per table. `guard` (Postgres): each row in its own block, skipped if
+    it breaks a rule, so one constraint the draft can't meet doesn't fail the fixture."""
     out = ["-- Drafted by `crucible discover` from your models and schema files. Edit to match real data.", ""]
     for table, cols in tables.items():
         if not cols:
@@ -114,7 +116,8 @@ def seed_sql(tables: dict[str, dict[str, str]], create: bool = True) -> str:
             out.append(f"CREATE TABLE IF NOT EXISTS {table} ({defs});")
         for i in range(3):
             vals = ", ".join(_seed_value(c, t, i) for c, t in cols.items())
-            out.append(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({vals}) ON CONFLICT DO NOTHING;")
+            row = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({vals}) ON CONFLICT DO NOTHING;"
+            out.append(f"DO $crucible$ BEGIN {row} EXCEPTION WHEN others THEN NULL; END $crucible$;" if guard else row)
         out.append("")
     return "\n".join(out)
 
@@ -439,29 +442,34 @@ BAD_SAMPLE = re.compile(r"(?i)corrupt|broken|invalid|bad|empty|malformed|truncat
 GOOD_SAMPLE = re.compile(r"(?i)invoice|receipt|statement|bill|document|sample|example|contract|report|form")
 SAMPLE_RANK = {".pdf": 0, ".png": 1, ".jpg": 1, ".jpeg": 1, ".tif": 1, ".tiff": 1, ".webp": 1, ".docx": 2, ".doc": 2,
                ".txt": 3, ".xlsx": 4, ".xls": 4, ".csv": 4}
+LEGACY_OFFICE = {".doc", ".xls", ".ppt"}  # binary Office formats: many pipelines need a converter for them
+BENCH_SAMPLE_DIR = re.compile(r"(?i)(^|/)([\w-]*bench(mark)?s?[\w-]*|node_modules|site-packages)(/|$)")
 SKIP_SAMPLE_DIR = {"node_modules", ".git", "agent-tests", ".venv", "venv", "__pycache__", "dist", "build", "output", "artifacts"}
 
 
 @functools.lru_cache(maxsize=16)
 def sample_document(root: Path) -> str | None:
-    """A small document from the repository's own test data, for agents that read files: invoices and statements
-    first, never one named as broken. Its path is relative to the repository (where the agent runs)."""
-    found: list[tuple[int, int, int, str]] = []
+    """A small document from the repository, for agents that read files: never one named as broken; a format such
+    agents are built for (PDF, images, text, docx, xlsx) before legacy Office files that many pipelines can't convert;
+    then invoice-like names, then the test data folders. Its path is relative to the repository (where the agent runs)."""
+    found: list[tuple[int, int, int, int, int, str]] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [x for x in dirnames if x not in SKIP_SAMPLE_DIR and not x.startswith(".")]
         rel_dir = Path(dirpath).relative_to(root).as_posix()
-        if not SAMPLE_DIR.search(rel_dir):
+        if BENCH_SAMPLE_DIR.search(rel_dir):
             continue
         for name in filenames:
             p = Path(dirpath) / name
-            if p.suffix.lower() in SAMPLE_EXT and not BAD_SAMPLE.search(name):
+            ext = p.suffix.lower()
+            if ext in SAMPLE_EXT and not BAD_SAMPLE.search(name):
                 with contextlib.suppress(OSError):
                     if 200 < p.stat().st_size < 5_000_000:
-                        rank = SAMPLE_RANK.get(p.suffix.lower(), 5)  # what document agents are usually built for first
-                        found.append((0 if GOOD_SAMPLE.search(name) else 1, rank, len(rel_dir), f"{rel_dir}/{name}".lstrip("./")))
-        if len(found) > 200:
+                        found.append((1 if ext in LEGACY_OFFICE else 0, 0 if GOOD_SAMPLE.search(name) else 1,
+                                      0 if SAMPLE_DIR.search(rel_dir) else 1, SAMPLE_RANK.get(ext, 5), len(rel_dir),
+                                      f"{rel_dir}/{name}".lstrip("./")))
+        if len(found) > 400:
             break
-    return min(found)[3] if found else None
+    return min(found)[-1] if found else None
 
 
 def document_key(keys: list[str]) -> str | None:
@@ -998,6 +1006,18 @@ def draft_scenarios(d: Discovery, ag: Agent, mocked: set[str]) -> list[DraftScen
         sc = {"id": sid, "description": reason, "agent": ag.id, **sc}
         out.append(DraftScenario(id=sid, agent=ag.id, reason=reason, yaml=_dump(sc)))
 
+    if sample:  # an agent that reads files: test what it's for, on a real document (its tools are its own business)
+        add(f"{ag.id}-extracts-{Path(sample).stem}",
+            f"It reads files: given `{sample}` from your test data, it should return what's in it. Its own tools are "
+            "reported, not required.",
+            {"task": f"Please extract the details from {sample}.", "environment": env(),
+             "checks": [{"output.regex": ".+"}, {"budget.min_llm_calls": 1},
+                        {"judge.rubric": {"criteria": "The reply reports details read from the document (names, numbers, "
+                                                      "dates or amounts), not an error, a refusal or a request for the "
+                                                      "document.", "min": 3}},
+                        *({"trajectory.tool_called": {"tool": t.name, "hard": False}} for t in tools[:4]),
+                        {"trajectory.no_tool_errors": {"hard": False}}, budget]})
+        return out
     for t in tools[:12]:
         checks: list[Any] = [{"trajectory.tool_called": t.name}, {"trajectory.no_tool_errors": {"hard": False}}, budget]
         effects: list[Any] = []  # what really changes when the tool runs (nothing does while it's mocked)
@@ -1080,8 +1100,7 @@ def draft_scenarios(d: Discovery, ag: Agent, mocked: set[str]) -> list[DraftScen
              "user": {"persona": "The person who asked: answers follow-up questions briefly and plausibly.", "max_turns": 3}})
     if not out:
         add(f"{ag.id}-smoke", "A first conversation to confirm the agent runs end to end.",
-            {"task": f"Please extract the details from {sample}." if sample else "Hi! What can you help me with?",
-             # any reply passes, but it must come from the model
+            {"task": "Hi! What can you help me with?",  # any reply passes, but it must come from the model
              "checks": [{"output.regex": ".+"}, {"budget.min_llm_calls": 1}, budget]})
     return out
 
@@ -1094,6 +1113,7 @@ RISKY_ENV = re.compile(r"KEY|TOKEN|SECRET|PASSW|PWD|CREDENTIAL|DSN|URL|URI|HOST|
                        r"DATABASE|REDIS|MONGO|POSTGRES|MYSQL|BUCKET|ACCOUNT|SID|CONNECTION", re.I)
 
 
+SERVICE_SETTING = re.compile(r"(?i)_(SERVICE|SVC)_(URL|URI|HOST|ENDPOINT|ADDR)$")  # REGISTRATION_SERVICE_URL
 REDIS_SETTING = re.compile(r"(?i)^(\w*_)?REDIS(_\w*)?_(URL|URI|DSN)$|^REDIS_URL$")
 
 
@@ -1183,6 +1203,14 @@ def build_plan(d: Discovery, root: Path) -> None:
     for p in d.plans:
         for fx in p.fixes:
             fx.accept = fx.id in accepted
+    services = sorted({n for ns in d.repo.dotenv.values() for n in ns if SERVICE_SETTING.search(n)}
+                      | {f.name for f in d.facts.values() if f.kind == "env_var" and SERVICE_SETTING.search(f.name)})
+    if services:  # the repo's other services: nothing runs them in tests, so say so where the user will look
+        for p in d.plans:
+            p.warnings.append(f"The code calls your other services ({', '.join(services[:5])}{' …' if len(services) > 5 else ''}). "
+                              "They don't run during tests (their URLs point nowhere), so a step that needs one (a login, "
+                              "an organisation lookup) fails. Point one at a staging instance in the agent's env, or add an "
+                              "`http_mocks` entry that answers like it.")
     redis = redis_settings(d)
     if redis:
         for p in d.plans:
@@ -1276,21 +1304,26 @@ def project_files(d: Discovery, root: Path, model: str = "qwen2.5:7b",
             # your schema file as is, then a few drafted rows; or tables drafted from your models
             filled = {m.lower() for m in re.findall(r"INSERT\s+INTO\s+[\"`]?(\w+)", sql, re.I)}
             created = sql_tables(sql)
-            # rows only where the model's columns are all there, nothing required is left out and every type takes a
-            # drafted value (not an enum of the schema's own); the values follow the schema file's types
-            tbl = {k: created[k.lower()][1] for k in s.tables if k.lower() in created}
+            pg = s.kind == "postgres"
             checked = sql_checked(sql)
-            empty = {k: v for k, v in s.tables.items() if k in tbl and k.lower() not in filled and k.lower() not in checked
-                     and {c.lower() for c in v} <= set(tbl[k])
-                     and not {c for c, (req, _, _) in tbl[k].items() if req} - {c.lower() for c in v}
-                     and all(SEEDABLE.search(tbl[k][c.lower()][1]) for c in v)}
-            # in the schema file's own spelling (`"AuditEvent"`, `"companyId"`) and types
-            empty = {created[k.lower()][0]: {tbl[k][c.lower()][2]: tbl[k][c.lower()][1] for c in v}
-                     for k, v in seed_order(empty, sql_references(sql), filled).items()}
+            # a few rows in every table the schema creates and nothing fills, from the schema's own columns and types
+            # (a table the code has no model for, like a profile read with raw SQL, still gets its row). Row 1 of every
+            # UUID column is the same id the adapters use for the person asking, so identity lookups find a match.
+            # On Postgres each row is tried on its own: one that breaks a rule (CHECK, partition, unique, foreign key)
+            # is skipped instead of failing the whole fixture, so constrained tables are tried too.
+            rows: dict[str, dict[str, tuple[bool, str, str]]] = {}
+            for key, (_, cols) in created.items():
+                if key in filled or key in checked and not pg:
+                    continue
+                fit = {c: v for c, v in cols.items() if SEEDABLE.search(v[1])}
+                if fit and not any(req and c not in fit for c, (req, _, _) in cols.items()):
+                    rows[key] = fit
+            empty = {created[k][0]: {v[2]: v[1] for v in cols.values()}  # the schema file's spelling: "AuditEvent"
+                     for k, cols in seed_order(rows, sql_references(sql), filled).items()}
             # tables your models define that the schema file doesn't: created too, so the code's writes find a table
             missing = {k: v for k, v in s.tables.items() if k.lower() not in created}
-            files[f"fixtures/{s.id}.sql"] = (sql + "\n" + seed_sql(missing) + "\n" + seed_sql(empty, create=False)) if sql \
-                else seed_sql(s.tables)
+            files[f"fixtures/{s.id}.sql"] = (sql + "\n" + seed_sql(missing) + "\n" + seed_sql(empty, create=False, guard=pg)) \
+                if sql else seed_sql(s.tables)
     for sc in d.scenarios:
         if sc.include and any(p.agent == sc.agent and p.command for p in d.plans):
             files[f"scenarios/{sc.agent}/{sc.id}.yaml"] = sc.yaml
@@ -1386,6 +1419,9 @@ def sql_tables(sql: str) -> dict[str, tuple[str, dict[str, tuple[bool, str, str]
                                   r"COLLATE)\b|\s*$)", item, re.I | re.S)
                     name, typ = words[0].strip('"`').lower(), (tm.group(1).strip().strip('"`') if tm else "TEXT")
                     up = item.upper()
+                    if "GENERATED ALWAYS" in up:  # computed by the database: an insert can't give it a value
+                        part = ""
+                        continue
                     cols[name] = ("NOT NULL" in up and "DEFAULT" not in up and "PRIMARY KEY" not in up
                                   and not re.search(r"\b(SERIAL|BIGSERIAL|IDENTITY)\b", up), typ, words[0])
                 part = ""

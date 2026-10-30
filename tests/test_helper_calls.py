@@ -44,3 +44,22 @@ def test_a_tool_that_reports_its_own_failure_counts_as_an_error():
     assert not REPORTED_FAILURE.search('{"success": true, "error": null, "id": 3}')
     assert not REPORTED_FAILURE.search('{"success": true, "error": ""}')
     assert not REPORTED_FAILURE.search("The error rate is low")
+
+
+def test_a_json_mode_the_endpoint_rejects_is_dropped():
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        if "response_format" in body:
+            return httpx.Response(400, json={"error": {"message": "response_format.type: Input should be 'json_schema'"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "score 4"}}]})
+
+    async def go() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            body = {"model": "json-picky-model", "response_format": {"type": "json_object"}, "messages": []}
+            assert (await post_chat(http, "http://llm/v1", "k", body)).status_code == 200
+
+    asyncio.run(go())
+    assert ["response_format" in b for b in seen] == [True, False]
