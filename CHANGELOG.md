@@ -5,6 +5,13 @@ All notable changes to AgentCrucible. Versions follow [Semantic Versioning](http
 ## [Unreleased]
 
 ### Added
+- **Report a bug:** a form in the site footer and the dashboard sidebar (phone header too) that mails the maintainer
+  "BUG REPORTED : <project>" with the report, through Web3Forms when `BUG_REPORT_KEY` is set at build time (`.env` for
+  Docker Compose, repository variable for GitHub Pages); without a key it opens a prefilled GitHub issue.
+- **Test database servers in the connection check:** Setup checks the Postgres server when scenarios use Postgres
+  fixtures and the Redis server when imported code uses Redis, and says how to set one when it's missing.
+- **Updated walkthrough on /demo:** new chapters for importing a codebase, reviewing the plan, the knowledge graph and
+  the smoke run on seeded test databases.
 - **Python for the agents:** `python:` in `crucible.yaml`, a managed per-project environment
   (`crucible env [--install]`, `GET /api/env`, `POST /api/env/install`, **Setup → Python for the agents**) and an `envs`
   volume in Docker Compose. The connection check imports each agent's code and names the missing package; the smoke run

@@ -18,3 +18,6 @@ export const NAV_LINKS: [string, string][] = [
 /** Latest released version, shown in the footer. Keep in step with src/agentcrucible/__init__.py when releasing. */
 export const VERSION = "0.2.0";
 export const LINKEDIN = "https://www.linkedin.com/in/shakti-swaroop-sahu/";
+
+/** Web3Forms access key for "Report a bug" (public by design; the inbox it delivers to is not). Empty: reports open a GitHub issue. */
+export const BUG_REPORT_KEY = process.env.NEXT_PUBLIC_BUG_REPORT_KEY ?? "";

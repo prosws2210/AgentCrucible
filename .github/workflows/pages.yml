@@ -40,6 +40,8 @@ jobs:
         env:
           # GitHub Pages serves the site at https://<owner>.github.io/<repo>/
           NEXT_PUBLIC_BASE_PATH: ${{ vars.DEPLOY_PAGES == 'true' && format('/{0}', github.event.repository.name) || '' }}
+          # Web3Forms key for "Report a bug" (repository variable BUG_REPORT_KEY); unset: reports open a GitHub issue
+          NEXT_PUBLIC_BUG_REPORT_KEY: ${{ vars.BUG_REPORT_KEY }}
       - if: vars.DEPLOY_PAGES == 'true' && github.event_name != 'pull_request'
         run: touch out/.nojekyll
       - if: vars.DEPLOY_PAGES == 'true' && github.event_name != 'pull_request'

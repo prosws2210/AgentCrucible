@@ -103,8 +103,8 @@ def redis_db_url(url: str, n: int) -> str:
     return re.sub(r"(/\d*)?(\?.*)?$", lambda m: f"/{n}{m.group(2) or ''}", url.rstrip("/"), count=1)
 
 
-def _flush_redis(url: str) -> None:
-    """FLUSHDB over the Redis protocol, so no client library is needed."""
+def _flush_redis(url: str, ping: bool = False) -> None:
+    """FLUSHDB over the Redis protocol, so no client library is needed. ping: only check the server answers."""
     import socket
     from urllib.parse import unquote, urlparse
     u = urlparse(url)
@@ -118,7 +118,7 @@ def _flush_redis(url: str) -> None:
         raw = ssl.create_default_context().wrap_socket(raw, server_hostname=u.hostname)
     with raw as s:
         msgs = ([cmd("AUTH", *([unquote(u.username)] if u.username else []), unquote(u.password))] if u.password else [])
-        msgs += [cmd("SELECT", db), cmd("FLUSHDB")]
+        msgs += [cmd("PING")] if ping else [cmd("SELECT", db), cmd("FLUSHDB")]
         s.sendall(b"".join(msgs))
         replies = b""
         while replies.count(b"\r\n") < len(msgs):

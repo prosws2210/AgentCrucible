@@ -9,7 +9,8 @@ import {
 } from "@/lib/api";
 import { GITHUB } from "@/lib/site";
 import { LogoMark } from "../Logo";
-import { IconAgents, IconBook, IconGraph, IconExternal, IconImport, IconOverview, IconPlus, IconRuns, IconScenarios, IconServer, IconSetup } from "../Icons";
+import { BugReport } from "../BugReport";
+import { IconAgents, IconAlert, IconBook, IconGraph, IconExternal, IconImport, IconOverview, IconPlus, IconRuns, IconScenarios, IconServer, IconSetup } from "../Icons";
 import { Code, Spinner } from "../ui";
 
 type Ctx = {
@@ -209,11 +210,14 @@ function Sidebar({ pathname, project, projects, health, models, role, onSignOut,
             Agent<span className="ember-text">Crucible</span>
           </span>
         </Link>
-        {role && (
-          <button onClick={onSignOut} className="text-[12.5px] text-mute hover:text-fg lg:hidden" title={role === "viewer" ? "Signed in · read-only" : "Signed in · full access"}>
-            Sign out
-          </button>
-        )}
+        <div className="flex items-center gap-4 lg:hidden">
+          <BugReport project={project?.project} className="text-[12.5px] text-mute hover:text-fg" />
+          {role && (
+            <button onClick={onSignOut} className="text-[12.5px] text-mute hover:text-fg" title={role === "viewer" ? "Signed in · read-only" : "Signed in · full access"}>
+              Sign out
+            </button>
+          )}
+        </div>
       </div>
 
       {project && (
@@ -265,6 +269,9 @@ function Sidebar({ pathname, project, projects, health, models, role, onSignOut,
         <Link href="/dashboard/projects/" className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] text-mute hover:text-fg">
           <IconOverview /> All projects
         </Link>
+        <BugReport project={project?.project} className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] text-mute hover:text-fg">
+          <IconAlert /> Report a bug
+        </BugReport>
       </div>
     </aside>
   );

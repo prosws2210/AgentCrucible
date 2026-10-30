@@ -4,9 +4,19 @@
 
 It works with **any agent in any framework** without code changes, because it sits on the two boundaries every agent has: the **LLM API** (OpenAI Chat Completions and Anthropic Messages, streaming included) and **MCP tool calls**. Agents can be CLI processes or HTTP services, and coding agents get a fresh copy of a Git repo per episode.
 
+Already have agents in a codebase? **Import** reads the repository (without running it), finds every agent, tool, MCP
+server, database and setting, and drafts an adapter and tests for each agent. You review it all before anything is
+written, and a smoke run on seeded test databases shows what actually works.
+
 **Adopting it for your team:** [docs/ADOPTION.md](docs/ADOPTION.md)
 
 **Website:** https://prosws2210.github.io/AgentCrucible/ (source in [`website/`](website/))
+
+<p align="center">
+  <a href="https://prosws2210.github.io/AgentCrucible/demo/"><img src="docs/img/walkthrough.gif" alt="Walkthrough: import a codebase, review what it found, smoke-run it, catch a prompt regression and audit an MCP server" width="100%"></a>
+  <br>
+  <sub>▶ <a href="https://prosws2210.github.io/AgentCrucible/demo/"><b>Watch the full 3-minute walkthrough</b></a> (chapters, captions, optional narration) · <a href="docs/media/walkthrough.mp4">download the MP4</a></sub>
+</p>
 
 ```
 $ crucible run --label candidate-v2-fast -k 5 -e AGENT_PROMPT=prompts/v2_fast.md --compare baseline-v1
@@ -21,8 +31,6 @@ pass@1 48% (95% CI 20%–78%) · pass^5 40% · pass@5 60%
 Overall vs baseline: Δ -30.0 pts (95% CI -56.0…-6.0) → regressed
 GATE FAILED: overall pass rate significantly regressed
 ```
-
-![Comparison report](docs/img/report-comparison.jpg)
 
 ## Results (real runs, local `qwen2.5:7b`, $0)
 
@@ -39,6 +47,25 @@ GATE FAILED: overall pass rate significantly regressed
 Full write-up, reproduction commands and limitations: [docs/RESULTS.md](docs/RESULTS.md).
 
 ![Trajectory viewer](docs/img/report-trajectory.jpg)
+
+## A tour of the dashboard
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/img/import-review.jpg" alt="Import review: agents, tools, open questions and draft tests found in a repository"><br><b>Import a codebase.</b> It finds the agents, their tools (destructive ones are mocked by default), the databases they touch and the questions the code can't answer, then drafts tests for you to review.</td>
+    <td width="50%"><img src="docs/img/import-how-it-runs.jpg" alt="How it runs: the generated adapter and how each setting is mapped"><br><b>See how each agent will run.</b> The generated adapter, and how each setting maps to the episode's own database, mock or gateway. Real <code>.env</code> values are never read.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/img/knowledge-graph.jpg" alt="Knowledge graph of the imported code"><br><b>Knowledge graph.</b> Every file, agent, tool, MCP server, prompt, database and API, and which agent uses what. It's saved in the repository as one HTML file.</td>
+    <td><img src="docs/img/report-comparison.jpg" alt="Comparison report: a prompt change regressed the pass rate by 30 points"><br><b>Compare with a baseline.</b> Every scenario runs several times. The verdict says whether the change is really worse (here −30 pts, gate failed), and how many attempts would settle the inconclusive ones.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/img/mcp-audit.jpg" alt="MCP server audit with a critical SQL injection finding"><br><b>Audit MCP servers.</b> Protocol conformance, tool descriptions, fuzzing, SQL injection, path traversal and latency, graded A to F in seconds.</td>
+    <td><img src="docs/img/setup-checks.jpg" alt="Connection check: model, Python, Postgres, Redis and agents"><br><b>Check every connection first.</b> The model server, the agents' Python, the Postgres and Redis servers that hold test databases, and each agent, with a fix for each failure.</td>
+  </tr>
+</table>
+
+The dashboard and website also work on phones.
 
 ---
 
@@ -100,13 +127,14 @@ crucible open latest      # HTML report with trajectory viewer
 
 ## Full stack with Docker Compose
 
-Frontend, backend, database and model server as separate services:
+Frontend, backend, databases and model server as separate services:
 
 | Service | What it runs | Port |
 |---|---|---|
 | `frontend` | nginx serving the Next.js site + **dashboard**, proxies `/api` to the backend | http://localhost:8080 |
 | `backend` | `crucible serve`: FastAPI to start runs and audits, run history, HTML reports | http://localhost:8000 |
-| `db` | Postgres 16: run and audit history | internal |
+| `db` | Postgres 16: run and audit history, and a fresh database per episode for Postgres fixtures | internal |
+| `redis` | Redis 7: an empty numbered database per episode for code that uses Redis | internal |
 | `models` | Ollama: the agent's model, the user simulator and the judge | http://localhost:11435 |
 | `models-init` | one-shot: pulls `CRUCIBLE_MODEL` if it is missing | |
 
@@ -134,6 +162,11 @@ CRUCIBLE_VIEWER_TOKEN=...   # optional: read-only (GET only)
 ```
 
 The dashboard then shows a sign-in screen (an HttpOnly session cookie, never the token itself, is stored in the browser). Scripts send `Authorization: Bearer <token>`. `/api/health` stays open for load balancers.
+
+**Bug reports.** **Report a bug** (site footer, dashboard sidebar) mails the report with the subject
+`BUG REPORTED : <project>`. Set `BUG_REPORT_KEY` in `.env` to a free [Web3Forms](https://web3forms.com) access key
+for the inbox that should receive them, then rebuild the frontend. Without a key the form opens a prefilled GitHub
+issue instead. For the GitHub Pages site, set the same key as the repository variable `BUG_REPORT_KEY`.
 
 ## Import an existing codebase
 
@@ -373,7 +406,7 @@ src/agentcrucible/
 examples/support-agent/   stdio agent (OpenAI API), 2 MCP servers with planted bugs, 10 scenarios
 examples/coding-agent/    HTTP agent service (Anthropic SDK, streaming), workspace MCP server, Git repo fixture
 deploy/                   Helm chart, kind config
-docker-compose.yml        frontend + backend + Postgres + Ollama
+docker-compose.yml        frontend + backend + Postgres + Redis + Ollama
 action.yml                GitHub Action
 website/                  Next.js landing page (static export, GitHub Pages)
 docs/                     architecture, UX and roadmap
@@ -392,6 +425,11 @@ the repository variable `PUBLISH_PYPI=true`).
   a copy meanwhile)
 - MCP Python SDK 2.x and the stateless 2026 spec revision
 - Docker-per-episode executor (agents with system dependencies) and a Kubernetes Job-per-episode executor
+
+## Feedback
+
+Found a bug or something confusing? Use **Report a bug** on the [website](https://prosws2210.github.io/AgentCrucible/)
+or in the dashboard, or [open an issue](https://github.com/prosws2210/AgentCrucible/issues).
 
 ## License
 

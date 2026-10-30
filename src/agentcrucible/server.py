@@ -304,6 +304,40 @@ def create_app(config_path: Path | None = None) -> FastAPI:
                        "detail": f"{python} · {source}" + (f" · the code needs {', '.join(r.name for r in reqs)}: install its "
                                                            "dependencies (Install dependencies, or crucible env install)" if own and reqs else "")})
 
+        # servers the run makes test databases on: one per episode, so a missing one would fail every episode
+        if any(f.kind == "postgres" for sc, _ in load_scenarios(cfg) for f in sc.environment.fixtures.values()):
+            def pg() -> str:
+                import psycopg
+                with psycopg.connect(cfg.postgres.admin_url or "", connect_timeout=5) as conn:
+                    return str(conn.info.server_version // 10000)
+            if not cfg.postgres.admin_url:
+                checks.append({"id": "postgres", "label": "Test database server · Postgres", "ok": False,
+                               "detail": "scenarios use Postgres fixtures, but no server is set"})
+            else:
+                try:
+                    checks.append({"id": "postgres", "label": "Test database server · Postgres", "ok": True,
+                                   "detail": f"Postgres {await asyncio.to_thread(pg)} · a fresh database per episode"})
+                except Exception as e:
+                    checks.append({"id": "postgres", "label": "Test database server · Postgres", "ok": False,
+                                   "detail": f"unreachable: {str(e).strip()[:160]}"})
+        disc = root / "discovery.json"
+        uses_redis = disc.is_file() and any(
+            "redis" in (pl.get("env_map") or {}).values()
+            for pl in json.loads(await asyncio.to_thread(disc.read_text, encoding="utf-8")).get("plans", []))
+        if cfg.redis.url or uses_redis:
+            from .runner import _flush_redis
+            if not cfg.redis.url:
+                checks.append({"id": "redis", "label": "Test database server · Redis", "ok": False,
+                               "detail": "the imported code uses Redis, but no server is set"})
+            else:
+                try:
+                    await asyncio.to_thread(_flush_redis, cfg.redis.url, True)
+                    checks.append({"id": "redis", "label": "Test database server · Redis", "ok": True,
+                                   "detail": f"answers · an empty database per episode (1–{cfg.redis.databases - 1})"})
+                except Exception as e:
+                    checks.append({"id": "redis", "label": "Test database server · Redis", "ok": False,
+                                   "detail": f"unreachable: {str(e).strip()[:160]}"})
+
         for name, spec in cfg.mcp_servers.items():
             cwd = str((root / spec.cwd).resolve()) if spec.cwd else str(root)
             t = Target(spec.command, spec.url, spec.env, cwd, spec.headers, spec.transport, python)

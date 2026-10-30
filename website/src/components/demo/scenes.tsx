@@ -1,9 +1,10 @@
 // Scenes of the product walkthrough on /demo. Each scene is a pure function of its local time `t` (seconds), so the
 // player can seek anywhere and always draw the right frame. Drawn on a fixed 960×540 stage that the player scales.
-// Numbers and outputs are from the real recorded runs of examples/support-agent (docs/sample-run).
+// Numbers and outputs are from the real recorded runs of examples/support-agent (docs/sample-run); the import scenes
+// are from a real import of a private backend (Claude Haiku), with its names replaced.
 // Windows stop 84px above the bottom: that strip is where the player draws captions.
 import { LogoMark } from "../Logo";
-import { IconCheck, IconOverview, IconRuns, IconScenarios, IconServer, IconSetup, IconX } from "../Icons";
+import { IconAgents, IconAlert, IconCheck, IconGraph, IconImport, IconOverview, IconRuns, IconScenarios, IconServer, IconSetup, IconX } from "../Icons";
 
 export type Cue = { at: number; text: string };
 export type Scene = { id: string; title: string; duration: number; cues: Cue[]; render: (t: number) => React.ReactNode };
@@ -59,19 +60,22 @@ function Window({ title, children, className = "" }: { title: string; children: 
   );
 }
 
-function Dashboard({ page, children }: { page: "Overview" | "Runs" | "Scenarios" | "MCP servers" | "Setup"; children: React.ReactNode }) {
-  const nav: [typeof IconRuns, string][] = [[IconOverview, "Overview"], [IconRuns, "Runs"], [IconScenarios, "Scenarios"], [IconServer, "MCP servers"], [IconSetup, "Setup"]];
+type Page = "Overview" | "Agents" | "Knowledge graph" | "Runs" | "Scenarios" | "MCP servers" | "Add agents" | "Setup";
+
+function Dashboard({ page, project = "support-agent", model = "qwen2.5:7b", children }: { page: Page; project?: string; model?: string; children: React.ReactNode }) {
+  const nav: [typeof IconRuns, Page][] = [[IconOverview, "Overview"], [IconAgents, "Agents"], [IconGraph, "Knowledge graph"], [IconRuns, "Runs"],
+    [IconScenarios, "Scenarios"], [IconServer, "MCP servers"], [IconImport, "Add agents"], [IconSetup, "Setup"]];
   return (
     <div className="flex h-full">
       <div className="w-[150px] shrink-0 border-r border-line bg-panel/60 p-3">
-        <div className="mb-4 flex items-center gap-1.5"><LogoMark className="h-5 w-5" /><span className="text-[12px] font-semibold">AgentCrucible</span></div>
-        <div className="mb-3 rounded-lg border border-line bg-panel-2/70 p-2 text-[10px]">
+        <div className="mb-3 flex items-center gap-1.5"><LogoMark className="h-5 w-5" /><span className="text-[12px] font-semibold">AgentCrucible</span></div>
+        <div className="mb-2.5 rounded-lg border border-line bg-panel-2/70 p-2 text-[10px]">
           <div className="text-dim">PROJECT</div>
-          <div className="font-semibold text-fg">support-agent</div>
-          <div className="mt-1 flex items-center gap-1 text-mute"><span className="h-1.5 w-1.5 rounded-full bg-ok" /> Model · qwen2.5:7b</div>
+          <div className="truncate font-semibold text-fg">{project}</div>
+          <div className="mt-1 flex items-center gap-1 truncate text-mute"><span className="h-1.5 w-1.5 shrink-0 rounded-full bg-ok" /> Model · {model}</div>
         </div>
         {nav.map(([Icon, l]) => (
-          <div key={l} className={`mb-0.5 flex items-center gap-2 rounded-md px-2 py-1.5 text-[11.5px] ${l === page ? "bg-white/[0.07] text-fg" : "text-dim"}`}>
+          <div key={l} className={`mb-0.5 flex items-center gap-2 whitespace-nowrap rounded-md px-2 py-1 text-[11px] ${l === page ? "bg-white/[0.07] text-fg" : "text-dim"}`}>
             <Icon className={`h-3.5 w-3.5 ${l === page ? "text-ember" : ""}`} /> {l}
           </div>
         ))}
@@ -105,7 +109,7 @@ const intro: Scene = {
         Will this prompt change <span className="font-serif italic text-ember">break</span> the agent?
       </div>
       <div className={`relative mt-6 flex gap-3 ${fade} ${show(t, 2)}`}>
-        {["Download", "Connect your agent", "Regression test", "Audit MCP servers", "Gate the PR"].map((s, i) => (
+        {["Download", "Import your agents", "Regression test", "Audit MCP servers", "Gate the PR"].map((s, i) => (
           <span key={s} className={`rounded-full border border-line bg-panel px-4 py-1.5 text-[14px] text-mute ${fade} ${show(t, 2.4 + i * 0.35)}`}>
             <span className="mr-1.5 font-mono text-[12px] text-ember">{i + 1}</span>{s}
           </span>
@@ -119,7 +123,8 @@ const INSTALL: [number, string, string][] = [
   [0.4, "$ git clone https://github.com/prosws2210/AgentCrucible.git", "text-fg"],
   [2.6, "$ cd AgentCrucible && cp .env.example .env", "text-fg"],
   [4.4, "$ docker compose up --build", "text-fg"],
-  [6.0, " ✔ Container agentcrucible-db-1          Healthy", "text-ok"],
+  [5.6, " ✔ Container agentcrucible-db-1          Healthy", "text-ok"],
+  [6.1, " ✔ Container agentcrucible-redis-1       Healthy", "text-ok"],
   [6.6, " ✔ Container agentcrucible-models-1      Healthy", "text-ok"],
   [7.2, "   models-init  | pulling qwen2.5:7b … 100%", "text-dim"],
   [8.6, " ✔ Container agentcrucible-backend-1     Healthy", "text-ok"],
@@ -133,7 +138,7 @@ const install: Scene = {
   duration: 13,
   cues: [
     { at: 0, text: "Clone the repository and start the stack with one command. Everything runs on your own machine." },
-    { at: 6, text: "Docker starts four services: the dashboard, the API, Postgres for history, and a local model server with a free model." },
+    { at: 6, text: "Docker starts the dashboard, the API, Postgres and Redis for history and test databases, and a local model server with a free model." },
   ],
   render: (t) => (
     <Window title="~/work — zsh" className="inset-x-14 top-14 bottom-[84px]">
@@ -155,7 +160,7 @@ const connect: Scene = {
   duration: 10,
   cues: [
     { at: 0, text: "The dashboard opens with a connection check: the model server, every MCP server and the agent." },
-    { at: 5.5, text: "Green across the board. The bundled example agent is ready; now let's connect our own." },
+    { at: 5.5, text: "Green across the board. The bundled example agent is ready; now let's bring in our own." },
   ],
   render: (t) => {
     const rows: [string, string][] = [
@@ -187,6 +192,264 @@ const connect: Scene = {
   },
 };
 
+/** The import page's Connect · Scan · Review · Approve · Results steps. */
+function Stepper({ at }: { at: number }) {
+  return (
+    <div className="flex items-center gap-1.5 text-[10.5px]">
+      {["Connect", "Scan", "Review", "Approve", "Results"].map((s, i) => (
+        <span key={s} className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${i === at ? "border-ember/60 bg-ember/10 text-fg" : i < at ? "border-line text-mute" : "border-line/60 text-dim"}`}>
+          <span className={`font-mono ${i <= at ? "text-ember" : ""}`}>{i < at ? "✓" : i + 1}</span>{s}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+const SCAN: [number, string, string][] = [
+  [3.9, "Read the repository · Python, SQL, YAML", "text-mute"],
+  [5.0, "6 agents · 65 tools, 41 of them used by an agent", "text-fg"],
+  [6.1, "Postgres · 246 tables from the schema and migrations", "text-fg"],
+  [7.0, "Redis, and another service named in the settings", "text-fg"],
+  [7.9, ".env found · setting names only, values never read", "text-ok"],
+  [8.8, "13 questions the code can't answer", "text-warn"],
+  [9.8, "Drafted an adapter per agent and 25 tests", "text-ember"],
+];
+
+const importScan: Scene = {
+  id: "import",
+  title: "Import your codebase",
+  duration: 14,
+  cues: [
+    { at: 0, text: "Already have agents in a real codebase? Point AgentCrucible at the folder. It only reads the code." },
+    { at: 5.5, text: "It finds the agents, their tools, the databases they touch and the settings they read. A model writes the descriptions; a free local one works too." },
+  ],
+  render: (t) => (
+    <Window title="localhost:8080/dashboard/import/" className="inset-x-10 top-14 bottom-[84px]">
+      <Dashboard page="Add agents" project="billing-service" model="claude-haiku-5-5">
+        <div className="flex items-center justify-between"><div className="text-[18px] font-semibold">Import a codebase</div><Stepper at={t < 3.5 ? 0 : 1} /></div>
+        {t < 3.5 ? (
+          <div className="mt-4 space-y-3.5 rounded-xl border border-line bg-panel-2/40 p-4 text-[12px]">
+            <div className="flex gap-2">
+              <span className="rounded-lg border border-ember/70 bg-ember/10 px-3 py-1.5">A folder on this machine</span>
+              <span className="rounded-lg border border-line px-3 py-1.5 text-mute">A Git URL</span>
+            </div>
+            <Field k="Repository folder" v={typed("~/work/billing-service", t, 0.4, 26)} />
+            <Field k="Which model writes the descriptions" v={t > 1.6 ? "Anthropic · claude-haiku-5-5" : ""} />
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-dim">Read-only access · you review and edit everything before it is written</span>
+              <span className={`rounded-lg px-3.5 py-1.5 text-[12px] font-semibold ${t > 3 ? "bg-ember text-ink" : "bg-fg text-ink"}`}>Scan the code</span>
+            </div>
+            <Pointer t={t} path={[[0, 500, 300], [1.5, 300, 150], [2.6, 600, 200], [3, 600, 200]]} clicks={[1.6, 3]} />
+          </div>
+        ) : (
+          <div className="mt-4 rounded-xl border border-line bg-panel-2/40 p-4">
+            <div className="mb-3 flex items-center justify-between text-[13px]">
+              <span className="font-semibold">Reading the code</span>
+              <span className="font-mono text-[11px] text-mute">{fmtS(Math.min(t, 10.4) - 3.5)}</span>
+            </div>
+            <div className="space-y-2 font-mono text-[12px]">
+              {SCAN.map(([at, line, tone]) => (
+                <div key={line} className={`flex items-center gap-2.5 ${tone} ${fade} ${t >= at ? "opacity-100" : "opacity-0"}`}>
+                  <Check ok on={t >= at + 0.35} /> {line}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </Dashboard>
+    </Window>
+  ),
+};
+
+const fmtS = (s: number) => `${Math.max(0, s * 9).toFixed(0)} s`; // the clock runs fast: a real scan takes about a minute
+
+const AGENTS: [string, string, string, string][] = [
+  ["Invoice Creation Agent", "class · creates invoices", "writes data", "warn"],
+  ["Processing Agent", "class · 30 tools", "writes data", "warn"],
+  ["Chat V2 Run Turn", "started by a route · 9 tools", "external call", "info"],
+  ["Secure Extraction Agent", "reads documents", "reads untrusted text", "ember"],
+  ["Structure Documents", "reads documents", "reads untrusted text", "ember"],
+  ["Structure Document Auto", "reads documents", "read-only", "ok"],
+];
+const TONE: Record<string, string> = { warn: "bg-warn/12 text-warn", info: "bg-info/12 text-info", ember: "bg-ember/12 text-ember", ok: "bg-ok/12 text-ok" };
+
+const review: Scene = {
+  id: "review",
+  title: "Review what it found",
+  duration: 17,
+  cues: [
+    { at: 0, text: "Review everything before anything is written: the agents to test, the tools they use, and the questions the code couldn't answer." },
+    { at: 6, text: "For each agent, how it will be started. Real values from .env are never used: keys become fakes, and other services are named as dependencies, not called." },
+    { at: 13, text: "Approve, and it writes an agent-tests folder and smoke-runs it." },
+  ],
+  render: (t) => {
+    const tab = t < 6 ? "Agents" : "How it runs";
+    const tabs: [string, string][] = [["System map", ""], ["Agents", "6"], ["Tools", "65"], ["Questions", "13"], ["How it runs", "6"], ["Draft tests", "25"]];
+    return (
+      <Window title="localhost:8080/dashboard/import/?job=…" className="inset-x-10 top-14 bottom-[84px]">
+        <Dashboard page="Add agents" project="billing-service" model="claude-haiku-5-5">
+          <div className="flex items-center justify-between"><div className="text-[16px] font-semibold">billing-service</div><Stepper at={t < 13.6 ? 2 : 3} /></div>
+          <div className="mt-2.5 flex gap-1 border-b border-line text-[11px]">
+            {tabs.map(([k, n]) => (
+              <span key={k} className={`-mb-px border-b-2 px-2 pb-1.5 ${k === tab ? "border-ember text-fg" : "border-transparent text-dim"}`}>
+                {k}{n && <span className="ml-1 font-mono text-[10px] text-mute">{n}</span>}
+              </span>
+            ))}
+          </div>
+          {tab === "Agents" ? (
+            <div className="mt-2.5 overflow-hidden rounded-xl border border-line">
+              {AGENTS.map(([name, how, effect, tone], i) => (
+                <div key={name} className={`flex items-center gap-3 border-b border-line/60 px-3 py-[7px] text-[12px] last:border-0 ${fade} ${show(t, 0.4 + i * 0.3)}`}>
+                  <span className="flex h-4 w-4 items-center justify-center rounded border border-ember/70 bg-ember/20 text-ember"><IconCheck className="h-3 w-3" /></span>
+                  <b className="w-[180px] font-medium">{name}</b>
+                  <span className="flex-1 text-mute">{how}</span>
+                  <span className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${TONE[tone]}`}>{effect}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-2.5 space-y-2 text-[11.5px]">
+              <div className="rounded-xl border border-line bg-panel-2/40 px-3 py-2">
+                <div className="font-semibold">Chat V2 Run Turn <span className="ml-1 font-normal text-mute">· code adapter: calls run_turn the way its route does</span></div>
+                <div className="mt-1 font-mono text-[10.5px] text-dim">DATABASE_URL → the episode&apos;s Postgres · REDIS_URL → its own Redis · LLM → the recording gateway</div>
+              </div>
+              <Warn on={t > 7.5} tone="warn">.env: its settings get test values of the right shape. Keys are fakes, switches stay off, URLs point nowhere.</Warn>
+              <Warn on={t > 9} tone="warn">Calls another service (REGISTRATION_SERVICE_URL). It doesn&apos;t run in tests: point it at staging, or mock it.</Warn>
+              <Warn on={t > 10.5} tone="ok">Postgres: a fresh database per episode with every table seeded. Redis: an empty database per episode.</Warn>
+              <div className="flex justify-end pt-1">
+                <span className={`rounded-lg px-4 py-2 text-[12.5px] font-semibold ${fade} ${show(t, 12.4)} ${t > 13.5 ? "bg-ember text-ink" : "bg-fg text-ink"}`}>Write tests &amp; smoke-run</span>
+              </div>
+            </div>
+          )}
+          <Pointer t={t} path={[[0, 640, 300], [5.4, 640, 300], [6, 395, 48], [6.5, 395, 48], [12.6, 395, 48], [13.3, 620, 276]]} clicks={[6, 13.4]} />
+        </Dashboard>
+      </Window>
+    );
+  },
+};
+
+function Warn({ on, tone, children }: { on: boolean; tone: "warn" | "ok"; children: React.ReactNode }) {
+  return (
+    <div className={`flex items-start gap-2 rounded-lg border px-3 py-1.5 ${fade} ${on ? "opacity-100" : "opacity-0"} ${tone === "warn" ? "border-warn/40 bg-warn/[0.06]" : "border-ok/40 bg-ok/[0.06]"}`}>
+      {tone === "warn" ? <IconAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" /> : <IconCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ok" />}
+      <span className="text-fg/90">{children}</span>
+    </div>
+  );
+}
+
+// the knowledge graph: agents → tools → what the tools touch
+const G_NODES: [string, number, number, "agent" | "tool" | "store" | "service"][] = [
+  ["Invoice Creation", 70, 60, "agent"], ["Processing", 70, 160, "agent"], ["Chat V2 Run Turn", 70, 260, "agent"],
+  ["create_invoice", 330, 40, "tool"], ["lookup_customer", 330, 105, "tool"], ["post_journal", 330, 170, "tool"],
+  ["resolve_org", 330, 235, "tool"], ["recent_chats", 330, 295, "tool"],
+  ["Postgres · 246 tables", 590, 90, "store"], ["Redis", 590, 210, "store"], ["registration-service", 590, 290, "service"],
+];
+const G_EDGES: [number, number][] = [[0, 3], [0, 4], [1, 4], [1, 5], [2, 6], [2, 7], [3, 8], [4, 8], [5, 8], [7, 9], [6, 10], [6, 8]];
+const G_TONE = { agent: "#ff6b35", tool: "#7aa2f7", store: "#4ade80", service: "#a8a29e" };
+
+const graph: Scene = {
+  id: "graph",
+  title: "See the map",
+  duration: 11,
+  cues: [
+    { at: 0, text: "The knowledge graph shows which agent calls which tool, and what each tool reads, writes or calls." },
+    { at: 5.5, text: "The registration service at the edge lives in another repository. That matters in a minute." },
+  ],
+  render: (t) => (
+    <Window title="localhost:8080/dashboard/graph/" className="inset-x-10 top-14 bottom-[84px]">
+      <Dashboard page="Knowledge graph" project="billing-service" model="claude-haiku-5-5">
+        <div className="text-[16px] font-semibold">Knowledge graph</div>
+        <svg viewBox="0 0 690 320" className="mt-1 h-[310px] w-full">
+          {G_EDGES.map(([a, b], i) => {
+            const [, x1, y1] = G_NODES[a], [, x2, y2] = G_NODES[b];
+            const k = prog(t, 0.8 + i * 0.22, 1.4 + i * 0.22);
+            const len = Math.hypot(x2 - x1, y2 - y1);
+            const hot = t > 5.5 && b === 10;
+            return <line key={i} x1={x1 + 55} y1={y1} x2={x2 - 55} y2={y2} stroke={hot ? "#f59e0b" : "rgba(255,255,255,0.22)"} strokeWidth={hot ? 2 : 1.2}
+              strokeDasharray={len} strokeDashoffset={len * (1 - k)} />;
+          })}
+          {G_NODES.map(([label, x, y, kind], i) => {
+            const on = t > 0.2 + (kind === "agent" ? 0 : kind === "tool" ? 0.6 : 1.6) + (i % 4) * 0.1;
+            const hot = t > 5.5 && kind === "service";
+            return (
+              <g key={label} style={{ opacity: on ? 1 : 0, transition: "opacity 0.3s" }}>
+                <rect x={x - 62} y={y - 14} width={124} height={28} rx={kind === "agent" ? 14 : 6} fill="#151210"
+                  stroke={hot ? "#f59e0b" : G_TONE[kind]} strokeWidth={hot ? 2 : 1.2} strokeDasharray={kind === "service" ? "4 3" : undefined} />
+                <text x={x} y={y + 4} textAnchor="middle" fontSize={kind === "tool" ? 10.5 : 11} fontFamily={kind === "tool" ? "ui-monospace, monospace" : "inherit"} fill="#ece7e2">{label}</text>
+              </g>
+            );
+          })}
+          {[["agents", 70], ["tools", 330], ["data and services", 590]].map(([k, x]) => (
+            <text key={k} x={x} y={12} textAnchor="middle" fontSize={10} fill="#8a817a" letterSpacing="1.5">{String(k).toUpperCase()}</text>
+          ))}
+        </svg>
+      </Dashboard>
+    </Window>
+  ),
+};
+
+const smoke: Scene = {
+  id: "smoke",
+  title: "Smoke-run on real data",
+  duration: 17,
+  cues: [
+    { at: 0, text: "Before the run, every connection is checked: the model, the agents' Python, and the Postgres and Redis servers for test databases." },
+    { at: 6, text: "Each episode gets a fresh Postgres database with every table seeded, and its own empty Redis. Fourteen of twenty-five pass straight away." },
+    { at: 10.5, text: "The failures say why. One agent needs a service from another repository, and the judge scored a document extraction one out of five." },
+  ],
+  render: (t) => {
+    const rows: [string, string][] = [
+      ["Model server", "claude-haiku-5-5 available"],
+      ["Python for the agents", ".venv · the code's own dependencies"],
+      ["Test database server · Postgres", "Postgres 16 · a fresh database per episode"],
+      ["Test database server · Redis", "answers · an empty database per episode (1–15)"],
+      ["Agents · 6", "each one imports and starts"],
+    ];
+    const done = Math.round(prog(t, 6, 8.5) * 25);
+    return (
+      <Window title="localhost:8080/dashboard/import/?job=…" className="inset-x-10 top-14 bottom-[84px]">
+        <Dashboard page="Add agents" project="billing-service" model="claude-haiku-5-5">
+          <div className="flex items-center justify-between"><div className="text-[16px] font-semibold">Tests written</div><Stepper at={4} /></div>
+          {t < 6 ? (
+            <div className="mt-3 rounded-xl border border-line bg-panel-2/40 p-4">
+              <div className="mb-3 text-[13px] font-semibold">Connection check</div>
+              <div className="space-y-2.5">
+                {rows.map(([k, v], i) => (
+                  <div key={k} className="flex items-center gap-3 text-[12px]">
+                    <Check ok on={t > 0.8 + i * 0.8} />
+                    <b className="font-medium">{k}</b><span className={`text-mute ${fade} ${t > 0.8 + i * 0.8 ? "opacity-100" : "opacity-0"}`}>· {v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="mt-3 flex items-center gap-2 rounded-lg border border-ok/40 bg-ok/[0.06] px-3 py-1.5 text-[12px]"><IconCheck className="h-3.5 w-3.5 text-ok" /> Connection check · 7 of 7 OK</div>
+              <div className="mt-2.5 grid grid-cols-3 gap-2.5">
+                {[["Smoke run", `${Math.round((done * 14) / 25)} / ${done}`, "passed"], ["Tables seeded", "138 / 246", "from the schema"], ["Left behind", "0", "databases, after the run"]].map(([k, v, s]) => (
+                  <div key={k} className="rounded-xl border border-line bg-panel-2/60 px-3 py-2">
+                    <div className="text-[10.5px] text-dim">{k}</div>
+                    <div className="text-[22px] font-semibold leading-tight">{v}</div>
+                    <div className="text-[10.5px] text-mute">{s}</div>
+                  </div>
+                ))}
+              </div>
+              <div className={`mt-2.5 flex items-start gap-2.5 rounded-xl border border-warn/40 bg-warn/[0.07] px-3 py-2 text-[11.5px] ${fade} ${show(t, 10)}`}>
+                <IconAlert className="mt-0.5 h-4 w-4 shrink-0 text-warn" />
+                <div><b>9 episodes stopped on missing data.</b> <span className="text-mute">Chat V2&apos;s org lookup calls registration-service, which doesn&apos;t run in tests. Point REGISTRATION_SERVICE_URL at staging, or mock it.</span></div>
+              </div>
+              <div className={`mt-2 flex items-center justify-between rounded-lg border border-bad/40 bg-bad/[0.06] px-3 py-1.5 text-[11.5px] ${fade} ${show(t, 12.5)}`}>
+                <span className="flex items-center gap-2"><Check ok={false} on /> <span className="font-mono">secure-extraction-agent-extracts-purchase-register</span></span>
+                <span className="text-mute">judge 1/5 · “Document preprocessing failed”</span>
+              </div>
+            </>
+          )}
+        </Dashboard>
+      </Window>
+    );
+  },
+};
+
 const YAML = `version: 1
 project: acme-support
 agent:
@@ -202,10 +465,10 @@ suites:
 
 const wizard: Scene = {
   id: "agent",
-  title: "Add your agent",
+  title: "Or add one by hand",
   duration: 15,
   cues: [
-    { at: 0, text: "The setup wizard asks six questions: how the agent runs, which model API it calls, and which MCP servers it uses." },
+    { at: 0, text: "Not in a codebase yet? The setup wizard asks six questions: how the agent runs, which model API it calls, and its MCP servers." },
     { at: 6.5, text: "It writes the config and a small adapter. The agent's own logic doesn't change." },
     { at: 10.5, text: "The agent just reads its model URL and one URL per MCP server from environment variables. AgentCrucible sits behind them and records everything." },
   ],
@@ -539,7 +802,7 @@ const outro: Scene = {
   title: "Wrap-up",
   duration: 9,
   cues: [
-    { at: 0, text: "That's AgentCrucible: real scenarios, checks on what the agent actually did, and a verdict you can trust." },
+    { at: 0, text: "That's AgentCrucible: agents imported from your code, checks on what they actually did, and a verdict you can trust." },
     { at: 5, text: "Free, open source, and running on your own machine. Get started in five minutes." },
   ],
   render: (t) => (
@@ -548,8 +811,8 @@ const outro: Scene = {
       <LogoMark className={`relative h-16 w-16 ${fade} ${show(t, 0.2)}`} />
       <div className={`relative mt-5 text-[46px] font-semibold tracking-tight ${fade} ${show(t, 0.5)}`}>Agent<span className="text-ember">Crucible</span></div>
       <div className={`relative mt-2 text-[20px] text-mute ${fade} ${show(t, 1.2)}`}>Catch your AI agent&apos;s mistakes before your users do.</div>
-      <div className={`relative mt-7 grid grid-cols-3 gap-4 ${fade} ${show(t, 2.2)}`}>
-        {[["−30 pts", "regression caught"], ["5 / 5", "injections obeyed"], ["Grade D", "SQL injection found"]].map(([a, b]) => (
+      <div className={`relative mt-7 grid grid-cols-4 gap-4 ${fade} ${show(t, 2.2)}`}>
+        {[["6 agents", "imported from code"], ["−30 pts", "regression caught"], ["5 / 5", "injections obeyed"], ["Grade D", "SQL injection found"]].map(([a, b]) => (
           <div key={b} className="rounded-xl border border-line bg-panel/80 px-6 py-3">
             <div className="text-[24px] font-semibold">{a}</div>
             <div className="text-[12px] text-mute">{b}</div>
@@ -561,4 +824,4 @@ const outro: Scene = {
   ),
 };
 
-export const SCENES: Scene[] = [intro, install, connect, wizard, scenario, baseline, compare, trajectory, audit, ci, outro];
+export const SCENES: Scene[] = [intro, install, connect, importScan, review, graph, smoke, wizard, scenario, baseline, compare, trajectory, audit, ci, outro];

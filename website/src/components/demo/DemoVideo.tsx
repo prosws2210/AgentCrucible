@@ -214,15 +214,16 @@ export function DemoVideo({ chapters = true }: { chapters?: boolean }) {
       </div>
 
       {/* chapters */}
-      {chapters && <ol className="mt-4 grid gap-1.5 sm:grid-cols-2 lg:grid-cols-4">
+      {chapters && <ol className="mt-4 grid grid-cols-2 gap-1.5 lg:grid-cols-4">
         {SCENES.map((sc, i) => (
-          <li key={sc.id}>
+          <li key={sc.id} className="min-w-0">
             <button
               onClick={() => { setStarted(true); seek(STARTS[i]); }}
-              className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-[13px] transition-colors ${i === scene && started ? "border-ember/50 bg-ember/[0.07] text-fg" : "border-line text-mute hover:border-ember/40 hover:text-fg"}`}
+              title={sc.title}
+              className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[12.5px] transition-colors sm:gap-3 sm:px-3 sm:text-[13px] ${i === scene && started ? "border-ember/50 bg-ember/[0.07] text-fg" : "border-line text-mute hover:border-ember/40 hover:text-fg"}`}
             >
               <span className="font-mono text-[11px] text-ember">{fmt(STARTS[i])}</span>
-              <span className="truncate">{sc.title}</span>
+              <span className="min-w-0 leading-snug sm:truncate">{sc.title}</span>
             </button>
           </li>
         ))}

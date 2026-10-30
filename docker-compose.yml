@@ -113,7 +113,9 @@ services:
     restart: unless-stopped
 
   frontend:
-    build: ./website
+    build:
+      context: ./website
+      args: { NEXT_PUBLIC_BUG_REPORT_KEY: "${BUG_REPORT_KEY:-}" }
     image: agentcrucible-web:0.2.0
     ports:
       - "8080:80"

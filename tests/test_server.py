@@ -61,6 +61,7 @@ def test_config_doctor_and_scenarios(tmp_path, monkeypatch):
         assert by_id["mcp:shop"]["ok"] and "find_customer" in by_id["mcp:shop"]["detail"]
         assert by_id["mcp:docs"]["ok"]
         assert by_id["agent"]["ok"]
+        assert "postgres" not in by_id and "redis" not in by_id  # nothing here needs them
         assert d["ok"] is False  # the model server is down
 
         sc = c.get("/api/scenarios").json()
@@ -69,6 +70,32 @@ def test_config_doctor_and_scenarios(tmp_path, monkeypatch):
         assert refund["multi_turn"] and "fixtures" in refund["environment"]
         assert {"label": "state.sql", "hard": True} in refund["checks"]
         assert refund["latest"] is None
+
+
+def test_doctor_checks_the_test_database_servers_the_project_needs(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setenv("CRUCIBLE_LLM_URL", "http://127.0.0.1:9/v1")
+    monkeypatch.delenv("CRUCIBLE_REDIS_URL", raising=False)
+    monkeypatch.delenv("CRUCIBLE_POSTGRES_URL", raising=False)
+    project = tmp_path / "project"
+    shutil.copytree(EXAMPLE, project, ignore=shutil.ignore_patterns(".crucible"))
+    # imported code whose adapter maps a setting onto the episode's Redis database
+    (project / "discovery.json").write_text(json.dumps({"repo": {"root": str(tmp_path / "gone"), "name": "acme"}, "plans": [
+        {"agent": "x", "strategy": "code", "why": "", "env_map": {"REDIS_URL": "redis"}}]}))
+    from agentcrucible.discover import apply
+    monkeypatch.setattr(apply, "_import_check", lambda *a: _empty(), raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with TestClient(create_app(project)) as c:
+        redis = {x["id"]: x for x in c.get("/api/doctor").json()["checks"]}["redis"]
+        assert not redis["ok"] and "no server is set" in redis["detail"]
+    monkeypatch.setenv("CRUCIBLE_REDIS_URL", "redis://127.0.0.1:9")  # nothing listens here
+    with TestClient(create_app(project)) as c:
+        redis = {x["id"]: x for x in c.get("/api/doctor").json()["checks"]}["redis"]
+        assert not redis["ok"] and redis["detail"].startswith("unreachable")
+
+
+async def _empty() -> dict:
+    return {}
 
 
 def test_timestamps_carry_a_timezone(tmp_path):

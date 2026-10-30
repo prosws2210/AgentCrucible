@@ -115,9 +115,12 @@ function ScenarioCard({ s }: { s: Scenario }) {
           {s.checks.map((c, i) => (
             <li key={i} className="flex items-baseline gap-2 text-[12.5px]">
               <span className={c.hard ? "text-ember" : "text-dim"}>•</span>
-              <span className="text-fg/90">{CHECK_HELP[c.label] ?? c.label}</span>
-              <code className="font-mono text-[10.5px] text-dim">{c.label}</code>
-              {!c.hard && <span className="text-[11px] text-dim">(informational)</span>}
+              {/* phones: the code name and "informational" go under the sentence, so it isn't squeezed into a column */}
+              <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                <span className="text-fg/90">{CHECK_HELP[c.label] ?? c.label}</span>
+                <code className="font-mono text-[10.5px] text-dim">{c.label}</code>
+                {!c.hard && <span className="text-[11px] text-dim">(informational)</span>}
+              </span>
             </li>
           ))}
         </ul>

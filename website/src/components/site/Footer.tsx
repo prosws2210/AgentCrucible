@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { asset, blob, GITHUB, LINKEDIN, tree, VERSION } from "@/lib/site";
+import { BugReport } from "../BugReport";
 import { CopyButton } from "../CopyButton";
 import { Logo } from "../Logo";
 import { GitHubIcon } from "../Nav";
@@ -71,7 +72,7 @@ export function Footer() {
         <div className="mt-14 flex flex-col-reverse gap-4 border-t border-line/70 py-6 text-[12.5px] text-dim sm:flex-row sm:items-center sm:justify-between">
           <div>© {new Date().getFullYear()} Shakti Swaroop Sahu · Open source under the <a href={blob("LICENSE")} className="text-mute hover:text-fg">Apache-2.0 license</a></div>
           <div className="flex items-center gap-1">
-            <a href={`${GITHUB}/issues`} className="mr-2 text-mute transition-colors hover:text-fg">Report an issue</a>
+            <BugReport className="mr-2 text-mute transition-colors hover:text-fg" />
             <a href={GITHUB} aria-label="GitHub" className="rounded-lg p-2 text-mute transition-colors hover:bg-white/5 hover:text-fg"><GitHubIcon className="h-[18px] w-[18px]" /></a>
             <a href={LINKEDIN} aria-label="LinkedIn" className="rounded-lg p-2 text-mute transition-colors hover:bg-white/5 hover:text-fg"><LinkedInIcon className="h-[18px] w-[18px]" /></a>
           </div>

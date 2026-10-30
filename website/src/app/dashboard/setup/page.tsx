@@ -14,6 +14,8 @@ const FIX: Record<string, string> = {
   agent: "Check `agent.command` (stdio) or `agent.url` (http) in crucible.yaml. Paths are relative to the folder that holds crucible.yaml.",
   config: "Add scenario YAML files under the paths listed in `suites`.",
   python: "Install the code's dependencies below (Python for the agents), or set `python:` in crucible.yaml to the virtual environment that has them.",
+  postgres: "Set CRUCIBLE_POSTGRES_URL on the server (or `postgres.admin_url` in crucible.yaml) to a Postgres it may create and drop databases on. Docker Compose sets it to its own `db` service.",
+  redis: "Set CRUCIBLE_REDIS_URL on the server (or `redis.url` in crucible.yaml) to a Redis used only for tests: its numbered databases are emptied. Docker Compose runs one (`redis` service).",
   mcp: "Local server: run its command by hand in the project folder to see the error; it must speak MCP over stdio. Remote server: check the URL, that it serves Streamable HTTP (or set `transport: sse`), and its `headers`.",
 };
 

@@ -31,7 +31,7 @@ export default function Demo() {
   return (
     <>
       <PageHero eyebrow="Demo · real recorded runs" toc={[["walkthrough", "Watch the walkthrough"], ["trajectory", "The trajectory"], ["run", "The run"], ["pr", "On the pull request"], ["report", "The report"], ["audit", "An MCP audit"], ["run-it", "Run it yourself"]]} title={<>One prompt change. <Serif>Caught</Serif> before it shipped.</>}
-        lead="Watch a team download AgentCrucible, connect their agent, test a prompt change, audit their MCP server and gate the pull request. Then dig into the real results below: ten scenarios, five attempts each, on a free local model (qwen2.5:7b).">
+        lead="Watch a team download AgentCrucible, import the agents from their codebase, test a prompt change, audit their MCP server and gate the pull request. Then dig into the real results below: ten scenarios, five attempts each, on a free local model (qwen2.5:7b).">
         <Cta href="#walkthrough" primary>Watch the walkthrough</Cta>
         <Cta href={asset("/sample/comparison-report.html")}>Open the full report <IconExternal className="h-4 w-4" /></Cta>
       </PageHero>
@@ -39,8 +39,9 @@ export default function Demo() {
       <Section id="walkthrough" className="scroll-mt-20 pt-10 sm:pt-12">
         <DemoVideo />
         <p className="mt-4 text-[13px] leading-relaxed text-dim">
-          Drawn live in your browser from the real recorded runs of the bundled example agent; the pull request is an
-          illustration. Keyboard: space to play or pause, ← → to seek, C for captions, N for narration.
+          Drawn live in your browser from real recorded runs: the bundled example agent, and an import of a private
+          backend with its names replaced (the graph shows a slice). The pull request is an illustration. Keyboard: space
+          to play or pause, ← → to seek, C for captions, N for narration.
         </p>
       </Section>
 
